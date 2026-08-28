@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-`grep` 与 `glob` 工具声明了一个仅在结果阶段存在的 `card: 'search'` render intent（[search render card](2026-07-30-search-render-card.md)）：`SearchMatchesResultView`（`shape: 'matches'`）携带 grep 按文件分组的匹配，或 `SearchPathsResultView`（`shape: 'paths'`）携带 glob 的扁平路径列表，两者都带 `truncated`/`total` 截断信号。该视图已经到达浏览器 —— host、connection、runtime 把它作为 `resultView` 投递到 `ConversationSnapshot` 上 —— 但 Web 客户端忽略了它：每个非终端、非 diff 的工具结果都落到 generic 卡片，渲染面向模型的文本。想把搜索结果渲染成可展开的按文件匹配分组、或可扫读的路径列表的 web 前端，只有那段预格式化文本。
+`grep` 与 `glob` 工具声明了一个仅在结果阶段存在的 `card: 'search'` render intent（[search render card](2026-07-30-search-render-card.zh.md)）：`SearchMatchesResultView`（`shape: 'matches'`）携带 grep 按文件分组的匹配，或 `SearchPathsResultView`（`shape: 'paths'`）携带 glob 的扁平路径列表，两者都带 `truncated`/`total` 截断信号。该视图已经到达浏览器 —— host、connection、runtime 把它作为 `resultView` 投递到 `ConversationSnapshot` 上 —— 但 Web 客户端忽略了它：每个非终端、非 diff 的工具结果都落到 generic 卡片，渲染面向模型的文本。想把搜索结果渲染成可展开的按文件匹配分组、或可扫读的路径列表的 web 前端，只有那段预格式化文本。
 
 这正是 search render card note 指名的后续：后端约定和它的两个生产者归那篇 note 所有，web 消费方归本 note 所有。
 
@@ -34,7 +34,7 @@ Status: implemented
 
 三个渲染点消费该推导，与终端卡片的落位完全一致：
 
-- **keyed `SearchRow`**（`toolviews/search-row.tsx`）把一个组件同时注册到 `tool.call.toolview` keyed hole 的 `grep` 与 `glob` 键下，并把卡片作为常驻（resident）渲染在摘要行下方，上限为 `CHAT_SEARCH_MAX_LINES`（8）—— 与 `BashRow` 对其终端卡片采取的姿态相同。两个工具名共用同一行，因为推导出的 `kind` 决定形态，第二个组件只会重复它。被截断结果的恢复脚注画在卡片下方。因为 keyed 行占据了这个渲染槽，一个没有搜索卡片的已结算调用 —— 出错的搜索（grep/glob 出错时不产出结果视图）、成功的嵌套 `run_code` 子派发（后端不为其计算 `presentationMeta`，故 `resultView` 为 null）、或旧日志的 generic 结果 —— 否则只会显示摘要而丢失内容；该行把这段面向模型的文本作为 fallback body 暴露出来，判据是 `search === null && 已结算`，而非仅凭错误状态。（该常驻姿态与 terminal/diff 卡片一致；一次性翻转了所有常驻卡片的整行折叠/展开交互归[统一展开与检视 note](2026-07-30-web-tool-row-unified-expand-and-inspect.md)所有。）
+- **keyed `SearchRow`**（`toolviews/search-row.tsx`）把一个组件同时注册到 `tool.call.toolview` keyed hole 的 `grep` 与 `glob` 键下，并把卡片作为常驻（resident）渲染在摘要行下方，上限为 `CHAT_SEARCH_MAX_LINES`（8）—— 与 `BashRow` 对其终端卡片采取的姿态相同。两个工具名共用同一行，因为推导出的 `kind` 决定形态，第二个组件只会重复它。被截断结果的恢复脚注画在卡片下方。因为 keyed 行占据了这个渲染槽，一个没有搜索卡片的已结算调用 —— 出错的搜索（grep/glob 出错时不产出结果视图）、成功的嵌套 `run_code` 子派发（后端不为其计算 `presentationMeta`，故 `resultView` 为 null）、或旧日志的 generic 结果 —— 否则只会显示摘要而丢失内容；该行把这段面向模型的文本作为 fallback body 暴露出来，判据是 `search === null && 已结算`，而非仅凭错误状态。（该常驻姿态与 terminal/diff 卡片一致；一次性翻转了所有常驻卡片的整行折叠/展开交互归[统一展开与检视 note](2026-07-30-web-tool-row-unified-expand-and-inspect.zh.md)所有。）
 - **generic fallback**（`chat/GenericToolCard` → `chat/ToolRow`）把推导出的 model 作为展开门控的 body 传入，与 `terminal` 用的是同一分支：没有 keyed 行的 `grep`/`glob` 结果（发布应用里没有，因为两者都注册了）仍在行的展开开关后渲染其卡片，并带恢复脚注。
 - **details panel**（`skeleton/DetailsPanel`）在 Output 段以 primitive 自身的完整高度渲染卡片，恢复脚注画在其下方，保留 JSON Input 段。
 
@@ -56,10 +56,10 @@ Status: implemented
 
 `packages/client/ui-primitives/tests/search-block.client.spec.tsx` 以 per-file 100% 覆盖固定组件：两种 kind、折入摘要的截断前总数、空结果分支、逐文件折叠/再展开且不影响邻居、一个文件头与匹配行一样，在高度上限中单独计为一行、切口落在文件中间时尾部切片恢复其所属文件头、跨两种形态的头/尾上限及其展开控件（含无尾与默认上限的边界），以及复制控件在接受与拒绝的剪贴板路径上写入整个结构化结果。
 
-`packages/client/ui-tool/tests/search-card.client.spec.tsx` 固定每个渲染点的接线：`searchCardModel` 对两种 kind 的推导、截断信号、替换标题、仅在截断时暴露的恢复文本，以及每个 null 分支（运行中、无视图、generic、terminal、未知卡片、本版本无法编译的 `kind`、以及一个形态缺失/错误的已知 kind）；通过 `GenericToolCard` 的展开门控 matches 与 paths body（含恢复脚注），对照非搜索的 args-JSON body；`SearchRow` 对两种 kind 的常驻卡片、它的恢复脚注、它对出错搜索与已结算无卡片结果两者的 fallback body、它与摘要行运行状态的一致、替换标题优先级，以及一个组件在 `grep` 与 `glob` 两个键下的 keyed 注册；以及 details panel 的 Output 段对两种 kind（含恢复脚注），对照非搜索的压平形态。`packages/client/ui-tool/src/*` 在覆盖排除清单上，因此该文件不受 gate 压力。`packages/client/connection/src/client/fixture.ts` 新增一个发出 `kind: 'matches'` 的 `grep` turn（三个文件、十二行超过行内上限、`truncated` 且带溢出恢复脚注，因此在组装快照里同时演练头/尾上限与恢复脚注）与一个发出 `kind: 'paths'` 的 `glob` turn，两者都驱动 built-boot snapshot 与实时 `?fixture` 服务。`apps/web/tests/search-card.snapshot.ts` 是仓库约定要求的组装输出检查：它通过 keyless fixture 传输启动真实构建的 `client.js` bundle，打开 fixture 会话，并把 grep 卡片的组装形态——kind、截断摘要、头/尾切片及其展开控件——固定在 `apps/web/tests/snapshots/search-card/` 下，因此一个损坏的 SearchRow 注册或被丢弃的卡片会让一个 golden 失败，而 built-boot smoke（按约定只测启动）无法捕获它。
+`packages/client/ui-tool/tests/search-card.client.spec.tsx` 固定每个渲染点的接线：`searchCardModel` 对两种 kind 的推导、截断信号、替换标题、仅在截断时暴露的恢复文本，以及每个 null 分支（运行中、无视图、generic、terminal、未知卡片、本版本无法编译的 `kind`、以及一个形态缺失/错误的已知 kind）；通过 `GenericToolCard` 的展开门控 matches 与 paths body（含恢复脚注），对照非搜索的 args-JSON body；`SearchRow` 对两种 kind 的常驻卡片、它的恢复脚注、它对出错搜索与已结算无卡片结果两者的 fallback body、它与摘要行运行状态的一致、替换标题优先级，以及一个组件在 `grep` 与 `glob` 两个键下的 keyed 注册；以及 details panel 的 Output 段对两种 kind（含恢复脚注），对照非搜索的压平形态。`packages/client/ui-tool/src/*` 在覆盖排除清单上，因此该文件不受 gate 压力。`packages/client/connection/src/client/fixture.ts` 新增一个发出 `kind: 'matches'` 的 `grep` turn（三个文件、十二行超过行内上限、`truncated` 且带溢出恢复脚注，因此在组装快照里同时演练头/尾上限与恢复脚注）与一个发出 `kind: 'paths'` 的 `glob` turn，两者都驱动 built-boot snapshot 与实时 `?fixture` 服务。`apps/web/tests/search-card.expected.e2e.ts` 是仓库约定要求的组装输出检查：它通过 keyless fixture 传输启动真实构建的 `client.js` bundle，打开 fixture 会话，并把 grep 卡片的组装形态——kind、截断摘要、头/尾切片及其展开控件——固定在 `apps/web/tests/expected/search-card/` 下，因此一个损坏的 SearchRow 注册或被丢弃的卡片会让一个 golden 失败，而 built-boot smoke（按约定只测启动）无法捕获它。
 
 ## Related
 
-- [Search render intent —— grep 与 glob 发出结构化搜索卡片](2026-07-30-search-render-card.md) —— 后端约定与它的两个生产者；本 note 是它指名的 web 消费者后续。
-- [Web 终端卡片](2026-07-28-web-terminal-card.md) —— 本 note 镜像的先例：工具的 render intent 通过一个 `ui-primitives` 块、一个 `contract/*-card-model.ts` 推导、以及同样的三个渲染点到达浏览器。
-- [工具调用呈现的标签化 render-intent 联合](../architecture/2026-07-02-tool-render-intent-union.md) —— 两张卡片都消费的 `card` 标签词汇。
+- [Search render intent —— grep 与 glob 发出结构化搜索卡片](2026-07-30-search-render-card.zh.md) —— 后端约定与它的两个生产者；本 note 是它指名的 web 消费者后续。
+- [Web 终端卡片](2026-07-28-web-terminal-card.zh.md) —— 本 note 镜像的先例：工具的 render intent 通过一个 `ui-primitives` 块、一个 `contract/*-card-model.ts` 推导、以及同样的三个渲染点到达浏览器。
+- [工具调用呈现的标签化 render-intent 联合](../architecture/2026-07-02-tool-render-intent-union.zh.md) —— 两张卡片都消费的 `card` 标签词汇。

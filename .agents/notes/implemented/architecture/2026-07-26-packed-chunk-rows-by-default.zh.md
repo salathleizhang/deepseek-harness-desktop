@@ -18,7 +18,7 @@ JSONL 存储 seam 可以在不改变逻辑日志的情况下减少这部分封�
 
 ### 逻辑事件与物理行
 
-打包保留在 `dsh-session` 的存储 seam，并通过 `packChunkRuns()` 和 `decodeStorageRecord()` 实现。编码器识别精确的增量事件形态，原样保留无法识别的事件，并且只打包至少包含 3 个事件的连续段。打包行属于存储词汇，不是 `SessionEventMap` 成员：它绝不会进入 `Session.events`，也不会触发 `session/event`。
+JSONL 打包路径保留在 `dsh-session` 的存储 seam，并通过 `packChunkRuns()` 和 `decodeStorageRecord()` 实现。编码器识别精确的增量事件形态，原样保留无法识别的事件，并且只打包至少包含 3 个事件的连续段。打包行属于编码词汇，不是 `SessionEventMap` 成员：它绝不会进入 `Session.events`，也不会触发 `session/event`。[打包会话历史传输决策](2026-08-15-packed-session-history-transport.zh.md)会为有界的无损协议区间复用该词汇，而不改变这些事件语义。
 
 JSONL 后端会打包每个持久追加批次。原始模式 `compression: 'none'` 与默认 Zstandard 帧承载相同的逻辑存储记录；为使 fixture 便于评审而选择原始模式，不会禁用打包。仓库中的回放读取器和规范化器会解码共享行格式，而不维护快照专用编解码器。
 
@@ -34,7 +34,7 @@ ACP 和 headless 快照运行会采集默认 JSONL 后端的输出。TUI 和 web
 
 临时命令 [`scripts/migrate-packed-session-fixtures.ts`](../../../../scripts/migrate-packed-session-fixtures.ts) 让在途分支合并当前 `master` 后可以完成收敛：`pnpm run migrate:packed-session-fixtures` 会发现与永久门禁相同的仓库级 fixture 集合，保留各文件的 header 行，解码现有混合记录，写入规范打包正文，并证明解码结果相等且操作具有幂等性。该命令绝不会调用模型，也不会重新生成 transcript（文本记录）与呈现输出。
 
-只要较旧分支仍可能携带 fixture 改动，测试政策和 ACP 快照 README 就会继续链接该命令。最新的开放 PR（Pull Request）清单确认每个受影响分支均已合并、关闭或符合规范后，[移除提案](../../proposed/process/2026-07-26-remove-packed-session-fixture-migrator.md)会删除该 CLI、包命令、本过渡章节和文档链接，并替换永久门禁中仅适用于该命令的修复指引。共享规范布局转换器与快照门禁保持永久存在。
+只要较旧分支仍可能携带 fixture 改动，测试政策和 ACP 快照 README 就会继续链接该命令。最新的开放 PR（Pull Request）清单确认每个受影响分支均已合并、关闭或符合规范后，[移除提案](../../proposed/process/2026-07-26-remove-packed-session-fixture-migrator.zh.md)会删除该 CLI、包命令、本过渡章节和文档链接，并替换永久门禁中仅适用于该命令的修复指引。共享规范布局转换器与快照门禁保持永久存在。
 
 ### 验证约定
 

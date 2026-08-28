@@ -154,11 +154,11 @@ function at(time: number, type: string, data: unknown): SessionEvent {
 
 /** Fold a synthetic event list through the definition and view the result. */
 function fold(events: readonly SessionEvent[]): SessionStatsProjection {
-  const state = events.reduce(
+  const state = events.reduce<Parameters<typeof sessionStatsProjectionDefinition.apply>[0]>(
     (folded, event) => sessionStatsProjectionDefinition.apply(folded, event),
     sessionStatsProjectionDefinition.init(),
   )
-  return sessionStatsProjectionDefinition.view(state)
+  return sessionStatsProjectionDefinition.wire.view(state)
 }
 
 describe('sessionStats wall-time fold (controlled timestamps)', () => {
@@ -202,6 +202,35 @@ describe('sessionStats wall-time fold (controlled timestamps)', () => {
       at(2_000, 'assistant/message', { turn: 1, step: 1, message }),
       at(2_100, 'step/end', { turn: 1, step: 1 }),
     ])).toEqual(totals({ turns: 1, steps: 1, llmMs: 1_000, ttftMs: 400, ttftSteps: 1 }))
+  })
+
+  it('uses non-empty Tool-call names or arguments as the first token', () => {
+    expect(fold([
+      at(1_000, 'step/start', { turn: 1, step: 1 }),
+      at(1_100, 'assistant/chunk', {
+        turn: 1,
+        step: 1,
+        chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', argumentsDelta: '' },
+      }),
+      at(1_200, 'assistant/chunk', {
+        turn: 1,
+        step: 1,
+        chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'read', argumentsDelta: '' },
+      }),
+      at(2_000, 'assistant/message', { turn: 1, step: 1, message }),
+      at(2_100, 'step/end', { turn: 1, step: 1 }),
+    ])).toEqual(totals({ turns: 1, steps: 1, llmMs: 1_000, ttftMs: 200, ttftSteps: 1 }))
+
+    expect(fold([
+      at(1_000, 'step/start', { turn: 1, step: 1 }),
+      at(1_300, 'assistant/chunk', {
+        turn: 1,
+        step: 1,
+        chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', argumentsDelta: '{' },
+      }),
+      at(2_000, 'assistant/message', { turn: 1, step: 1, message }),
+      at(2_100, 'step/end', { turn: 1, step: 1 }),
+    ])).toEqual(totals({ turns: 1, steps: 1, llmMs: 1_000, ttftMs: 300, ttftSteps: 1 }))
   })
 
   it('leaves a cancelled step untimed: counted by step/end, no assembled message to accrue from', () => {
@@ -269,7 +298,7 @@ describe('sessionStats wall-time fold (controlled timestamps)', () => {
       .toEqual(totals({ turns: 1, steps: 1, llmMs: 1_000, ttftMs: 400, ttftSteps: 1 }))
     // The first message closed the step boundary; a defensive duplicate finds
     // no open step and folds to the same reference.
-    const state = events.reduce(
+    const state = events.reduce<Parameters<typeof sessionStatsProjectionDefinition.apply>[0]>(
       (folded, event) => sessionStatsProjectionDefinition.apply(folded, event),
       sessionStatsProjectionDefinition.init(),
     )

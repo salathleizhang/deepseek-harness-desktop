@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-subagent seam（[seam Agent Note](2026-06-21-subagent-capability-seam.md)）的设计使多个后端可以按名称共存于 `ctx.subagents`。进程内后端（`-spawn`/`-fork`）将子 agent（智能体）作为第二个 `Agent` 运行在同一个 Cordis 上下文中：开销低，但子 agent 与父 agent 共享进程、模型客户端和工具。seam 的核心意义在于同时支持通过协议到达的进程外子 agent，以证明该抽象可跨进程边界适用。本 Agent Note 添加第一个此类后端：一个 ACP（Agent Client Protocol）客户端。
+subagent seam（[seam Agent Note](2026-06-21-subagent-capability-seam.zh.md)）的设计使多个后端可以按名称共存于 `ctx.subagents`。进程内后端（`-spawn`/`-fork`）将子 agent（智能体）作为第二个 `Agent` 运行在同一个 Cordis 上下文中：开销低，但子 agent 与父 agent 共享进程、模型客户端和工具。seam 的核心意义在于同时支持通过协议到达的进程外子 agent，以证明该抽象可跨进程边界适用。本 Agent Note 添加第一个此类后端：一个 ACP（Agent Client Protocol）客户端。
 
 ## 决策
 
@@ -30,7 +30,7 @@ subagent seam（[seam Agent Note](2026-06-21-subagent-capability-seam.md)）的�
 
 ### StopReason 映射
 
-ACP `StopReason` → harness `SubagentStopReason`：`end_turn`→`completed`、`max_tokens`→`max-tokens`、`refusal`→`refusal`、`cancelled`→`aborted`、`max_turn_requests`→`error`（无对等语义，任务未完成）、未知→`error`。spawn/传输/RPC 失败时，结果为 `error`（如果已请求取消则为 `aborted`）；按 seam 约定，`result` 在子 agent 级别失败时从不 reject。
+ACP `StopReason` → harness `SubagentStopReason`：`end_turn`→`completed`、`max_tokens`→`max-tokens`、`refusal`→`refusal`、`cancelled`→`aborted`、`max_turn_requests`→`error`（无对等语义，任务未完成）、未知→`error`。spawn、initialize 与会话创建失败会在提供方自有清理后、发布前拒绝 `start()`；发布后的 prompt/RPC/传输失败会把 `result` 确定为 `error`（本地取消后为 `aborted`），而 `result` 在子 agent 级别失败时绝不 reject。非完成结果与生命周期失败只会附加[进程外诊断决策](2026-08-21-out-of-process-subagent-minimal-diagnostics.zh.md)定义的有界 provider stage、粗粒度 category、闭集权限决定和已观测进程事实；原始 ACP 错误与 stderr 仍只留在 Host。
 
 ### 安全：清洗子进程环境
 
@@ -41,7 +41,8 @@ ACP `StopReason` → harness `SubagentStopReason`：`end_turn`→`completed`、`
 - **无需密钥的单元/集成测试：** 一个脚本化的 ACP 子进程通过真实 stdio 测试提示词输入／输出流程、所有 stop-reason 映射、信号与 dispose 取消（包括 pre-abort、会话前竞态和管道断裂场景）、两种权限策略、被忽略的非消息更新、命令缺失时的清理、提供方重载以及命名空间导出。
 - **无需密钥的 Loader 组合测试：** 仅用于测试的 cordis.yml 通过真实 Loader 启动 stdio 应用，并省略后端的 `cwd`；脚本化模型委派一次，脚本化子进程则证明它在父会话工作区中运行，且 ACP 也对外公布了该工作区，从而端到端覆盖 cwd 继承分支。
 - **需要密钥的 e2e 测试：** 后端 spawn 真实的 ACP 示例；其模型回答 `PONG`，写入 `proof.txt`，父进程验证该文件。
-- **快照缺口：** 每个 ACP 子 agent 是独立进程，拥有自己的回放会话，不同于进程内的按会话回放。已有确定性 mock 服务器覆盖；`TODO(acp-subagent-replay)` 跟踪父进程对回放中子 agent 的回放支持。
+- **无密钥快照：** ACP 示例通过 Loader 支持的回放启动真实提供方与脚本化子进程，固定前台和一次性后台诊断，同时保持子进程、权限决定、部分输出与清理生命周期确定。
+- **快照缺口：** 每个 ACP 子 agent 仍拥有自己的回放会话；`TODO(acp-subagent-replay)` 继续跟踪父进程对回放中子 harness 的回放，而不是诊断场景使用的脚本化协议子进程。
 
 ## 曾考虑的替代方案
 
@@ -59,4 +60,4 @@ ACP `StopReason` → harness `SubagentStopReason`：`end_turn`→`completed`、`
 
 ## 兄弟产品提供方
 
-[Codex app-server 与 Claude Code Agent SDK 提供方](2026-08-04-claude-code-and-codex-subagent-backends.md)作为按名称注册的兄弟提供方，采用同样的进程外启动/提示词/结算/取消边界。A2A 仍是未来的兄弟传输方式；ACP 后端证明了 subagent seam 能够支持这项边界，而无需负责产品私有协议。
+[Codex app-server 与 Claude Code Agent SDK 提供方](2026-08-04-claude-code-and-codex-subagent-backends.zh.md)作为按名称注册的兄弟提供方，采用同样的进程外启动/提示词/结算/取消边界。A2A 仍是未来的兄弟传输方式；ACP 后端证明了 subagent seam 能够支持这项边界，而无需负责产品私有协议。

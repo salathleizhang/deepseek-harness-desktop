@@ -27,7 +27,13 @@
       "path": "../../attachment/attachment"
     },
     {
+      "path": "../../fs/fs"
+    },
+    {
       "path": "../../credentials/credentials"
+    },
+    {
+      "path": "../../credentials/authorization"
     },
     {
       "path": "../../settings/settings"

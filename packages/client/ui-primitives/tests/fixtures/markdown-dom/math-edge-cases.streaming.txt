@@ -3,7 +3,7 @@
     #text "Trusted commands stay off: $\\href{javascript:alert(1)}{unsafe}$."
   <p>
     #text "Unbalanced errors render the error arm: $\\frac{$"
-  <div class="_tableScroll_404681">
+  <div class="_tableScroll_404681 _tableFill_404681">
     <table>
       <thead>
         <tr>
@@ -21,6 +21,7 @@
     <div class="_bannerWrap_9aea57">
       <div class="_banner_9aea57">
         <div class="_infostring_9aea57">
+          #text "math"
         <div class="_action_9aea57">
           <button class="_copyButton_9aea57" type="button">
             #text "复制"

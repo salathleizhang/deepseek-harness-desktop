@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   IconChevronDownOutline14, Menu, RiskConfirmation,
@@ -107,6 +107,7 @@ export function PermissionRow({ load, select, usePermission, t }: PermissionRowP
         description={t('confirm.description')}
         acknowledgeLabel={t('confirm.acknowledge')}
         cancelLabel={t('confirm.cancel')}
+        closeLabel={t('close')}
         confirmLabel={t('confirm.enable')}
         acknowledged={acknowledged}
         disabled={!state.writable || state.status === 'saving'}

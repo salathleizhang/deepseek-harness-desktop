@@ -16,7 +16,7 @@ The service reads the current Settings value synchronously at `session/created`.
 
 The existing `/permission` command and `permissions` projection remain the current-session path. The browser plugin now contributes the Permission row to `settings.general.item`, reads the dynamic enum from the redacted Settings descriptor, and writes only `defaultPreset` through a revision-checked `settings.mutate`. The row injects its observable through the slot `hooks` compartment instead of binding a renderer-specific hook, and the Permission service sweeps already-live sessions when it mounts so HMR cannot leave an unpinned session. The ownerless General-settings package contributes no placeholder rows.
 
-ApiProxy explicitly adds `permission` to its Web settings allowlist beside the configurable-provider namespaces. This is a local boundary decision, not a general registration flag or a `local-client` access model: registering another Settings namespace still does not expose it. Permission changes reach the client through forwarded `settings/document-updated` ([forwarded Remote events](../architecture/2026-08-10-remote-event-delivery.md)); they do not announce model topology.
+The Settings Controller exposes the registered `permission` namespace through its redacted Remote view. This is a local presentation decision, not a general registration flag or a `local-client` access model. Permission changes reach the client through forwarded `settings/document-updated` ([forwarded Remote events](../architecture/2026-08-10-remote-event-delivery.md)); they do not announce model topology.
 
 ## Consequences
 

@@ -9,7 +9,7 @@ Status: implemented
 两级 `packages/<group>/<pkg>` 层级结构（[原始决策](../../archived/architecture/2026-06-20-package-hierarchy.md)）自 6 月以来已经漂移：167 个包彼时坐落在 42 个组里，若干组边界已经对不上这些包的实际聚类。
 
 - `ui/` 混杂了四个互不相关的平面：人类终端通道（`tui`）、SDK 的 JSON-RPC 服务端一半（`jsonrpc`，它对 `dsh-sdk-protocol` 的对等依赖（peer dependency）把它绑在 SDK 通信栈上）、人机交互 seam（`user-questions`、`user-approval`、`permission`、`tool-ask-user`、`commands`），以及与通道无关的 boot 胶水（`app-boot`）。它自己的 README 只能逐一叙述这堆混杂，说不出一个统一职责。
-- 会话家族被割裂在五个组里——`session-persistence/`、`session-projection/`、`session-query/`、`session-title/` 与 `telemetry/`——而实测依赖边明明把它们连成一体（query → persistence、title → projection、projection → persistence；见 [docs/module-graph.md](../../../../docs/module-graph.md)）。
+- 会话家族被割裂在五个组里——`session-persistence/`、`session-projection/`、`session-query/`、`session-title/` 与 `telemetry/`——而实测依赖边明明把它们连成一体（query → persistence、title → projection、projection → persistence；见 [docs/module-graph.md](../../../../docs/module-graph.zh.md)）。
 - 用于工具调用守卫的 `timeout/` 组与通用 promise 工具 `util/timeout` 撞名。
 - `cordis/` 拿所有包共同依托的框架给自己的组命名，这个名字因此毫无区分度；组里唯一的包 `tool-cordis` 是运行时自我修改工具集。
 
@@ -17,7 +17,7 @@ Status: implemented
 
 ## 决策
 
-五项重组决策仍然有效；其余每个组都保持先前的边界与内容不变（依赖分析确认各能力家族——`shell/`、`terminal/`、`code-runtime/`、`sandbox/`、`subprocess/`、`fs/`、`lsp/`、`web/`、`skill/` 及其余——本来就划得正确）。原本的第六项决策把 SDK 项目初始化器、启动器工具与运行时 JSON-RPC 包汇集到 `scaffold/`；[移除这套未发布工具链](../simplification/2026-08-11-remove-sdk-project-toolchain.md)的决策删除了项目工具，并将存留的运行时三包移到 `sdk/`。后续的[仓库命名约定](2026-08-11-repository-naming-contract-and-rename-ledger.md)负责 `shell/`、`terminal/` 与 `extensions/` 组名，以及本决策曾推迟的两个包名。
+五项重组决策仍然有效；其余每个组都保持先前的边界与内容不变（依赖分析确认各能力家族——`shell/`、`terminal/`、`code-runtime/`、`sandbox/`、`subprocess/`、`fs/`、`lsp/`、`web/`、`skill/` 及其余——本来就划得正确）。原本的第六项决策把 SDK 项目初始化器、启动器工具与运行时 JSON-RPC 包汇集到 `scaffold/`；[移除这套未发布工具链](../simplification/2026-08-11-remove-sdk-project-toolchain.zh.md)的决策删除了项目工具，并将存留的运行时三包移到 `sdk/`。后续的[仓库命名约定](2026-08-11-repository-naming-contract-and-rename-ledger.zh.md)负责 `shell/`、`terminal/` 与 `extensions/` 组名，以及本决策曾推迟的两个包名。
 
 | 组 | 成员（目录名） | 来源 |
 |---|---|---|
@@ -29,7 +29,7 @@ Status: implemented
 
 - **`session/`** 是持久会话数据平面：持久化 seam 连同其各后端与检查点策略、从该日志折叠（fold）出全量值并对外提供的投影、基于日志的标题，以及 OTel 上报。标题折叠本身就是读取侧的承重构件（`session-query` 对 `dsh-session-title` 声明对等依赖），所以标题属于数据平面，而非某个「派生服务」附属区。用这个朴素的名字是有意为之（名字要像人起的）；旁边的 `core/session` 包仍是常驻内存的实时服务，本组则是围绕它的持久家族。`session-query/` 保持独立成组：这个读取／工具面自带模型工具和 SQLite FTS 后端，其消费不依赖持久化内部实现。
 - **`interaction/`** 是人机协作平面加上应答它的终端通道：提问／批准 seam、权限预设、面向模型的 `ask_user_question` 工具、人类命令注册表（`plan-mode` 与 `command-goal` 已经把 `commands` 和各交互 seam 放在一起消费），以及 `tui`——这个交互通道是该平面功能最丰富的提供方与消费方（对 `commands` 与 `user-questions` 均有对等依赖边），而一个单包 `tui/` 组会把一个顶层名字花在一个插件上。
-- **`boot/`** 是角色完备的单包组：不归属任何通道也不归属任何组装的共享 bin boot 胶水（被 `apps/cli` 与 `examples/` 各演示 bin 消费）。
+- **`boot/`** 是角色完备的单包组：不归属任何通道也不归属任何组装的共享 boot 胶水（被 `apps/cli` 与仅限测试的 Loader driver 消费）。
 - **`guard/`** 保留其文档记载的角色（循环卫生守卫），并新纳入强制执行工具调用超时的包；那个与 `util/timeout` 撞名的单包组 `timeout/` 随之解散。
 - **`extensions/`** 把 `cordis/` 遮蔽掉的角色说了出来：它是供 agent（智能体）在自身当前运行时中检查和挂载插件的工具集，也是未来自我修改类包的落点。
 
@@ -37,11 +37,11 @@ Status: implemented
 
 ## 后续命名决策
 
-[仓库命名约定](2026-08-11-repository-naming-contract-and-rename-ledger.md)解决了本次移动有意推迟的两个名称。`@deepseek-ai/dsh-sdk-jsonrpc-server` 表示运行时 SDK 协议的 JSON-RPC 服务器一侧。`@deepseek-ai/dsh-tool-call-timeout-policy` 准确表示策略所限制的操作，同时保留其 `guard/timeout-policy/` 归属。这些重命名会一并移除阻塞发布的 `FIXME` 标记。
+[仓库命名约定](2026-08-11-repository-naming-contract-and-rename-ledger.zh.md)解决了本次移动有意推迟的两个名称。`@deepseek-ai/dsh-sdk-jsonrpc-server` 表示运行时 SDK 协议的 JSON-RPC 服务器一侧。`@deepseek-ai/dsh-tool-call-timeout-policy` 准确表示策略所限制的操作，同时保留其 `guard/timeout-policy/` 归属。这些重命名会一并移除阻塞发布的 `FIXME` 标记。
 
 ## 移动触及了什么
 
-移动以纯 `git mv` 形式落地，历史由重命名检测承载。组移动触及了：被移动包的 `tsconfig.json` 相对 `references` 及每个依赖方的对应条目（含 `apps/cli` 的 project references）；tsconfig 聚合与路径映射；各组 README；[packages/README.md](../../../../packages/README.md) 的层级结构表；根 `AGENTS.md` 的布局图；重新生成的产物（`docs/module-graph.md`、内嵌路径的目录以及锁文件的 importer 键）；以及散文与门禁脚本中以仓库根为基准的 `packages/...` 引用。其余每一处组路径引用（workspace 配置、测试 glob、lint 键）都由验收门禁的响亮失败机械地找了出来——这正是本仓库自己的「配置错误必须响亮失败」规则。
+移动以纯 `git mv` 形式落地，历史由重命名检测承载。组移动触及了：被移动包的 `tsconfig.json` 相对 `references` 及每个依赖方的对应条目（含 `apps/cli` 的 project references）；tsconfig 聚合与路径映射；各组 README；[packages/README.md](../../../../packages/README.zh.md) 的层级结构表；根 `AGENTS.md` 的布局图；重新生成的产物（`docs/module-graph.md`、内嵌路径的目录以及锁文件的 importer 键）；以及散文与门禁脚本中以仓库根为基准的 `packages/...` 引用。其余每一处组路径引用（workspace 配置、测试 glob、lint 键）都由验收门禁的响亮失败机械地找了出来——这正是本仓库自己的「配置错误必须响亮失败」规则。
 
 组移动未触及：npm 包名、import、`cordis.yml` 配置、快照 fixture（测试前置数据）、`pnpm-workspace.yaml` 与 `tsdown` 的 glob（都是 `packages/*/*`），以及 Python 运行时 manifest（元数据清单）——它们全部按 npm 包名引用包。
 

@@ -43,7 +43,7 @@ packages/api/remotes/
       └─ index.ts
 ~~~
 
-包根 `tsconfig.json` 是只引用两个具体 project 的 solution，不进入任何 aggregate 或直接消费方的依赖图。根 Host aggregate 与 `host/apiproxy` 引用 `api/remotes/tsconfig.host.json`；根 Client aggregate 与 `client/ui-goal` 引用 `api/remotes/tsconfig.client.json`。`ui-goal` 本身仍是普通的单一 Client project。workspace constraints 门禁遍历可达的 Project Reference 图；凡已声明 face 的 project 引用了拆分包的 solution 根或另一侧 leaf，门禁都会拒绝，而只有 `tsconfig.json` 的目标仍可由任一 face 引用。
+包根 `tsconfig.json` 是只引用两个具体 project 的 solution，不进入任何 aggregate 或直接消费方的依赖图。根 Host aggregate 引用 `api/remotes/tsconfig.host.json`，根 Client aggregate 与直接 Client 消费方引用 `api/remotes/tsconfig.client.json`。`session-log-export` 使用相同的 solution 与 leaf 结构，让 Node archive 实现不进入浏览器 controller。workspace constraints 门禁遍历可达的 Project Reference 图；凡已声明 face 的 project 引用了拆分包的 solution 根或另一侧 leaf，门禁都会拒绝，而只有 `tsconfig.json` 的目标仍可由任一 face 引用。
 
 两个 project 使用互不重叠的 `files` 和不同的 `.tsbuildinfo`，因此可以共享 `lib/types` 而不重复发射任何源码。若未来需要两侧共用一份实现，应把实现移入中立 package，不能把同一源码同时交给两个 emitting project。
 
@@ -75,6 +75,6 @@ Host 与 Client 两次 tsdown 都接收 `vendor/*`、`packages/*/*` 和 `apps/cl
 
 干净构建成为顺序正确性的权威验证：没有任何既存 `/remote` 产物时，Host tsc 必须先成功，Host tsdown 必须生成约定，随后 Client tsc、Client tsdown 与 Web build 必须成功。任何阶段都不得把产物写进 `src`。
 
-[TypeScript 构建配置 Note](2026-06-17-ts-build-config.md)确定的 tsc-first 职责保持不变，但其单次全图 tsc 后再打包的命令形态由本文的有序阶段取代。[双 aggregate solution Note](2026-07-22-tsconfig-solution-root-two-aggregates.md)确定的普通 package 单 aggregate 规则保持不变，本文只为 `api/remotes` 建立一个显式例外。
+[TypeScript 构建配置 Note](2026-06-17-ts-build-config.zh.md)确定的 tsc-first 职责保持不变，但其单次全图 tsc 后再打包的命令形态由本文的有序阶段取代。[双 aggregate solution Note](2026-07-22-tsconfig-solution-root-two-aggregates.zh.md)确定的普通 package 单 aggregate 规则保持不变，本文只为 `api/remotes` 建立一个显式例外。
 
 Client 的独立构建不再是干净工作树上的自足入口；仓库命令、CI 和发布流程必须先运行 Host lib 阶段。普通 package 的开发者无需理解或复制该例外，仍按所属运行环境选择一个 aggregate。

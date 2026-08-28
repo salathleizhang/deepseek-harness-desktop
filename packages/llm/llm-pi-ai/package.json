@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-llm-pi-ai",
   "description": "pi-ai-backed DeepSeek adapter for the DeepSeek Harness LLM seam (design-verification twin of dsh-llm-deepseek)",
-  "version": "0.1.0-rc.13",
+  "version": "0.1.0-rc.14",
   "publishConfig": {
     "access": "public"
   },
@@ -33,7 +33,9 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/dsh-attachment": "workspace:^",
+    "@deepseek-ai/dsh-authorization": "workspace:^",
     "@deepseek-ai/dsh-credentials": "workspace:^",
+    "@deepseek-ai/dsh-fs": "workspace:^",
     "@deepseek-ai/dsh-launch-environment": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
@@ -42,12 +44,14 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.84.2",
     "@deepseek-ai/schemastery": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-attachment": "workspace:^",
+    "@deepseek-ai/dsh-authorization": "workspace:^",
     "@deepseek-ai/dsh-credentials": "workspace:^",
+    "@deepseek-ai/dsh-fs": "workspace:^",
     "@deepseek-ai/dsh-launch-environment": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",

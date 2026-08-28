@@ -22,7 +22,7 @@ Status: implemented
 
 会话 fork 可以结束于开放轮次之外的任意稳定事件位置，而不限于 `turn/end`。这样，默认 fork 会保留独立标题和其他插件所属的纯日志记录，同时仍拒绝在活跃执行过程中截断前缀。
 
-历史上的[通用轮次封闭决策](../../archived/architecture/2026-06-15-turn-enclosure-invariant.md)如今只适合用于解释为何曾引入合成机制。[上下文注入决策](../architecture/2026-07-24-separate-context-injection-from-turn-execution.md)确立了当前语义：一个轮次表示一次模型循环执行。[排队手动压缩决策](../feature/2026-07-30-queued-manual-compaction.md)将该规则应用于持久多事件标记对，并拥有其标记与接纳语义。
+历史上的[通用轮次封闭决策](../../archived/architecture/2026-06-15-turn-enclosure-invariant.md)如今只适合用于解释为何曾引入合成机制。[上下文注入决策](../architecture/2026-07-24-separate-context-injection-from-turn-execution.zh.md)确立了当前语义：一个轮次表示一次模型循环执行。[排队手动压缩决策](../feature/2026-07-30-queued-manual-compaction.zh.md)将该规则应用于持久多事件标记对，并拥有其标记与接纳语义。
 
 ## 曾考虑的替代方案
 
@@ -36,7 +36,7 @@ Status: implemented
 
 ## 验证
 
-核心不变量测试会接受轮次之间的未知插件事件，同时继续拒绝位于该处的内置执行事件。钩子、plan-mode、Code Mode 分发和审批的不变量配套组件会在没有开放轮次时拒绝其执行作用域事件；压缩配套组件则另外接受轮次之间平衡的 `turn: null` 手动标记对，并要求数字 owner匹配一个开放轮次。会话标题服务测试会在并发刷新、拒绝已脱离会话和接受最新修订的场景下，固定一个直接追加的回退事件。JSONL 和 SQLite 往返测试会通过持久化生命周期排空保留追加在 `turn/end` 之后的标题；fork 测试会保留独立纯日志尾部，同时拒绝位于开放轮次内的边界。一个无密钥、经完整组装的 ACP（Agent Client Protocol）快照会将模型生成的标题延迟到 `turn/end` 之后，并固定一个不含合成轮次的独立提供方标题。生成的 API 和类型等价性目录不含任何已移除符号。
+核心不变量测试会接受轮次之间的未知插件事件，同时继续拒绝位于该处的内置执行事件。钩子、plan-mode、PTC mode 分发和审批的不变量配套组件会在没有开放轮次时拒绝其执行作用域事件；压缩配套组件则另外接受轮次之间平衡的 `turn: null` 手动标记对，并要求数字 owner匹配一个开放轮次。会话标题服务测试会在并发刷新、拒绝已脱离会话和接受最新修订的场景下，固定一个直接追加的回退事件。JSONL 和 SQLite 往返测试会通过持久化生命周期排空保留追加在 `turn/end` 之后的标题；fork 测试会保留独立纯日志尾部，同时拒绝位于开放轮次内的边界。一个无密钥、经完整组装的 ACP（Agent Client Protocol）快照会将模型生成的标题延迟到 `turn/end` 之后，并固定一个不含合成轮次的独立提供方标题。生成的 API 和类型等价性目录不含任何已移除符号。
 
 ## 后果
 

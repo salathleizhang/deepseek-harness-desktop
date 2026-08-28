@@ -18,6 +18,7 @@
 
 import { Fragment, createElement } from 'react'
 import type { Key, ReactNode } from 'react'
+import clsx from 'clsx'
 import type * as Md from 'mdast'
 import type {} from 'mdast-util-math'
 import { normalizeUri } from 'micromark-util-sanitize-uri'
@@ -29,9 +30,15 @@ import css from './MarkdownText.module.css'
 /** Copy-button labels forwarded to fence CodeBlocks (this package is cordis-free, so copy arrives via props). */
 export interface MarkdownCodeLabels {
   /** Copy-button idle label. */
-  copyLabel?: string | undefined
+  copyLabel: string
   /** Copy-button label during the post-copy confirmation window. */
-  copiedLabel?: string | undefined
+  copiedLabel: string
+}
+
+/** Localized chrome for a Markdown document. */
+export interface MarkdownLabels {
+  code: MarkdownCodeLabels
+  footnotes: string
 }
 
 function sanitizeUrl(url: string): string {
@@ -119,10 +126,12 @@ export interface MarkdownFileMentions {
  * numbering accumulated in document order while references render.
  */
 export interface MarkdownRenderContext {
-  /** Streaming arm: fences render plain and TeX stays literal. */
+  /** Streaming arm: fences highlight incrementally as they grow; TeX (including ```math fences) stays literal until the settled pass. */
   readonly streaming: boolean
   /** Localized fence copy-button labels. */
-  readonly codeLabels: MarkdownCodeLabels | undefined
+  readonly labels: MarkdownLabels
+  /** Inside a blockquote's children: tables there always fill the quote's width. */
+  readonly inBlockquote?: boolean
   /** Inline-code file mentions; absent wherever no opener vocabulary exists. */
   readonly fileMentions: MarkdownFileMentions | undefined
   /** Inside an anchor's children: interactive mentions must not nest there. */
@@ -213,7 +222,10 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
     case 'blockquote':
       return (
         <blockquote key={key}>
-          {wrapBlockChildren(renderChildren(node.children, context).filter(child => child !== null), true)}
+          {wrapBlockChildren(
+            renderChildren(node.children, { ...context, inBlockquote: true }).filter(child => child !== null),
+            true,
+          )}
         </blockquote>
       )
     case 'thematicBreak':
@@ -322,9 +334,15 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
       // CodeBlock's display trim removes; feeding the bare value would make
       // that trim eat a REAL trailing blank line inside the fence instead.
       code={`${node.value}\n`}
-      lang={context.streaming ? undefined : lang}
-      copyLabel={context.codeLabels?.copyLabel}
-      copiedLabel={context.codeLabels?.copiedLabel}
+      lang={lang}
+      // Streaming keys are source offsets, stable while the fence grows, so
+      // the CodeBlock instance (and its incremental highlight session)
+      // survives every chunk. A fence whose info string is still mid-chunk
+      // has no content yet and took the empty-fence arm above, so `lang`
+      // here is final: it can never re-resolve to a different grammar.
+      streaming={context.streaming}
+      copyLabel={context.labels.code.copyLabel}
+      copiedLabel={context.labels.code.copiedLabel}
     />
   )
 }
@@ -393,8 +411,23 @@ function renderListItem(
 function renderTable(node: Md.Table, key: Key, context: MarkdownRenderContext): ReactNode {
   const align = node.align ?? null
   const [headRow, ...bodyRows] = node.children
+  const columns = align === null ? headRow?.children.length ?? 0 : align.length
+  // Four or more columns read as a comparison matrix: the block keeps the
+  // table at natural width and exposes the stable `md-table-wide` hook so a
+  // hosting layout (the chat transcript) can widen it past the message
+  // column. Narrower tables — and any table inside a blockquote — fill the
+  // column and wrap instead (deepsuite chat TableWrapper parity).
+  const wide = columns >= 4 && context.inBlockquote !== true
   return (
-    <div key={key} className={css.tableScroll}>
+    // Wide tables rest with overflow-x hidden (the hover-revealed bar in
+    // MarkdownText.module.css), which drops Chromium's implicit scroller
+    // focusability — the explicit tabindex keeps them keyboard-reachable,
+    // and :focus-visible restores scrolling.
+    <div
+      key={key}
+      className={clsx(css.tableScroll, wide ? 'md-table-wide' : css.tableFill)}
+      tabIndex={wide ? 0 : undefined}
+    >
       <table>
         {headRow !== undefined && <thead>{renderTableRow(headRow, 'th', align, 0, context)}</thead>}
         {bodyRows.length > 0 && (
@@ -576,7 +609,7 @@ export function renderFootnoteSection(context: MarkdownRenderContext): ReactNode
   if (items.length === 0) return null
   return (
     <section key="footnotes" data-footnotes className="footnotes">
-      <h2 id="footnote-label" className="sr-only">Footnotes</h2>
+      <h2 id="footnote-label" className="sr-only">{context.labels.footnotes}</h2>
       <ol>{items}</ol>
     </section>
   )

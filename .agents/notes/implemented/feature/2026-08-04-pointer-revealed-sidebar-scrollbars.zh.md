@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-`SidebarRoot` 跟踪整列上的指针，只要指针不在列内就给根元素挂上 `quietBars` 类。该类选中的规则把 ui-theme 的那组间接变量——`--dsh-scrollbar-thumb` 与 `--dsh-scrollbar-thumb-hover`——重新绑定为 `transparent`，于是嵌套在这一列下的每个滚动区域都不绘制滑块。今天这样的区域只有会话列表；将来新增的区域会直接继承这一行为，而不需要逐个接入。
+`SidebarRoot` 跟踪整列上的指针，只要指针不在列内就给根元素挂上 `quietBars` 类。该类选中的规则把 ui-theme 的那组间接变量——`--dsh-scrollbar-thumb` 与 `--dsh-scrollbar-thumb-hover`——重新绑定为 `transparent`，于是嵌套在这一列下的每个滚动区域都不绘制滑块。只有会话列表占用这样的区域；将来新增的区域会直接继承这一行为，而不需要逐个接入。
 
 拖尾是 `SCROLLBAR_LINGER_MS = 2000`：离开会启动一个定时器，进入会取消尚未触发的定时器，只有定时器真正触发才会把类加回去。指针越过列边界又折返时——绕过一个 portal 菜单，或是奔向某一行时冲过了头——不会看到滑块闪动。
 
@@ -18,7 +18,7 @@ Status: implemented
 
 承载指针的是整列，而不是列表。奔向滚动条的指针会先经过 logo 行、New Session 胶囊和搜索框，所以只在列表上显示，会让滚动条等到指针已经落在行中间时才出现。
 
-`transparent` 正是让这次显示不触发任何布局的原因。列表上的 `scrollbar-gutter: stable` 存在的意义就是让行永不移动（见[空槽 Agent Note](../bug-fix/2026-07-28-themed-scrollbars-and-reserved-gutter.md)）；重新绑定的只是颜色，那份预留始终有效，所以滑块出现在列表本就为它留出的空间里。
+`transparent` 正是让这次显示不触发任何布局的原因。列表上的 `scrollbar-gutter: stable` 存在的意义就是让行永不移动（见[空槽 Agent Note](../bug-fix/2026-07-28-themed-scrollbars-and-reserved-gutter.zh.md)）；重新绑定的只是颜色，那份预留始终有效，所以滑块出现在列表本就为它留出的空间里。
 
 选择这组间接变量而不是给列表加规则，是因为这组变量正是 ui-theme 写明的重新绑定约定：一次声明同时作用于两条渲染路径（WebKit 伪元素与 Firefox 的 `scrollbar-color`），而自定义属性会继承——这正是让整列、而不是列内每个滚动区域，成为该状态所有者的原因。
 
@@ -45,7 +45,7 @@ Status: implemented
 - 用键盘或触摸拖动滚动的列表，在拖尾结束后不显示滑块，因为这两种方式都不会把指针留在列上。e2e 会钉住这一点，而不只是把它写下来。
 - 拖动滑块本身移出列不会在拖动中途把它隐藏：滚动条会接管指针捕获，按住按键期间页面收不到 `pointermove`。已在 Chromium 实测——指针拖到列右侧 900px 处、超过拖尾窗口后，滚动条依然绘制并继续滚动。
 - 冷启动时该列处于静默状态，直到指针第一次移到它上面为止。页面加载时就停在那里的指针在移动之前不会触发任何事件，这是浏览器的规则，而非这个外壳的。
-- 嵌套在列内、为自身抬升层级把这组变量重新绑定到 l2 的抬升表面，会覆盖静默状态并继续绘制自己的滚动条。今天侧边栏内没有这样的表面。
+- 嵌套在列内、为自身抬升层级把这组变量重新绑定到 l2 的抬升表面，会覆盖静默状态并继续绘制自己的滚动条。侧边栏内没有这样的表面。
 - 外壳的 DOM 现在带有一个状态类，因此 ui-sidebar 的外壳快照会钉住 `quietBars`，默认状态出现回归时表现为快照 diff，而不是需要有人从截图里看出来的东西。
 
 ## 测试
@@ -56,7 +56,7 @@ Status: implemented
 
 `apps/web/tests/sidebar-scrollbar.e2e.ts` 是两半在真实引擎里汇合的地方。它在每次读取颜色前先把指针停在列表上，因为一个从不移动鼠标的场景全程测到的都是静默状态，会在未实际验证目标行为的情况下通过。随后它自己的用例把指针移开，断言在 leave 当下滑块仍在绘制，轮询直到它解析为 `rgba(0, 0, 0, 0)`，在该状态下重新测量几何以证明滚动条隐藏期间那份预留依然生效，并以编程方式滚动列表——键盘或触摸拖动所做的事——来钉住无指针滚动不绘制任何滑块。提交的 golden 记录了两套调色板下、两个指针位置上的滑块颜色。
 
-这条 e2e 的对照是一次 mutation，而它需要插件自己的产物：把 `quietBars` 从外壳中去掉，先重新构建 `@deepseek-ai/dsh-client-ui-sidebar`、之后再跑 `build:web`，该用例会因为滑块解析为 `rgb(229, 229, 229)`、而期望 `rgba(0, 0, 0, 0)` 而变红。只重跑 `build:web` 用的是陈旧产物，即使改动已被删除也照样通过，这正是[空槽 Agent Note](../bug-fix/2026-07-28-themed-scrollbars-and-reserved-gutter.md)记录过的陷阱。
+这条 e2e 的对照是一次 mutation，而它需要插件自己的产物：把 `quietBars` 从外壳中去掉，先重新构建 `@deepseek-ai/dsh-client-ui-sidebar`、之后再跑 `build:web`，该用例会因为滑块解析为 `rgb(229, 229, 229)`、而期望 `rgba(0, 0, 0, 0)` 而变红。只重跑 `build:web` 用的是陈旧产物，即使改动已被删除也照样通过，这正是[空槽 Agent Note](../bug-fix/2026-07-28-themed-scrollbars-and-reserved-gutter.zh.md)记录过的陷阱。
 
 拓宽后的门禁也有自己的对照，每个都是对真实样式表的一处声明改动：把 `transparent` 与 l2 的 hover 混用，以及把 l2 token 包进 `color-mix(…)`，都会让这条成对断言变红。
 

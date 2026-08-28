@@ -1,13 +1,15 @@
 /** Web subagent catalog, navigation, and addressed-session composer owner. */
-import type {
-  ClientContext, SessionId, SubagentAddress,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { SubagentCatalogAction, type SubagentCatalogInjected } from './SubagentCatalogAction.tsx'
+import { SubagentHeaderLineage, type SubagentCatalogInjected } from './SubagentHeaderLineage.tsx'
 import {
   SubagentReadOnlyComposer, type SubagentReadOnlyMatch,
 } from './SubagentReadOnlyComposer.tsx'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { en, NS, zh, type SubagentKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -18,8 +20,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 export type {
-  SubagentCatalogActionProps, SubagentCatalogInjected,
-} from './SubagentCatalogAction.tsx'
+  SubagentCatalogInjected, SubagentHeaderLineageProps,
+} from './SubagentHeaderLineage.tsx'
 export type {
   SubagentReadOnlyComposerProps, SubagentReadOnlyMatch,
 } from './SubagentReadOnlyComposer.tsx'
@@ -32,7 +34,10 @@ function selectReadOnlySubagent(owner: ComposerChainProps): SubagentReadOnlyMatc
   const subagent = owner.session?.subagent
   if (subagent === undefined || subagent === null) return null
   if (subagent.address.mode === 'one-shot') return { reason: 'one-shot' }
-  if (subagent.parentAvailable) return null
+  // The parent catalog is fetched ahead of the selected Session. Until it
+  // resolves, leave the normal disabled composer in place instead of briefly
+  // claiming that the parent is offline.
+  if (subagent.parentAvailable !== false) return null
   // A RUNNING parent-offline continuable child keeps the default composer:
   // its input is disabled there, but the same primary Stop stays available so
   // the child can be interrupted. Once it stops, this takeover returns.
@@ -58,14 +63,12 @@ export function apply(ctx: ClientContext): void {
     },
   })
   ctx.slots.inject(
-    'conversation.session.header.actions',
+    'conversation.session.header.lineage',
     () => ctx.slots.register({
-      name: 'conversation.session.header.actions',
-      id: 'subagent-catalog',
-      order: 10,
+      name: 'conversation.session.header.lineage',
       locale: NS,
       inject: catalogActions,
-    }, SubagentCatalogAction),
+    }, SubagentHeaderLineage),
   )
   ctx.slots.inject(
     'conversation.composer',

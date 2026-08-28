@@ -8,7 +8,8 @@ import { StrictMode } from 'react'
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type * as Md from 'mdast'
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { MarkdownText } from './markdown-test-components.tsx'
+import { markdownLabels } from './labels.client.ts'
 import {
   collectReferenceTargets, createReferenceTargets, renderBlocks, renderFootnoteSection,
 } from '../src/markdown/render.tsx'
@@ -19,7 +20,7 @@ afterEach(cleanup)
 function makeContext(): MarkdownRenderContext {
   return {
     streaming: false,
-    codeLabels: undefined,
+    labels: markdownLabels,
     fileMentions: undefined,
     targets: createReferenceTargets(),
     footnoteOrder: [],
@@ -99,6 +100,14 @@ describe('renderBlocks over hand-built trees', () => {
     expect(container.querySelector('li')?.textContent).toBe('solo')
     expect(container.querySelector('th')?.getAttribute('style')).toBeNull()
     expect(container.querySelector('td')?.textContent).toBe('short')
+  })
+
+  it('renders a rowless align-less table as an empty fill wrapper', () => {
+    // Zero columns is below the wide threshold, so the fill arm applies.
+    const container = renderNodes([{ type: 'table', children: [] }])
+    const wrapper = container.querySelector('table')?.parentElement
+    expect(wrapper?.className).not.toContain('md-table-wide')
+    expect(container.querySelector('table')?.childElementCount).toBe(0)
   })
 
   it('pads rows against the alignment width with empty cells', () => {

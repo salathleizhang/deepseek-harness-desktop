@@ -8,7 +8,7 @@ Status: implemented
 
 超时处理在各个承载工具的能力之间逐渐分化，而且这种分化并非表面的：同一套逻辑被以三种方式重新实现，各自带有微妙的正确性负担。
 
-- **bash**（当时位于 bash-local 实现的 `run.ts`）在进程管道内部有一套完整、正确的超时实现：一个经配置钳位的 `timeoutMs`，两个独立触发器（用于超时的 `killTimer` 和用于上游取消的 `onAbort` 监听器），各自调用同一个 `kill()` 闭包对进程组执行 SIGTERM→宽限期→SIGKILL 升级，以及两个正交的结果布尔值（`timedOut`、`aborted`）独立锁存。经此次整合之后，这套管道——今天位于 [packages/subprocess/subprocess-local/src/spawn.ts](../../../../packages/subprocess/subprocess-local/src/spawn.ts)——只响应中止；[packages/shell/bash-local/src/index.ts](../../../../packages/shell/bash-local/src/index.ts) 拥有融合的 deadline 以及 `timedOut`/`aborted` 分类。
+- **bash**（当时位于 bash-local 实现的 `run.ts`）在进程管道内部有一套完整、正确的超时实现：一个经配置钳位的 `timeoutMs`，两个独立触发器（用于超时的 `killTimer` 和用于上游取消的 `onAbort` 监听器），各自调用同一个 `kill()` 闭包对进程组执行 SIGTERM→宽限期→SIGKILL 升级，以及两个正交的结果布尔值（`timedOut`、`aborted`）独立锁存。经此次整合之后，这套管道——位于 [packages/subprocess/subprocess-local/src/spawn.ts](../../../../packages/subprocess/subprocess-local/src/spawn.ts)——只响应中止；[packages/shell/bash-local/src/index.ts](../../../../packages/shell/bash-local/src/index.ts) 拥有融合的 deadline 以及 `timedOut`/`aborted` 分类。
 - **web_fetch**（[packages/web/web-fetch-http/src/provider.ts](../../../../packages/web/web-fetch-http/src/provider.ts)）有一套正确但*手写*的超时：构造一个 `AbortController`，连接 `setTimeout(() => controller.abort(new WebError(…, 'WEB_FETCH_TIMEOUT')))`，手动添加和移除上游信号监听器，在 `finally` 中清除定时器，并在 `translateAbortOrNetwork` 辅助函数中从 `signal.reason` 恢复超时原因（因为 reader 只抛出裸 `AbortError`）。
 - **web_search**（[packages/web/tool-web/src/search.ts](../../../../packages/web/tool-web/src/search.ts)）**完全没有超时**：`WebSearchRequest`（[packages/web/web/src/types.ts](../../../../packages/web/web/src/types.ts)）不携带 `timeoutMs` 字段，各提供方的 `search()` 只转发 `exec.signal`。（web_search 在本次设计中保持无超时——见「后果」。）
 
@@ -103,7 +103,7 @@ export function timeoutOf(x: AbortSignal | { reason?: unknown }, code?: string):
 - `AbortSignal.any` 和 `using`/`Symbol.dispose` 在此首次进入本仓库（Node ≥ 24 基线，已满足）。
 - 模型流现在共享一个可重启的定时器约定，不会把滑动的空闲间隔变成总调用截止时间，也不会计入消费方思考时间。能够观察到带外传输活动的适配器可以对尚未结算的 demand 调用 `pulse()`；被屏蔽的活动对 watchdog 仍不可见。该原语仍然只做通知；适配器测试证明其传输观察到稳定信号并终止。
 
-以下内容不在本次范围内，列出以标明边界：`web_search` 可以在其工具 schema 和快照覆盖规划完成后获得可选的面向模型的 `timeout_ms`；基于 ripgrep 的文件系统发现工具（[打包的 ripgrep 搜索](2026-08-01-packaged-ripgrep-search.md)）通过 `dsh-tool-call-timeout-policy` 和 `exec.signal` 消费同样的提供方自有 deadline 形状；`tools/execute` waterfall（瀑布式事件）中间件可以通过驱动 `exec.signal` 为每次工具调用设置默认 deadline——那将是一个*消费*本库的插件，仍然只做通知，硬终止仍是各能力自己的事。
+以下内容不在本次范围内，列出以标明边界：`web_search` 可以在其工具 schema 和快照覆盖规划完成后获得可选的面向模型的 `timeout_ms`；基于 ripgrep 的文件系统发现工具（[打包的 ripgrep 搜索](2026-08-01-packaged-ripgrep-search.zh.md)）通过 `dsh-tool-call-timeout-policy` 和 `exec.signal` 消费同样的提供方自有 deadline 形状；`tools/execute` waterfall（瀑布式事件）中间件可以通过驱动 `exec.signal` 为每次工具调用设置默认 deadline——那将是一个*消费*本库的插件，仍然只做通知，硬终止仍是各能力自己的事。
 
 ## 曾考虑的替代方案
 

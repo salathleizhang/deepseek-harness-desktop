@@ -12,7 +12,7 @@
 
 每个操作首先将用户提供的路径解析为不透明的后端目标。消费方可以显示 `displayPath`，但禁止解析 `targetKey`（一个品牌化的不透明 id），也不得假设它是本地绝对路径。
 
-与文件系统共享执行世界的消费方通过提供方获取跨能力坐标，而不是解释该身份：`processPath(target)` 返回子进程可以打开的规范化绝对路径，`fileUrl(target)` 返回采用提供方平台语法的 `file:` URI，`contains(parent, child)` 则检查规范化身份相等或后代包含关系。
+与文件系统共享执行世界的消费方通过提供方获取跨能力坐标，而不是解释该身份：`processPath(target)` 返回子进程可以打开的规范化绝对路径；`processPathFromHostPath(hostPath)` 只在该执行世界共享相应宿主文件时映射其绝对路径；`fileUrl(target)` 返回采用提供方平台语法的 `file:` URI；`contains(parent, child)` 检查规范化身份相等或后代包含关系。
 
 ```ts type-equiv
 /**
@@ -271,11 +271,11 @@ type FsErrorCode =
 
 ## 文件 IO 不设超时
 
-`read`/`write`/`edit` **不**接受 `timeoutMs`，提供方约定也不设置截止时间——不同于 bash 与 web（它们消费 [`@deepseek-ai/dsh-timeout`](../../packages/util/timeout/README.md)）以及 subprocess 支撑的 `glob`/`grep`（其声明的 `timeoutMs` 由 `@deepseek-ai/dsh-tool-call-timeout-policy` 强制执行）：那些是进程支撑的，截止时间可以真正终止工作。本地系统调用至多是尽力中止——超时无法迫使进行中的 `fsync`/`rename` 停下，因此这里的 `timeoutMs` 会成为 seam 无法强制执行的截止时间，而且恰好落在「显式优于隐式」禁止隐式默认值的位置。取消仍通过工具执行 signal 传播，在系统调用边界尽力中止。
+`read`/`write`/`edit` **不**接受 `timeoutMs`，提供方约定也不设置截止时间——不同于 bash 与 web（它们消费 [`@deepseek-ai/dsh-timeout`](../../packages/util/timeout/README.zh.md)）以及 subprocess 支撑的 `glob`/`grep`（其声明的 `timeoutMs` 由 `@deepseek-ai/dsh-tool-call-timeout-policy` 强制执行）：那些是进程支撑的，截止时间可以真正终止工作。本地系统调用至多是尽力中止——超时无法迫使进行中的 `fsync`/`rename` 停下，因此这里的 `timeoutMs` 会成为 seam 无法强制执行的截止时间，而且恰好落在「显式优于隐式」禁止隐式默认值的位置。取消仍通过工具执行 signal 传播，在系统调用边界尽力中止。
 
 ## 服务与插件
 
-`FileSystem`（`ctx.fs`，abstract）拥有提供方原语：`resolve`、`processPath`、`fileUrl`、`contains`、`stat`、`lstat`、`readText`、`streamText`、`readBytes`、`listDir`、`writeText` 与 `editText`。`dsh-fs-observation-policy` **不注册服务**——它是一个通过 `fs/*` 事件门禁添加策略的插件：根据未见/缺失/存在状态对写入与编辑意图 waterfall 作出决策，并记录 `FsObservation` 值。执行器是 `dsh-tool-fs`：它通过 `ctx.fs` 读取/写入/编辑，分发 waterfall，并 emit 记录事件。下方生成的 [`ctx.fs` 小节](#ctxfs--filesystem-abstract-seam) 展示确切的 `ctx.fs` 签名。
+`FileSystem`（`ctx.fs`，abstract）拥有提供方原语：`resolve`、`processPath`、`processPathFromHostPath`、`fileUrl`、`contains`、`stat`、`lstat`、`readText`、`streamText`、`readBytes`、`listDir`、`writeText` 与 `editText`。`dsh-fs-observation-policy` **不注册服务**。它通过 `fs/*` 事件门禁添加策略，根据未见、缺失或存在状态对写入与编辑意图 waterfall 作出决策，并记录 `FsObservation` 值。执行器是 `dsh-tool-fs`：它通过 `ctx.fs` 读取、写入或编辑，分发 waterfall，并 emit 记录事件。下方生成的 [`ctx.fs` 小节](#ctxfs--filesystem-abstract-seam) 展示确切的 `ctx.fs` 签名。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -283,7 +283,7 @@ type FsErrorCode =
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxfs--filesystem-abstract-seam"></a>
 
@@ -312,6 +312,16 @@ abstract resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): P
  * @returns an absolute path in the backend's execution world.
  */
 abstract processPath(target: FsTarget): string
+
+/**
+ * Map an absolute path from the harness host into this filesystem's
+ * execution world when both paths identify the same file. The base provider
+ * exposes no mapping; host-backed or explicitly shared backends override it.
+ * @param hostPath - absolute path in the harness host filesystem.
+ * @returns the process path for the same file, or undefined when this
+ *   execution world cannot read that host file.
+ */
+processPathFromHostPath(hostPath: string): string | undefined
 
 /**
  * Return the canonical `file:` URI for a target in this filesystem's
@@ -425,9 +435,9 @@ abstract writeText( target: FsTarget, content: string, expected?: FsWriteIntent,
 abstract editText( target: FsTarget, edit: FsEditRequest, expected?: { version: FsVersion }, signal?: AbortSignal, sandboxPolicy?: SandboxExecutionPolicy, ): Promise<FsEditOutcome>
 ```
 
-Types: [SandboxExecutionPolicy](sandbox.md)
+Types: [SandboxExecutionPolicy](sandbox.zh.md)
 
-Source: [`packages/fs/fs/src/index.ts:86`](../../packages/fs/fs/src/index.ts)
+Source: [`packages/fs/fs/src/index.ts`](../../packages/fs/fs/src/index.ts)
 
 <a id="fs-events"></a>
 
@@ -450,7 +460,7 @@ Single-slot decision for the next FileSystem.editText. Calling `next()` yields a
 'fs/edit-intent'(target: FsTarget, actor: object | undefined, next: () => { version: FsVersion } | undefined | Promise<{ version: FsVersion } | undefined>): Promise<{ version: FsVersion } | undefined>
 ```
 
-Source: [`packages/fs/fs/src/index.ts:66`](../../packages/fs/fs/src/index.ts)
+Source: [`packages/fs/fs/src/index.ts`](../../packages/fs/fs/src/index.ts)
 
 <a id="fsobserved--emit"></a>
 
@@ -471,7 +481,7 @@ Record an authoritative positive or negative observation. Listeners must be sync
 'fs/observed'(target: FsTarget, observation: FsObservation, actor: object | undefined): void
 ```
 
-Source: [`packages/fs/fs/src/index.ts:76`](../../packages/fs/fs/src/index.ts)
+Source: [`packages/fs/fs/src/index.ts`](../../packages/fs/fs/src/index.ts)
 
 <a id="fswrite-intent--waterfall"></a>
 
@@ -491,5 +501,5 @@ Single-slot decision for the next FileSystem.writeText. Calling `next()` yields 
 'fs/write-intent'(target: FsTarget, actor: object | undefined, next: () => FsWriteIntent | undefined | Promise<FsWriteIntent | undefined>): Promise<FsWriteIntent | undefined>
 ```
 
-Source: [`packages/fs/fs/src/index.ts:58`](../../packages/fs/fs/src/index.ts)
+Source: [`packages/fs/fs/src/index.ts`](../../packages/fs/fs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

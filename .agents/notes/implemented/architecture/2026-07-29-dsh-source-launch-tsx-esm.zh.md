@@ -14,7 +14,7 @@ Status: implemented
 
 ## 决策
 
-`dsh` 的 TUI、Web 与无头源码启动运行 `node --import tsx/esm`：由 tsx 的 ESM-only 钩子同时负责 TypeScript 转换与 tsconfig `paths` 投影。根目录的 `dsh` 脚本直接从仓库根目录使用同一启动方式；产物生成是独立操作，由[源码启动与构建分离决策](../simplification/2026-08-12-separate-source-launch-from-build.md)规定。CJS 钩子保持关闭，因为 CLI（命令行界面）源码图是纯 ESM；实测运行时启动至 TUI banner 耗时约 0.7s，对比完整 tsx 默认形态约 1.1s、已移除的原生链约 0.75s。
+`dsh` 的 TUI、Web 与无头源码启动运行 `node --import tsx/esm`：由 tsx 的 ESM-only 钩子同时负责 TypeScript 转换与 tsconfig `paths` 投影。根目录的 `dsh` 脚本直接从仓库根目录使用同一启动方式；产物生成是独立操作，由[源码启动与构建分离决策](../simplification/2026-08-12-separate-source-launch-from-build.zh.md)规定。CJS 钩子保持关闭，因为 CLI（命令行界面）源码图是纯 ESM；实测运行时启动至 TUI banner 耗时约 0.7s，对比完整 tsx 默认形态约 1.1s、已移除的原生链约 0.75s。
 
 `scripts/tspath-loader.ts` 与 `apps/cli/src/tsconfig-paths-loader.ts` 已删除。随之消失的还有该 loader「仅为已声明运行时依赖映射 workspace import」的运行时规则——tsx 无条件应用 `paths` 映射。声明完整性现在仅由静态门禁保障：配置的裸插件走 `verify-cordis-config`，manifest（元数据清单）走 workspace constraints。（该运行时规则确实发现过真实缺陷：`dsh-plan-mode` 与 `dsh-tool-jobs` 导入 `@deepseek-ai/dsh-llm` 却只声明在 devDependencies；后已修复。）
 
@@ -26,7 +26,7 @@ node-compat CI 矩阵（Node 22.19 与 26）新增 `dsh-source-launch-smoke`（`
 
 **把源码图改成 erasable-only 以适配 Node 26 strip 模式。** 拒绝：参数属性与值 namespace 遍布 vendor 的 Cordis/cosmokit/loader/schemastery；改写是无界 churn，且每次 vendor sync 都要重做。
 
-**仓库自有的同线程 loader（`module.registerHooks()` + esbuild 或 `@swc/core` 转换）。** 暂拒：原型实测约 0.45s（esbuild 路径未端到端验证；SWC 在 `vendor/hmr` 的装饰器 + namespace 合并上两种装饰器模式都会崩），但这意味着要自行负责转换正确性，以及实现 tsx 已经提供的解析钩子。仅当约 0.3s 的差距成为真实成本时再重新考虑；性能分析证据在 PR 讨论中。
+**仓库自有的同线程 loader（`module.registerHooks()` 加 esbuild 或 `@swc/core` 转换）。**不予采纳：原型实测约 0.45s，而 esbuild 路径缺少端到端验证，SWC 在两种装饰器模式下都会因 `vendor/hmr` 的装饰器与 namespace 合并失败。该方案还会让仓库负责转换正确性和 tsx 已经提供的解析钩子。仅当实测约 0.3s 的差距成为实质成本时再重新考虑。
 
 **Node 26 运行构建产物 `lib/`，24 保留原生。** 拒绝：在最新 Node 版本线上失去零构建开发循环，且混淆源码面与产物面。
 

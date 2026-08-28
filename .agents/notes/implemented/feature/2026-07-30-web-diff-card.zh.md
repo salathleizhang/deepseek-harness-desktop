@@ -6,11 +6,11 @@ Status: implemented
 
 ## Problem
 
-`write` 和 `edit` 工具为其 call 和 result 都声明了 `card: 'diff'`（[render-intent union](../architecture/2026-07-02-tool-render-intent-union.md)）：call view 携带从参数推导的预期改动，result view 携带已应用的上下文 hunk（`FileDiff[]`，由 `packages/fs/tool-fs/src/diff.ts` 计算，并持久化在 result `meta` 中以便回放重建）。该视图早已抵达浏览器 —— host、connection、runtime 将它作为 `callView`/`resultView` 投递到 `ConversationSnapshot` —— TUI 也已将其渲染为按文件分组的 `+`/`-` 块加 `+A -R · N file(s)` 页脚。
+`write` 和 `edit` 工具为其 call 和 result 都声明了 `card: 'diff'`（[render-intent union](../architecture/2026-07-02-tool-render-intent-union.zh.md)）：call view 携带从参数推导的预期改动，result view 携带已应用的上下文 hunk（`FileDiff[]`，由 `packages/fs/tool-fs/src/diff.ts` 计算，并持久化在 result `meta` 中以便回放重建）。该视图早已抵达浏览器 —— host、connection、runtime 将它作为 `callView`/`resultView` 投递到 `ConversationSnapshot` —— TUI 也已将其渲染为按文件分组的 `+`/`-` 块加 `+A -R · N file(s)` 页脚。
 
 Web 客户端忽略了它。write/edit 调用落到 `GenericToolCard`，其行从原始工具参数推导，详情面板把 result 的 content block 摊平进一个 `<pre>`。`diffs` 载荷 —— result 的全部意义 —— 被丢弃，于是一次文件改动读起来只是一行确认、看不到任何改动。
 
-这是把 [terminal 卡片](2026-07-28-web-terminal-card.md) 对 `diff` 这一支重做一遍：那次改动让 Web 客户端成为 `terminal` 渲染意图的消费者；这次让它成为 `diff` 渲染意图的消费者，复用同一套四层结构。
+这是把 [terminal 卡片](2026-07-28-web-terminal-card.zh.md) 对 `diff` 这一支重做一遍：那次改动让 Web 客户端成为 `terminal` 渲染意图的消费者；这次让它成为 `diff` 渲染意图的消费者，复用同一套四层结构。
 
 ## Decision
 
@@ -26,11 +26,11 @@ Web 客户端忽略了它。write/edit 调用落到 `GenericToolCard`，其行�
 
 几何、圆角、字体镜像 `CodeBlock`/`TerminalBlock`，使 diff 卡片、terminal 卡片、代码块读起来是一家；`white-space: pre` 加横向滚动是刻意的分歧。复制控件浮在卡片右上角，而非占据自己的 banner 行，因为只放一个复制按钮的 banner 会在第一行 diff 上方画出一条空带 —— TUI 的 diff 卡片也没有 banner，只有页脚。
 
-chat 行把 diff 常驻渲染在路径链接摘要之下，上限 `CHAT_DIFF_MAX_LINES`（8），对应面板的 16 —— 与 [terminal 卡片](2026-07-28-web-terminal-card.md#inline-output-in-the-chat-row-reverses-a-stated-convention)记录的内联输出决策、以及流内表面与阅读表面的同一划分一致。write/edit 行是单文件的，所以它的摘要既是可打开的路径链接，其 diff 卡片又展开；两者共存，因为卡片不是路径的参数体。
+chat 行把 diff 常驻渲染在路径链接摘要之下，上限 `CHAT_DIFF_MAX_LINES`（8），对应面板的 16 —— 与 [terminal 卡片](2026-07-28-web-terminal-card.zh.md#inline-output-in-the-chat-row-reverses-a-stated-convention)记录的内联输出决策、以及流内表面与阅读表面的同一划分一致。write/edit 行是单文件的，所以它的摘要既是可打开的路径链接，其 diff 卡片又展开；两者共存，因为卡片不是路径的参数体。
 
 ## Alternatives considered
 
-**并排（双栏）diff。** owner 目前拒绝：它更密但不适合狭窄的 chat 行，目标是与 TUI 单栏统一形式对齐。详情面板里的双栏模式是后续的 props 改动，不是重设计。
+**并排（双栏）diff。**不予采纳：它更密，但不适合狭窄的 chat 行，而所选设计与 TUI 的单栏统一形式一致。详情面板中的双栏模式可以与本卡片设计分开引入。
 
 **git 式行号槽。** `FileDiff` 约定只携带 `{ path, oldText, newText }` —— `structuredPatch` 的 hunk 起始行在 `diff.ts` 里被丢弃，所以没有行号抵达客户端。渲染行号槽需要后端约定改动（携带 `oldStart`/`newStart`）并同步升级 TUI 以保持一致；推迟，使本变更保持为对既有约定的纯 Web 消费。
 
@@ -40,7 +40,7 @@ chat 行把 diff 常驻渲染在路径链接摘要之下，上限 `CHAT_DIFF_MAX
 
 `DiffBlock` 只读 diff view 的字段，因此它是渲染意图所携带内容的纯函数 —— 与产出该视图的 presenter 一样回放安全。没有 diff 能力的 UI 仍得到 bridge 的通用回退；工具的 result 形状没有任何改变。无新增运行时依赖：不同于 terminal 卡片的 `anser`，diff 不需要解析器。
 
-`DiffBlock` 的多文件支路（一张卡、多个路径头）今天没有生产者：`write`/`edit` 每次调用各改一个文件，所以真实卡片显示一个文件带一个或多个 hunk。该支路为将来的多文件改动工具而构建并测试，不是为当前消费者。
+`DiffBlock` 的多文件支路（一张卡、多个路径头）没有已交付生产者：`write`/`edit` 每次调用各改一个文件，所以真实卡片显示一个文件带一个或多个 hunk。该支路为将来的多文件改动工具而构建并测试，不是为当前消费者。
 
 ## Testing
 
@@ -48,10 +48,10 @@ chat 行把 diff 常驻渲染在路径链接摘要之下，上限 `CHAT_DIFF_MAX
 
 `packages/client/ui-tool/tests/diff-card.client.spec.tsx` 钉住每个渲染点的接线：`diffCardModel` 的派生及其每个 null 支路、result hunk 替换 call 时 diff、窗口截断的 call 仍从 result 渲染、chat 行的 diff 体、`FileMutationRow` 的常驻卡片及其路径链接经 host 以 cwd 解析打开、其在 `write` 与 `edit` 下的注册、以及面板的 Output 区。
 
-fixture（`packages/client/connection/src/client/fixture.ts`）携带三个 diff turn，使 `?fixture` 服务与 per-package 接线测试套件在两个渲染点演练全部三个支路：单 hunk 编辑（turn 62，keyed `FileMutationRow`）、新建/写入（turn 63）、多 hunk 编辑（turn 67，一个文件内两处分散 hunk 之间的 `⋯` gap）。built-boot snapshot（`apps/web/tests/built-boot.snapshot.ts`）是启动装配 smoke，只断言图挂载并抵达 chat 内容（`data-sample="bash-global"`）；按其自身约定它不带 diff 行为断言，那由接线套件负责。
+fixture（`packages/client/connection/src/client/fixture.ts`）携带三个 diff turn，使 `?fixture` 服务与 per-package 接线测试套件在两个渲染点演练全部三个支路：单 hunk 编辑（turn 62，keyed `FileMutationRow`）、新建/写入（turn 63）、多 hunk 编辑（turn 67，一个文件内两处分散 hunk 之间的 `⋯` gap）。built-boot 预期输出测试（`apps/web/tests/built-boot.expected.e2e.ts`）是启动装配 smoke，只断言图挂载并抵达 chat 内容（`data-sample="bash-global"`）；按其自身约定它不带 diff 行为断言，那由接线套件负责。
 
 ## Related
 
-- [Web terminal 卡片](2026-07-28-web-terminal-card.md) —— `terminal` 支路的同一套四层结构；本 note 复用其内联输出决策与头尾上限算术。
-- [工具调用呈现的标签化 render-intent union](../architecture/2026-07-02-tool-render-intent-union.md) —— 本改动消费的 `card` 标签词汇；Web 客户端现在也是 `diff` 支路的消费者。
-- [Web 客户端架构](../architecture/2026-07-19-gui-web-client-architecture.md) —— 两个渲染点所处的 slot 与快照分层。
+- [Web terminal 卡片](2026-07-28-web-terminal-card.zh.md) —— `terminal` 支路的同一套四层结构；本 note 复用其内联输出决策与头尾上限算术。
+- [工具调用呈现的标签化 render-intent union](../architecture/2026-07-02-tool-render-intent-union.zh.md) —— 本改动消费的 `card` 标签词汇；Web 客户端现在也是 `diff` 支路的消费者。
+- [Web 客户端架构](../architecture/2026-07-19-gui-web-client-architecture.zh.md) —— 两个渲染点所处的 slot 与快照分层。

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-session-persistence-sqlite",
   "description": "SQLite durable session persistence with physical chunk-row packing",
-  "version": "0.1.0-rc.13",
+  "version": "0.1.0-rc.14",
   "publishConfig": {
     "access": "public"
   },
@@ -28,6 +28,7 @@
   "files": [
     "lib/index.js",
     "lib/invariant.js",
+    "resources/zstd-dictionary.bin",
     "resources/sql/**/*.sql",
     "lib/types/**/*.d.ts"
   ],

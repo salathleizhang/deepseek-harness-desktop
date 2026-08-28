@@ -10,7 +10,7 @@ import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { TodoItem } from '@deepseek-ai/dsh-session'
+import type { TodoItem } from './types.ts'
 // Type-only: resolves ctx.sessionProjections for the optional unit child.
 import type {} from '@deepseek-ai/dsh-session-projection'
 // The `todos` projection-key declaration lives in src/types.ts (its one home);
@@ -135,14 +135,14 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     projectionCtx.sessionProjections.register<'todos', TodoItem[] | null>({
       key: 'todos',
-      schema: todosProjectionSchema,
+      stateSchema: todosProjectionSchema,
       init: () => null,
       apply: (state, event) => {
         if (event.type === 'todo/write') return event.data.todos
         if (event.type === 'turn/start') return null
         return state
       },
-      view: state => state,
+      wire: { viewSchema: todosProjectionSchema, view: state => state },
       stateVersion: 2,
     })
   })

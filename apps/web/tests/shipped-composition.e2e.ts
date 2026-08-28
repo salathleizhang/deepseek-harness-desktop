@@ -1,13 +1,13 @@
 // Boots the shipped Web composition over the built dist this lane already uses
 // and asserts what that composition produces: the model-visible tool catalog
-// and file-reference guidance plus its retry, sandbox, and approval defaults.
+// and file-reference guidance plus its HTTP, retry, sandbox, and approval defaults.
 // No browser and no model call — these are composition facts, and the browser
 // scenarios in this lane cover the surface itself.
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -22,16 +22,17 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { launchWebScaffold, type WebScaffold } from './scaffold.ts'
 
 const FILE_REFERENCE_PROMPT = fileURLToPath(new URL(
-  './snapshots/web-runtime-context/file-reference-prompt.expected.md', import.meta.url,
+  './expected/web-runtime-context/file-reference-prompt.expected.md', import.meta.url,
 ))
 
 /**
  * The catalog the shipped Web composition puts in front of the model, minus the
  * ripgrep-dependent pair below. The absences are deliberate, not incidental
  * gaps: the `cordis_*` toolset executes model-written JavaScript that no
- * sandbox row confines, `web_fetch` chooses its own request target, and
- * `mcp_*` servers spawn outside `ctx.shell`. The composition Agent Note owns the
- * rationale and its sources.
+ * sandbox row confines, and `mcp_*` servers spawn outside `ctx.shell`.
+ * `web_fetch` is present because public-address enforcement and one-shot
+ * approval now confine its model-selected request target. The composition
+ * Agent Note owns the rationale and its sources.
  */
 const EXPECTED_TOOLS = [
   'ask_user_question',
@@ -54,6 +55,7 @@ const EXPECTED_TOOLS = [
   'subagent_fork',
   'todo_write',
   'update_goal',
+  'web_fetch',
   'web_search',
   'workflow',
   'write',
@@ -74,9 +76,15 @@ afterEach(async () => {
   scaffold = undefined
 })
 
-it('assembles the shipped Web catalog, file-reference guidance, retry policy, and confined access default', async () => {
+it('assembles the shipped Web transport, catalog, guidance, and defaults', async () => {
   scaffold = await launchWebScaffold({ deepSeekMissingCredential: true })
   const ctx = scaffold.ctx
+  const index = await fetch(`http://127.0.0.1:${String(ctx.webServer.port)}`, {
+    headers: { 'accept-encoding': 'gzip' },
+  })
+  expect(index.headers.get('content-encoding')).toBe('gzip')
+  expect(index.headers.get('vary')).toContain('Accept-Encoding')
+  await index.body?.cancel()
   expect(ctx.llm.providerRetryPolicy('deepseek-official')).toMatchInlineSnapshot(`
     {
       "initialDelayMs": 500,
@@ -199,7 +207,7 @@ it('lets a preset producer reach the background-job registry', async () => {
     // fails here — with every task control still listed in the catalog above.
     const started = await ctx.tools.execute({
       signal,
-      callId: CallId('shipped-bash-background'),
+      callId: ToolCallId('shipped-bash-background'),
       name: 'bash',
       arguments: {
         command: 'printf SHIPPED_BACKGROUND_OK',
@@ -217,7 +225,7 @@ it('lets a preset producer reach the background-job registry', async () => {
     // owner. A per-preset registry would list nothing here even on success.
     const listed = await ctx.tools.execute({
       signal,
-      callId: CallId('shipped-task-list'),
+      callId: ToolCallId('shipped-task-list'),
       name: 'job_list',
       arguments: {},
       agent: handle.agent,
@@ -231,7 +239,7 @@ it('lets a preset producer reach the background-job registry', async () => {
     // through a preset-plane control, which is the linkage the realm severed.
     const collected = await ctx.tools.execute({
       signal,
-      callId: CallId('shipped-task-output'),
+      callId: ToolCallId('shipped-task-output'),
       name: 'job_output',
       arguments: { job_id: 'bash-1', wait: true },
       agent: handle.agent,

@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-[后台任务运行时](2026-06-20-generic-long-running-tool-runtime.md)交付时把 `JobRegistry` 做成了单个具体包：`@deepseek-ai/dsh-jobs` 既拥有每个生产方和控制器面向编程的 `ctx.jobs` 约定，也拥有进程内 Service Provider（内存存储、结算簿记、所有者清理 effect、拆除）。这种捆绑重新耦合了仓库[能力 seam 规则](2026-06-13-capability-seams.md)本要分离的两种变化速率：一旦替换注册表的存储或生命周期后端，被搅动的就是同一个包，而生产方（`dsh-tool-bash`、`dsh-tool-terminal`、`dsh-tool-subagent`）、控制器（`dsh-tool-jobs`）和 `JobKindMap` 扩展方正是从这个包导入类型与 `ctx.jobs` API。harness 中其余每项可替换能力——bash、pty、fs、skill（技能）、subagent、web、会话持久化——都已具备 Service Definition / Service Provider / Consumer 三分；任务注册表曾是仅剩的 `core` 模式例外，仅由一条 `TODO(job-service-backend)` 注释把守。
+[后台任务运行时](2026-06-20-generic-long-running-tool-runtime.zh.md)交付时把 `JobRegistry` 做成了单个具体包：`@deepseek-ai/dsh-jobs` 既拥有每个生产方和控制器面向编程的 `ctx.jobs` 约定，也拥有进程内 Service Provider（内存存储、结算簿记、所有者清理 effect、拆除）。这种捆绑重新耦合了仓库[能力 seam 规则](2026-06-13-capability-seams.zh.md)本要分离的两种变化速率：一旦替换注册表的存储或生命周期后端，被搅动的就是同一个包，而生产方（`dsh-tool-bash`、`dsh-tool-terminal`、`dsh-tool-subagent`）、控制器（`dsh-tool-jobs`）和 `JobKindMap` 扩展方正是从这个包导入类型与 `ctx.jobs` API。harness 中其余每项可替换能力——bash、pty、fs、skill（技能）、subagent、web、会话持久化——都已具备 Service Definition / Service Provider / Consumer 三分；任务注册表曾是仅剩的 `core` 模式例外，仅由一条 `TODO(job-service-backend)` 注释把守。
 
 ## 决策
 
@@ -22,7 +22,7 @@ Status: implemented
 
 ## 曾考虑的替代方案
 
-**在第二个后端出现之前保持具体服务（维持现状）。**这正是运行时 Agent Note 当初的立场：在第二个 Service Provider 出现前抽取 Service Definition，可能固化错误的边界。该方案落选，因为这条边界已不再是臆测：九个服务方法及其语义自引入以来在每一次生产方集成中都保持稳定，它们正是 `dsh-tool-jobs` 与各生产方已经面向编程的那套接口，而且仓库约定默认将可替换能力拆成三个包。剩余风险（持久化后端可能需要变更约定）不因这次拆分而改变：无论拆分与否，这类变更都会落在 Service Definition 包里；而若维持现状，它们今天还会连带搅动每个 Consumer 的提供方依赖。
+**在第二个后端出现之前保持具体服务（维持现状）。**这正是运行时 Agent Note 当初的立场：在第二个 Service Provider 出现前抽取 Service Definition，可能固化错误的边界。该方案落选，因为这条边界已不再是臆测：九个服务方法及其语义自引入以来在每一次生产方集成中都保持稳定，它们正是 `dsh-tool-jobs` 与各生产方已经面向编程的那套接口，而且仓库约定默认将可替换能力拆成三个包。剩余风险（持久化后端可能需要变更约定）不因这次拆分而改变：无论拆分与否，这类变更都会落在 Service Definition 包里；而若维持现状，它们还会连带搅动每个 Consumer 的提供方依赖。
 
 **在单个包内仅抽取 Service Definition（在具体类旁导出一个抽象类）。**否决，因为它在运作层面并未分离任何东西：Consumer 依然依赖携带 Service Provider 及其依赖项的那个包，而替换后端若不把本地 Service Provider 纳入自身依赖图，就仍然无法发布。在这里，包边界才是独立演进的单位。
 

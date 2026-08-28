@@ -6,7 +6,7 @@ Status: proposed
 
 ## 问题
 
-[拦截扩展点 Agent Note](../../implemented/feature/2026-06-30-interception-extension-points.md) 将 `tools/pre-execute` 定义为一道针对执行的允许/拒绝/询问门禁，此时执行的身份标识已受保护、参数已被深度冻结。Claude Code 的 `PreToolUse` 钩子还提供了 `updatedInput`，因此忠实的桥接需要一个显式的重写机制。重写不能是对现有执行对象的可变逃逸口：它必须保持持久化历史、审计记录、展示层与实际执行值之间的一致性。
+[拦截扩展点 Agent Note](../../implemented/feature/2026-06-30-interception-extension-points.zh.md) 将 `tools/pre-execute` 定义为一道针对执行的允许/拒绝/询问门禁，此时执行的身份标识已受保护、参数已被深度冻结。Claude Code 的 `PreToolUse` 钩子还提供了 `updatedInput`，因此忠实的桥接需要一个显式的重写机制。重写不能是对现有执行对象的可变逃逸口：它必须保持持久化历史、审计记录、展示层与实际执行值之间的一致性。
 
 ## 问题本质：执行前参数的三个读取方
 
@@ -16,7 +16,7 @@ Status: proposed
 2. **`tool/call`** 是持久化的审计记录，在 `ctx.tools.execute()` 之前追加。
 3. **面向人类的展示读取 `tool/call.arguments`**：UI 渲染器将这些参数传给 `presentResult`；`dsh-tool-bash` 从中派生卡片标题、rawInput、cwd 以及终端/后台处理方式。
 
-如果只做执行层面的重写，UI 会显示一条命令而实际运行的是另一条，并且结果会对着错误的参数渲染。注册表目前通过以下方式防止这种失败模式：对 `arguments` 做 structured-clone 并深度冻结，将执行身份属性设为不可写，且不暴露任何可替换它们的测试 shim 或监听路径。重写设计必须维护这一受保护的身份边界，而非削弱它。
+如果只做执行层面的重写，UI 会显示一条命令而实际运行的是另一条，并且结果会对着错误的参数渲染。注册表通过以下方式防止这种失败模式：对 `arguments` 做 structured-clone 并深度冻结，将执行身份属性设为不可写，且不暴露任何可替换它们的测试 shim 或监听路径。重写设计必须维护这一受保护的身份边界，而非削弱它。
 
 ## 提案
 

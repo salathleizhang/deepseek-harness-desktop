@@ -11,11 +11,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { delimiter as pathDelimiter } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-compaction'
-import { decodeStorageRecord } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+import { decodeSeqRanges, decodeStorageRecord, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {
   ContentBlock,
   GenerateOptions,
+  LlmImageRequestPricing,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
@@ -25,7 +26,9 @@ import type {
   StreamChunk,
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import { LlmAdapter, LlmError, ReasoningEffortId, assertNever, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, LlmError, ReasoningEffortId, assertNever, requestImageHandleText, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+
+const PACKED_CHUNK_ROW_TYPES = new Set(['text-chunks', 'reasoning-chunks', 'tool-call-chunks'])
 
 /**
  * One recorded model call. `throw` may replay prefix chunks before failing;
@@ -35,7 +38,7 @@ import { LlmAdapter, LlmError, ReasoningEffortId, assertNever, resolveRetryPolic
  */
 export type ReplayEntry =
   | { kind: 'chunks'; chunks: StreamChunk[] }
-  | { kind: 'throw'; chunks: StreamChunk[]; message: string; code: string }
+  | { kind: 'throw'; chunks: StreamChunk[]; message: string; code: string; accepted?: boolean }
   | {
     kind: 'hang'
     /** Optional marker written after the prefix chunks are consumed and before the stream waits for cancellation. */
@@ -59,6 +62,15 @@ export interface ReplayModelConfig {
    * omit one, so replay reconstructs the request header a live catalog produced.
    */
   defaultMaxTokens?: number
+  /**
+   * Optional flat visual-token price the replay route declares for every
+   * retained request image, so keyless scenarios exercise route-priced
+   * request pressure; each occurrence is priced at this value plus its
+   * request-preview handle text. Requires {@link inputModalities} to include
+   * `image` — a text-only route never sends visual tokens. Absent declares
+   * no image pricing.
+   */
+  imageRequestTokens?: number
   /** Optional reasoning-effort ids the replay route accepts, in display order. */
   reasoningEfforts?: string[]
   /**
@@ -114,7 +126,7 @@ export interface ReplayConfig {
    * this long before yielding, so a downstream transport (e.g. the web SSE
    * mux observed by a browser) sees genuinely incremental delivery. A realism
    * knob only — correctness must never depend on it. Absent or `0` keeps
-   * today's synchronous burst yield. Must be a non-negative finite integer;
+   * a synchronous burst yield. Must be a non-negative finite integer;
    * aborting mid-wait cancels the stream like any other abort.
    */
   paceMs?: number
@@ -158,18 +170,54 @@ export interface SessionScript {
 /**
  * Parse a session `.jsonl` buffer into its event list. Line 0 is the session
  * header (a `{type:'session',…}` record), every subsequent non-empty line is a
- * {@link SessionEvent} or a packed chunk row (expanded back into its events, so
- * a fixture recorded with `packChunks` on derives the same script). The header
- * is skipped; malformed lines fail loud.
+ * {@link SessionEvent} or a packed chunk row. Packed rows expand back into
+ * events, and JSONL storage-form provenance ranges expand back into
+ * `number[]`, so physical fixture encodings derive the same script. The
+ * header is skipped; malformed lines fail loud.
  * @param text - the raw `.jsonl` file contents.
  * @returns every event after the header, in log order.
  */
 export function parseSessionLog(text: string): SessionEvent[] {
-  const lines = text.split('\n').filter(line => line.trim().length > 0)
   const events: SessionEvent[] = []
-  // The JSONL backend guarantees line 0 is the session header.
-  for (let i = 1; i < lines.length; i++) {
-    events.push(...decodeStorageRecord(JSON.parse(lines[i] as string)))
+  let nextSeq = 0
+  let headerSkipped = false
+  // The JSONL backend guarantees line 0 is the session header. Projected
+  // fixtures omit event envelopes; synthesize them while decoding so callers
+  // still receive complete SessionEvent values.
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    if (line.trim().length === 0) continue
+    if (!headerSkipped) {
+      headerSkipped = true
+      continue
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(line) as unknown
+    } catch (error) {
+      throw new Error(`session snapshot line ${index + 1} contains invalid JSON`, { cause: error })
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`session snapshot line ${index + 1} must be a JSON object`)
+    }
+    const record = value as Record<string, unknown>
+    const packed = PACKED_CHUNK_ROW_TYPES.has(record.type as string)
+    const seqKey = packed ? 'seq0' : 'seq'
+    const timeKey = packed ? 'time0' : 'time'
+    if (!Object.hasOwn(record, seqKey)) record[seqKey] = nextSeq
+    if (!Object.hasOwn(record, timeKey)) record[timeKey] = 0
+    let decoded: SessionEvent[]
+    try {
+      if (Object.hasOwn(record, 'sourceEventSeqs')) {
+        record.sourceEventSeqs = decodeSeqRanges(record.sourceEventSeqs)
+      }
+      decoded = decodeStorageRecord(record)
+    } catch (error) {
+      /* v8 ignore next -- decodeStorageRecord only throws Error instances; the String arm satisfies unknown narrowing. */
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`session snapshot line ${index + 1}: ${detail}`, { cause: error })
+    }
+    events.push(...decoded)
+    nextSeq += decoded.length
   }
   return events
 }
@@ -383,6 +431,47 @@ export function resolveScriptedEntry(entry: ReplayEntry, messages: GenerateOptio
   return substituteValue(entry, leaves.join('\n')) as ReplayEntry
 }
 
+/** Replace typed recorded-session tokens with the live sessions bound at the same corpus indexes. */
+function materializeSessionTokens(entry: ReplayEntry, liveSessionIds: readonly (string | undefined)[]): ReplayEntry {
+  if (!JSON.stringify(entry).includes('{{session:')) return entry
+  const replace = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return value.replace(/\{\{session:([1-9]\d*)\}\}/g, (_token, ordinal: string) => {
+        const live = liveSessionIds[Number(ordinal) - 1]
+        if (live === undefined) {
+          throw new Error(`llm-replay: session token {{session:${ordinal}}} was used before that recorded session bound`)
+        }
+        return live
+      })
+    }
+    if (Array.isArray(value)) return value.map(replace)
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item)]))
+    }
+    return value
+  }
+  return replace(entry) as ReplayEntry
+}
+
+/** Learn a background child id from the stable tool-result text before that child reaches its first model call. */
+function inferStartedSubagents(
+  messages: GenerateOptions['messages'],
+  liveSessionIds: (string | undefined)[],
+): void {
+  const leaves: string[] = []
+  collectStrings(messages, leaves)
+  for (const leaf of leaves) {
+    for (const match of leaf.matchAll(/started subagent ([^\s"'<>]+)/g)) {
+      const id = match[1]
+      /* v8 ignore next -- the fixed regular expression always has capture group 1. */
+      if (id === undefined || liveSessionIds.includes(id)) continue
+      const index = liveSessionIds.findIndex((value, candidate) => candidate > 0 && value === undefined)
+      if (index < 0) return
+      liveSessionIds[index] = id
+    }
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -415,7 +504,11 @@ function readReplayEntry(value: unknown, file: string, location: string): Replay
       return { kind: 'chunks', chunks: readChunks(value['chunks'], file, location) }
     }
     case 'throw': {
-      if (!hasExactKeys(value, ['kind', 'chunks', 'message', 'code'])) {
+      const accepted = value['accepted']
+      const keys = accepted === undefined
+        ? ['kind', 'chunks', 'message', 'code']
+        : ['kind', 'chunks', 'message', 'code', 'accepted']
+      if (!hasExactKeys(value, keys)) {
         invalidOverride(file, location, 'has invalid throw-entry fields')
       }
       if (typeof value['message'] !== 'string' || value['message'].length === 0) {
@@ -424,11 +517,15 @@ function readReplayEntry(value: unknown, file: string, location: string): Replay
       if (typeof value['code'] !== 'string' || value['code'].length === 0) {
         invalidOverride(file, location, 'code must be a non-empty string')
       }
+      if (accepted !== undefined && typeof accepted !== 'boolean') {
+        invalidOverride(file, location, 'accepted must be a boolean')
+      }
       return {
         kind: 'throw',
         chunks: readChunks(value['chunks'], file, location),
         message: value['message'],
         code: value['code'],
+        ...(accepted === undefined ? {} : { accepted }),
       }
     }
     case 'hang': {
@@ -575,6 +672,18 @@ class ReplayAdapter extends LlmAdapter {
       : resolveRetryPolicy(configured.retryPolicy, `llm-replay: provider "${provider}" retryPolicy`)
   }
 
+  override imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined {
+    const configured = this.providers.get(provider)
+    const visualTokens = configured?.models?.find(candidate => candidate.id === model)?.imageRequestTokens
+    if (visualTokens === undefined) return undefined
+    return {
+      priceImages: images => images.map(ref => ({
+        visualTokens,
+        text: requestImageHandleText(ref, { width: ref.width, height: ref.height }),
+      })),
+    }
+  }
+
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const configured = this.providers.get(provider)
     /* v8 ignore next -- LlmRuntime only asks about routes registered from this same map. */
@@ -683,6 +792,20 @@ async function* replayEntry(entry: ReplayEntry, signal: AbortSignal | undefined,
   }
 }
 
+/** Whether the scripted provider call reached the live adapter's post-2xx commit point. */
+function providerAccepted(entry: ReplayEntry): boolean {
+  switch (entry.kind) {
+    case 'chunks':
+    case 'hang':
+      return true
+    case 'throw':
+      return entry.accepted ?? entry.chunks.length > 0
+    /* v8 ignore next -- override parsing and derived entries close the local union before replay. */
+    default:
+      return assertNever(entry, 'llm-replay acceptance entry')
+  }
+}
+
 /**
  * Install per-session positional replay. A newly seen live session takes the
  * next ordered recorded script, then advances its own cursor synchronously at
@@ -704,6 +827,7 @@ export function installLlmReplay(ctx: Context, config: ReplayConfig): ReplayHand
   // next not-yet-bound script (scripts are in bind order); `nextScript` is the
   // index of the next unclaimed one.
   const bound = new Map<string, { entries: ReplayEntry[]; cursor: number }>()
+  const liveSessionIds: (string | undefined)[] = Array.from({ length: scripts.length })
   let nextScript = 0
   const ANON = '\0anon\0' // the key for a call that carries no sessionId
   const replay = (options: GenerateOptions): AsyncIterable<StreamChunk> => {
@@ -719,9 +843,11 @@ export function installLlmReplay(ctx: Context, config: ReplayConfig): ReplayHand
         unrecorded = true
         state = { entries: [], cursor: 0 }
       } else {
+        const scriptIndex = nextScript
         nextScript++
         state = { entries: script.entries, cursor: 0 }
         bound.set(key, state)
+        if (key !== ANON) liveSessionIds[scriptIndex] = key
       }
     }
     const boundState = state
@@ -742,7 +868,23 @@ export function installLlmReplay(ctx: Context, config: ReplayConfig): ReplayHand
           + `but its script has only ${boundState.entries.length}; re-record the scenario`,
         )
       }
-      yield* replayEntry(resolveScriptedEntry(entry, options.messages), options.signal, paceMs)
+      inferStartedSubagents(options.messages, liveSessionIds)
+      const resolved = resolveScriptedEntry(materializeSessionTokens(entry, liveSessionIds), options.messages)
+      if (options.provider === 'deepseek-official' && providerAccepted(resolved)) {
+        const extensions = ctx.get('deepseekLlmApiExtensions')
+        if (extensions !== undefined) {
+          const signal = options.signal ?? new AbortController().signal
+          const prepared = await extensions.prepare({
+            // Replay reproduces post-2xx side effects, not the provider wire body.
+            body: { messages: [] },
+            signal,
+            ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+            ...options.purpose === undefined ? {} : { purpose: options.purpose },
+          })
+          await prepared.accept()
+        }
+      }
+      yield* replayEntry(resolved, options.signal, paceMs)
     })()
   }
   const providers = config.providers ?? []
@@ -790,16 +932,32 @@ export interface Config {
   paceMs?: number
 }
 
-function validateConfiguredModalities(providers: ReplayProviderConfig[] | undefined): void {
+function validateConfiguredModels(providers: ReplayProviderConfig[] | undefined): void {
   for (const provider of providers ?? []) {
     for (const model of provider.models ?? []) {
       const modalities: unknown = model.inputModalities
-      if (modalities === undefined) continue
-      if (!Array.isArray(modalities)
-        || !modalities.every((modality: unknown) => modality === 'text' || modality === 'image')) {
+      if (modalities !== undefined && (!Array.isArray(modalities)
+        || !modalities.every((modality: unknown) => modality === 'text' || modality === 'image'))) {
         throw new Error(
           `llm-replay: provider "${provider.id}" model "${model.id}" inputModalities `
           + 'must be an array containing only "text" and "image"',
+        )
+      }
+      const imageRequestTokens: unknown = model.imageRequestTokens
+      if (imageRequestTokens !== undefined
+        && (!Number.isSafeInteger(imageRequestTokens) || (imageRequestTokens as number) <= 0)) {
+        throw new Error(
+          `llm-replay: provider "${provider.id}" model "${model.id}" imageRequestTokens `
+          + 'must be a positive safe integer',
+        )
+      }
+      // A text-only route never sends visual tokens: LlmRuntime substitutes
+      // its images with deterministic text before dispatch, so declared
+      // visual pricing would contradict the actual request projection.
+      if (imageRequestTokens !== undefined && model.inputModalities?.includes('image') !== true) {
+        throw new Error(
+          `llm-replay: provider "${provider.id}" model "${model.id}" imageRequestTokens `
+          + 'requires inputModalities to include "image"',
         )
       }
     }
@@ -811,7 +969,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (file === undefined || file.length === 0) {
     throw new Error('llm-replay: a fixture path is required (Config.file or $DSH_SNAPSHOT_FILE)')
   }
-  validateConfiguredModalities(config.providers)
+  validateConfiguredModels(config.providers)
   const overrideFile = config.overrideFile ?? process.env.DSH_SNAPSHOT_OVERRIDE
   const childEnv = process.env.DSH_SNAPSHOT_CHILD_FILES
   const childFiles = config.childFiles

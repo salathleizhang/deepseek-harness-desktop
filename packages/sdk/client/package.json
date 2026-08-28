@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-sdk-client",
   "description": "TypeScript client SDK for driving a DeepSeek Harness runtime subprocess over stdio JSON-RPC: the DeepSeekHarness high-level turns API and the lower-level HarnessClient",
-  "version": "0.1.0-rc.13",
+  "version": "0.1.0-rc.14",
   "publishConfig": {
     "access": "public"
   },
@@ -30,6 +30,9 @@
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh": "workspace:*"
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",

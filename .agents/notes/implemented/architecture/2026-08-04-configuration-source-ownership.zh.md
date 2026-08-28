@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-`$DSH_HOME/.env` 刚刚[变成普通环境层](2026-08-04-credentials-yaml-and-user-environment-layer.md)，这使得 harness 解析面向用户的值时面对的是一个压平的 `process.env`，再也说不清某个值来自哪里。由此产生三个后果。
+`$DSH_HOME/.env` 刚刚[变成普通环境层](2026-08-04-credentials-yaml-and-user-environment-layer.zh.md)，这使得 harness 解析面向用户的值时面对的是一个压平的 `process.env`，再也说不清某个值来自哪里。由此产生三个后果。
 
 通过 Web 页面存下的密钥仍然被用户自己 `.env` 里更旧的密钥遮蔽，因为凭据提供方是拿「环境」与自己的文件比较，而现在环境包含了那个文件。这次拆分本该消除的迁移死路，只是换了个位置。
 
@@ -28,7 +28,7 @@ explicit for this run     per-operation override, CLI argument
 ```
 
 
-settings 在 composition 之上，因为 [settings seam](2026-07-28-user-settings-seam.md) 就是这么做的：插件把自己的 cordis entry config 注册为 `base` 层，用户 section 叠加其上，而 seam 无法区分某个值是 profile 的 bundle 设的，还是它的用户 patch 层或某个 `--patch` overlay 设的——它们都以 entry config 的形式抵达。产品 CLI（命令行界面）没有高于已存 settings 的手段，因此需要把某字段钉死、不被用户已存 settings 覆盖的部署方，应自带 bin 或 loader 配置树，或者干脆不挂载 settings 提供方。composition 仍然高于环境，所以 shell 里陈旧的 `DEEPSEEK_BASE_URL` 无法改写已配置的 endpoint。
+settings 在 composition 之上，因为 [settings seam](2026-07-28-user-settings-seam.zh.md) 就是这么做的：插件把自己的 cordis entry config 注册为 `base` 层，用户 section 叠加其上，而 seam 无法区分某个值是 profile 的 bundle 设的，还是它的用户 patch 层或某个 `--patch` overlay 设的——它们都以 entry config 的形式抵达。产品 CLI（命令行界面）没有高于已存 settings 的手段，因此需要把某字段钉死、不被用户已存 settings 覆盖的部署方，应自带 bin 或 loader 配置树，或者干脆不挂载 settings 提供方。composition 仍然高于环境，所以 shell 里陈旧的 `DEEPSEEK_BASE_URL` 无法改写已配置的 endpoint。
 
 **凭据保留一条更窄的独立顺序**，本 Note 不把它并入上表：
 
@@ -41,7 +41,7 @@ inherited process environment      (read-only, wins)
 
 继承环境优先，因为 `DEEPSEEK_API_KEY=… dsh`、CI 机密与容器 `-e` 是运维必须能按次施加、且无需改动机器状态的那一种覆盖；而它无法从进程内部修改，就必须*可见地*只读。配置本应只携带*引用*——解析哪个名字——该名字本身遵循上面的非机密顺序。
 
-**harness 被启动于其中的项目默认可信，且不做询问。** 一个 checkout 可以携带自己的 endpoint、自己的普通变量和自己的密钥；密钥排在受管存储之下，因此通过 Models 页存下的密钥绝不会被 checkout 中恰好带有的那一个顶掉。`LaunchEnvironmentSnapshot.getFrom(name, sources)` 仍然只搜索调用方点名的层，省略某层仍是拒绝而不是降级——该机制是为「某一层必须不可达」的那些决策准备的，而项目层今天不在其列。
+**harness 被启动于其中的项目默认可信，且不做询问。** 一个 checkout 可以携带自己的 endpoint、自己的普通变量和自己的密钥；密钥排在受管存储之下，因此通过 Models 页存下的密钥绝不会被 checkout 中恰好带有的那一个顶掉。`LaunchEnvironmentSnapshot.getFrom(name, sources)` 仍然只搜索调用方点名的层，省略某层仍是拒绝而不是降级——该机制供要求某一层不可达的决策使用；本决策包含项目层。
 
 **信任不延伸到改变 harness 本身。** `loadLayeredEnv` 会在加载时、且在物化任何内容之前，拒绝任何设置了下列变量的 `.env`：决定进程如何启动的（`PATH`、`SHELL`、`NODE_OPTIONS`、`LD_PRELOAD`）、决定由哪个环境程序处理一项操作的（`EDITOR`、`PAGER`、`BROWSER`）、决定运行时在执行被要求运行的程序之前先执行哪些代码的（`BASH_ENV`、`PERL5OPT`、`PYTHONSTARTUP`、`RUBYOPT`、`JAVA_TOOL_OPTIONS`、Git 的钩子命令）、决定模型可见指令从哪里加载的（整个 `DSH_*` 命名空间、`HOME`、`XDG_*`），以及决定网络如何访问以及如何建立信任的（proxy 与 CA 变量）。匹配不区分大小写，因此 `https_proxy` 不是绕过手段。
 

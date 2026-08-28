@@ -6,13 +6,13 @@ Status: implemented
 
 ## 问题
 
-[逐会话快照回放 Agent Note](2026-06-22-subagent-snapshot-replay.md)使快照层能够表达嵌套 agent（智能体）形状：一个父项加上每个进程内 subagent 的一份记录日志，每份日志都按调用会话作为键，以独立脚本回放。它曾指出（§ 范围，最后一个项目符号），fork 快照「只是未来很容易添加的一项，并非键控缺口」。这一判断对 fork 子会话而言是错误的——问题不在键控，而在*脚本派生*。
+[逐会话快照回放 Agent Note](2026-06-22-subagent-snapshot-replay.zh.md)使快照层能够表达嵌套 agent（智能体）形状：一个父项加上每个进程内 subagent 的一份记录日志，每份日志都按调用会话作为键，以独立脚本回放。它曾指出（§ 范围，最后一个项目符号），fork 快照「只是未来很容易添加的一项，并非键控缺口」。这一判断对 fork 子会话而言是错误的——问题不在键控，而在*脚本派生*。
 
 subagent 脚本由 [`deriveReplayScript`](../../../../packages/test-support/llm-replay) 从已录制的会话日志推导：它按 `(turn, step)` 对日志中的 `assistant/chunk` 事件分组，每次 `stream()` 调用对应一条回放条目。对 **spawn** 子会话而言这是正确的，因为其日志只包含自身的模型调用。
 
 **fork** 子会话不同。fork 后端用*父日志的一段平衡的已完成轮次前缀*（[`dsh-subagent-in-process-driver`](../../../../packages/subagent/subagent-in-process-driver)）来播种子会话，而该 seed 会成为子会话持久化的 `log`（`Session` 构造函数将 seed 复制进 `this.log`）。因此 fork 子会话的 `.jsonl` 以**父会话**的事件开头——包括父会话的 `assistant/chunk` 事件——之后才是子会话自身的轮次。
 
-从 fork 子会话的完整日志推导脚本，会把**父会话**的已录制响应当作**子会话**的模型调用来回放：实际运行的 fork 子会话第一次调用 `stream()` 时，会收到父会话的第一段分片序列而非自身的。当时已录制的场景全部是 spawn，所以这从未触发——但 fork 快照会静默地错误路由，恰好属于快照层存在的意义所要捕获的那类 bug。
+从 fork 子会话的完整日志推导脚本，会把**父会话**的已录制响应当作**子会话**的模型调用来回放：实际运行的 fork 子会话第一次调用 `stream()` 时，会收到父会话的第一段分片序列而非自身的。所有已录制场景都使用 spawn，所以这从未触发——但 fork 快照会静默地错误路由，恰好属于快照层存在的意义所要捕获的那类 bug。
 
 ## 决策
 

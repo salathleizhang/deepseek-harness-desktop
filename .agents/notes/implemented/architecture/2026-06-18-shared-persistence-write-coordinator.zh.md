@@ -14,9 +14,9 @@ Status: implemented
 
 组合，而非继承。协调器是后端持有的具体类，不是后端继承的基类。协调器让非常规后端与继承层级作斗争的风险由此规避：后端只暴露钩子，无法触及协调器的私有编排状态。第三方后端仍然可以完全不使用协调器、直接实现抽象服务，包括不可变逻辑检查，以及通过 `load` 实现的默认准备回退。
 
-协调器为每个存活的 `Session` 实例持有一个生命周期条目：初始化，加上一个包私有写入控制器，后者负责待处理事件、固定批处理截止时间、活跃写入、失败保留和共享 flush 屏障。每个 `session/event` 都进入这条有界写入路径，`session/flush` 则绕过等待以观察完全停稳。控制器归并由 [flush 控制器简化](../simplification/2026-07-23-collapse-persistence-flush-state.md)定义；调度节奏由[有界批处理决策](2026-08-08-bounded-session-persistence-write-batching.md)定义。
+协调器为每个存活的 `Session` 实例持有一个生命周期条目：初始化，加上一个包私有写入控制器，后者负责待处理事件、固定批处理截止时间、活跃写入、失败保留和共享 flush 屏障。每个 `session/event` 都进入这条有界写入路径，`session/flush` 则绕过等待以观察完全停稳。控制器归并由 [flush 控制器简化](../simplification/2026-07-23-collapse-persistence-flush-state.zh.md)定义；调度节奏由[有界批处理决策](2026-08-08-bounded-session-persistence-write-batching.zh.md)定义。
 
-创建流程将 `Session.events` 的原始快照借作持久化种子。`Session` 已经分离、验证并深度冻结每个事件，后续追加会替换缓存视图，因此该快照数组保持稳定。协调器及其后端钩子只读取这个有类型的进程内值；再次克隆完整日志会重复 [agent scope 运行时决策](2026-07-12-agent-scope-runtime-design.md#session-append-materialize-validate-commit-notify)规定的所有权工作。持久化服务的公开 `append()` 仍在 API 边界为调用方拥有的输入创建快照。
+创建流程将 `Session.events` 的原始快照借作持久化种子。`Session` 已经分离、验证并深度冻结每个事件，后续追加会替换缓存视图，因此该快照数组保持稳定。协调器及其后端钩子只读取这个有类型的进程内值；再次克隆完整日志会重复 [agent scope 运行时决策](2026-07-12-agent-scope-runtime-design.zh.md#session-append-materialize-validate-commit-notify)规定的所有权工作。持久化服务的公开 `append()` 仍在 API 边界为调用方拥有的输入创建快照。
 
 已准备 Session 的后缀，以及进入 write-behind 队列的事件，仍保留现有复制。这些路径会逐个后缀或事件建立异步队列所有权，且没有已测得的完整日志克隆成本；移除这些复制属于单独的所有权审计，不属于创建种子的借用决策。
 
@@ -24,11 +24,12 @@ Status: implemented
 
 ### 钩子接口（`PersistenceBackend<TornMarker>`）
 
-五个必需成员加一个可选的生命周期钩子，构成协调器与存储之间唯一的边界：
+五个必需成员加可选的空会话实体化与生命周期钩子，构成协调器与存储之间唯一的边界：
 
 - `name`——后端标签，用于 dispose 失败时的 `AggregateError`。
 - `loadStored(id)`——按 id 跨所有存储范围读取一个已存储前缀（JSONL 的所有项目目录；SQLite 的 id 全局唯一）。准备、逻辑加载/检查、物理后缀读取、存活会话接管与创建碰撞探测共用此查找。协调器会断言返回的 id，并在修复或发布状态之前拒绝已存储记录与存活会话的 cwd 不匹配。
-- `appendBatch(meta, events, isMaterialized)`——持久追加一个连续批次，在尚未物化时原子地惰性物化会话（物化写入与首批事件必须一起提交——二者之间发生崩溃时，不得留下一个已物化但为空的会话；这就是为什么没有单独的 `materialize` 钩子）。
+- `appendBatch(meta, events, isMaterialized)`——持久追加一个连续批次，在尚未物化时原子地惰性物化会话。因此，普通创建不会留下被放弃的已物化空会话。
+- `materializeHeader?(meta)`——为 `SessionPersistence.ensureMaterialized(session)` 显式持久化仅含 header 的会话。它只供把空会话本身视为可恢复持久资源的生命周期前端使用；[标准 ACP 自动化控制](../feature/2026-08-22-standard-acp-automation-controls.zh.md)是第一个 consumer。支持该生命周期的后端实现此钩子；惰性创建仍是默认行为。
 - `commitRepair(meta, tornMarker, closers)`——使崩溃修复持久化：截断损坏的尾部（当且仅当 `tornMarker !== undefined`）并追加 `closers`。**不要求原子性**——JSONL 合理地分两步 fsync（先截断再追加），SQLite 在一个事务中完成 DELETE+INSERT。用于 `prepare`/`load`（截断 + 合成收尾事件）和存活会话接管（仅截断，`closers = []`）。
 - `list()`——列出所有已存储的元数据。
 - `close?()`——可选的生命周期清理（SQLite 关闭 db 句柄；JSONL 省略），在 dispose effect 中于排空至完全停稳之后被 await，因此 close 失败不会掩盖排空错误。
@@ -48,4 +49,4 @@ Status: implemented
 
 ## 后果
 
-协调器增加了一层间接、一个不透明的 torn marker、脱离会话生命周期的退役任务，以及有界的已准备 Session 状态，但将此前每个后端重复的、对正确性要求很高的编排逻辑集中到一处。会话 dispose 仍是仅观察事件，因此会话所有者不会等待持久化退役；协调器会收容失败、在存活控制器中保留待处理事件，并以后端 teardown 为完全停稳边界。其钩子面保持窄小：标识校验、接管、碰撞检查、准备与不可变检查共用 `loadStored`；物化保持在 `appendBatch` 内原子完成；列举绕过协调器。读模型使用 `inspect` 而非 `load`，因此观察已持久化但仍开放的轮次时不会提交中断收尾事件；复用、预留与发布由 [Session 准备阶段决策](2026-08-05-session-preparation.md)定义。新后端只需实现存储原语，而无需复制有界写入生命周期。
+协调器增加了一层间接、一个不透明的 torn marker、脱离会话生命周期的退役任务，以及有界的已准备 Session 状态，但将此前每个后端重复的、对正确性要求很高的编排逻辑集中到一处。会话 dispose 仍是仅观察事件，因此会话所有者不会等待持久化退役；协调器会收容失败、在存活控制器中保留待处理事件，并以后端 teardown 为完全停稳边界。其钩子面保持窄小：标识校验、接管、碰撞检查、准备与不可变检查共用 `loadStored`；物化保持在 `appendBatch` 内原子完成；列举绕过协调器。读模型使用 `inspect` 而非 `load`，因此观察已持久化但仍开放的轮次时不会提交中断收尾事件；复用、预留与发布由 [Session 准备阶段决策](2026-08-05-session-preparation.zh.md)定义。新后端只需实现存储原语，而无需复制有界写入生命周期。

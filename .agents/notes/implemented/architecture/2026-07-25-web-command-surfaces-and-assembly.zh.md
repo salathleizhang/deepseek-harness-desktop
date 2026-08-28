@@ -4,7 +4,7 @@ Status: implemented
 
 [English](2026-07-25-web-command-surfaces-and-assembly.md) | 中文
 
-> 范围：命令目录缓存与三型派发（ui-commands）、popup 选择流、skill（技能） / subagent 两个引用源、fixture（测试前置数据）命令路由与装配验收（slash-flow 快照）。承载 wire 见[会话作用域 note](2026-07-25-web-client-session-scope-and-provide-channel.md)；触发、菜单和输入机器见[输入状态机 note](2026-07-25-web-input-machine-and-slash-pipeline.md)。
+> 范围：命令目录缓存与三型派发（ui-commands）、popup 选择流、skill（技能） / subagent 两个引用源、fixture（测试前置数据）命令路由与装配验收（slash-flow 快照）。承载 wire 见[会话作用域 note](2026-07-25-web-client-session-scope-and-provide-channel.zh.md)；触发、菜单和输入机器见[输入状态机 note](2026-07-25-web-input-machine-and-slash-pipeline.zh.md)。
 
 ## 问题
 
@@ -28,7 +28,7 @@ Status: implemented
 
 ### 引用源（只见投影 + 自家 apply 闭包的 root ctx）
 
-- **ui-skill**：`skill.list({sessionId})` 按会话寻址（host 从会话 header 解析项目根）；目录缓存按 sessionId 键控 single-flight，`warm` 钩子出生预热、`connection/reset` 全清。pick 产出 text outcome（`/name ` 原文，纯文本引用决策）；`lexicon` 从 CatalogFetch 的 settled 快照给名录（未热 `undefined`），`subscribeLexicon` 在 settle 与失效时按会话通知监听者。无 match 钩子（引用不进命令裁决）。skill 引用以原文随普通提示词走（命令平面之外；tool-skill 不变，会话前缀目录提供协作关联）。
+- **ui-skill**：`skills/list({sessionId})` 按会话寻址（host 从会话 header 解析项目根）；目录缓存按 sessionId 键控 single-flight，`warm` 钩子出生预热、`connection/reset` 全清。pick 产出 text outcome（`/name ` 原文，纯文本引用决策）；`lexicon` 从 CatalogFetch 的 settled 快照给名录（未热 `undefined`），`subscribeLexicon` 在 settle 与失效时按会话通知监听者。无 match 钩子（引用不进命令裁决）。skill 引用以原文随普通提示词走（命令平面之外；tool-skill 不变，会话前缀目录提供协作关联）。
 - **ui-subagent**：候选零 RPC（sessions.list 快照按 parentId/running 过滤）；pick 产出 text outcome（`@name ` 原文）；`lexicon` 同快照派生，`subscribeLexicon` 转发 list store 的变更通道（模型侧表示待业务立项）。
 
 ### fixture 命令路由与装配

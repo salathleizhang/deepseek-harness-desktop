@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-[逐会话 agent preset](2026-08-03-per-session-agent-presets.md) 把每一个面向模型的行搬上了 agent 平面，此后的每一处修复都是一个仍按搬迁之前的世界写成的读取点。`tasks` 因为 realm 之外的 preset 行要解析它而搬回宿主；`goals` 因为同样的理由从未离开；而当所有面向模型的工具都变成祖先贡献之后，子 agent 的 `toolFilter` 也已被修好（[子 agent 加入父方 preset](../bug-fix/2026-08-10-child-agents-join-their-parent-preset.md)）。
+[逐会话 agent preset](2026-08-03-per-session-agent-presets.zh.md) 把每一个面向模型的行搬上了 agent 平面，此后的每一处修复都是一个仍按搬迁之前的世界写成的读取点。`tasks` 因为 realm 之外的 preset 行要解析它而搬回宿主；`goals` 因为同样的理由从未离开；而当所有面向模型的工具都变成祖先贡献之后，子 agent 的 `toolFilter` 也已被修好（[子 agent 加入父方 preset](../bug-fix/2026-08-10-child-agents-join-their-parent-preset.zh.md)）。
 
 还有两个读取点仍站在这条线的错误一侧。
 
@@ -20,7 +20,7 @@ Status: implemented
 
 **未加入的 agent 在两个不同的点上被指出两次。** 在配置了名单的前提下，`AgentPresets` 对每个作用域链长度为一就发布的 agent 记录一条警告。invariant 配套则直接失败——并且发生在 `system-prompt/assemble` 而非发布时，因为一个未加入的 agent 在它对模型说话之前都是合法的：`recompose` 绑定的正是这样一个 agent 作为它的首次链接；而提示词组装是唯一会提供 agent 作用域的调用方，因此宿主组装与常驻挂载都正确地落在检查范围之外。
 
-有三处限制不在此处修复，而是记录在会咬到它们的地方：投影 key 是否存在不能当作逐会话的能力信号（[`dsh-session-projection`](../../../../packages/session/session-projection/README.md)）；被替代的常驻代际永不回收，而设置页的编写流程把它变成每次保存的代价（[`dsh-agent-presets`](../../../../packages/preset/agent-presets/README.md)）；通过 `cordis_mount` 挂上的临时插件属于组装而非挂载它的会话（[`dsh-tool-cordis`](../../../../packages/extensions/tool-cordis/README.md)）。
+有三处限制不在此处修复，而是记录在会咬到它们的地方：投影 key 是否存在不能当作逐会话的能力信号（[`dsh-session-projection`](../../../../packages/session/session-projection/README.zh.md)）；被替代的常驻代际永不回收，而设置页的编写流程把它变成每次保存的代价（[`dsh-agent-presets`](../../../../packages/preset/agent-presets/README.zh.md)）；通过 `cordis_mount` 挂上的临时插件属于组装而非挂载它的会话（[`dsh-tool-cordis`](../../../../packages/extensions/tool-cordis/README.zh.md)）。
 
 ## 测试
 
@@ -32,7 +32,7 @@ Status: implemented
 
 **把 meter 留在 preset，改为给投影注册表分层。** 这是更精确的修法，代价也大得多：`snapshot`、`checkpoint` 与主动驱动都需要一次「会话 → 作用域」的解析，而冷读在没有 api-proxy 的 `presenterScopeFor` 时并不具备。相对于一个完全没有 per-preset 状态的 Service，这不成比例，因此改为把通则写在注册表上。
 
-**对未加入的 agent 否决发布。** 大声胜过静默，注册表也支持这么做——同步的 `agent/created` 监听器抛出会把创建整体回滚。否决的理由是：在名单之外组装 agent 是合法的——`recompose` 写明了它随后绑定的那个裸 agent，而 ACP 桥、SDK server 与 headless bundle 今天都会创建一个。否决会把能力缺口变成一次故障。
+**对未加入的 agent 否决发布。** 大声胜过静默，注册表也支持这么做——同步的 `agent/created` 监听器抛出会把创建整体回滚。否决的理由是：在名单之外组装 agent 是合法的——`recompose` 写明了它随后绑定的那个裸 agent，而 ACP 桥、SDK server 与 headless bundle 都会创建一个。否决会把能力缺口变成一次故障。
 
 **让配套也在 `agent/created` 处检查加入情况。** 否决：发布时分不清漏掉的加入与之后才会被绑定的 agent，因此该检查会拒绝一条已写明的路径。提示词组装分得清。
 

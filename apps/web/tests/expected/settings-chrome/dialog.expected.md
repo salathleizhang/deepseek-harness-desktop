@@ -1,0 +1,54 @@
+- dialog "设置":
+  - navigation:
+    - text: 设置
+    - button "通用设置":
+      - img
+      - text: 通用设置
+    - button "模型":
+      - img
+      - text: 模型
+    - button "插件":
+      - img
+      - text: 插件
+    - button "Agent 预设":
+      - img
+      - text: Agent 预设
+  - button "打开配置文件"
+  - button "关闭":
+    - img
+    - text: 关闭
+  - text: Agent 预设 对此后新建的会话生效。运行中的会话保持它开始时的预设。
+  - button "标准模式":
+    - text: 标准模式
+    - img
+  - text: 权限 选择新会话的默认权限模式
+  - button "Workspace Write":
+    - text: Workspace Write
+    - img
+  - text: 语言
+  - button "中文":
+    - text: 中文
+    - img
+  - text: 外观
+  - button "浅色":
+    - img
+    - text: 浅色
+  - button "深色":
+    - img
+    - text: 深色
+  - button "跟随系统" [pressed]:
+    - img
+    - text: 跟随系统
+  - text: 字号大小 仅影响会话内容的字号 14
+  - button "增大字号":
+    - img
+  - button "减小字号":
+    - img
+  - text: px 对话显示 控制已完成轮次的过程内容
+  - button "Compact":
+    - text: Compact
+    - img
+  - text: 繁忙时 Enter 键行为 仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为
+  - button "排队发送":
+    - text: 排队发送
+    - img

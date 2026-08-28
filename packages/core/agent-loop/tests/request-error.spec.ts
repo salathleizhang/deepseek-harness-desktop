@@ -96,6 +96,8 @@ describe('agent/request-error', () => {
       expect.objectContaining({ mode: 'normal' }),
     ])
     expect(statuses).toEqual(['running', 'idle'])
+    expect(agent.session.events.flatMap(event =>
+      event.type === 'request/header' ? [event.data.reason] : [])).toEqual(['initial'])
   })
 
   it('lets cancellation win over a retry action', async () => {

@@ -16,7 +16,7 @@ Status: implemented
 
 `ToolExecutionInput.signal` 是必填且只读的 `AbortSignal`，因此 `ToolExecution.signal` 和 `ToolRunContext.signal` 也都是必填且只读。每个类型化调用方显式提供自己持有的信号；注册表不提供重载、默认控制器、永不中止哨兵或便捷执行路径。
 
-`ToolDefinition.execute(args, exec)` 保持现有签名。`defineTool()` 会把 `exec.signal` 上下文推断为必填的 `AbortSignal`，因此每个已注册的 TypeScript 工具都能在无需类型断言的情况下观察或转发取消。所有第一方直接调用方和 Code Mode 嵌套调度都会显式传入当前操作的信号。
+`ToolDefinition.execute(args, exec)` 保持现有签名。`defineTool()` 会把 `exec.signal` 上下文推断为必填的 `AbortSignal`，因此每个已注册的 TypeScript 工具都能在无需类型断言的情况下观察或转发取消。所有第一方直接调用方和 PTC mode 嵌套调度都会显式传入当前操作的信号。
 
 注册表信任这份类型化同进程约定。它不在运行时校验 `AbortSignal`，也不为缺失或畸形信号添加敌意输入测试。校验仍位于解析器与配置、模型与工具 JSON、持久化与文件、worker、进程和协议边界；违反 TypeScript 接口的无类型 JavaScript 不享有兼容性约定。
 
@@ -42,11 +42,11 @@ Status: implemented
 
 工具主体一旦启动，注册表就会等待它完成。取消通过融合信号到达工具主体，但注册表不会与其 promise 竞速或丢弃该 promise。协作式实现会停止自身工作或继续转发取消，并在所持有的工作完全停稳后完成；不协作的同进程实现可能让注册表无限期保持等待。进程、worker、网络和提供方层仍负责各自的终止机制。
 
-这项决策只要求工具调用边界携带取消信号。让工具主体可达的异步能力也必须接收信号，属于另一项迁移，见提议中的[工具可达能力 seam 中的必填取消](../../proposed/architecture/2026-07-19-required-cancellation-through-tool-capability-seams.md)。
+这项决策只要求工具调用边界携带取消信号。让工具主体可达的异步能力也必须接收信号，属于另一项迁移，见提议中的[工具可达能力 seam 中的必填取消](../../proposed/architecture/2026-07-19-required-cancellation-through-tool-capability-seams.zh.md)。
 
 ## 验证
 
-[`execution-signal-types.spec.ts`](../../../../packages/core/tools/tests/execution-signal-types.spec.ts) 证明必填的精确信号类型、观察者与工具的只读视图、环绕调度可替换但不可删除的视图，以及 `defineTool()` 推断。[`tools.spec.ts`](../../../../packages/core/tools/tests/tools.spec.ts) 覆盖进入时已中止的物化与阶段跳过、策略和包装层竞态、工具主体调用分类、调用方信号融合、错误优先级、上下文保留和完全停稳。[`tool-calls.spec.ts`](../../../../packages/core/agent-loop/tests/tool-calls.spec.ts) 与 [`contract-regressions.spec.ts`](../../../../packages/core/agent-loop/tests/contract-regressions.spec.ts) 覆盖为未调度的同批调用补齐持久化结果。[`code-mode.spec.ts`](../../../../packages/core/tools/tests/code-mode.spec.ts) 和第一方集成测试覆盖显式转发，[`timeout-policy.spec.ts`](../../../../packages/guard/timeout-policy/tests/timeout-policy.spec.ts) 保持超时归属。
+[`execution-signal-types.spec.ts`](../../../../packages/core/tools/tests/execution-signal-types.spec.ts) 证明必填的精确信号类型、观察者与工具的只读视图、环绕调度可替换但不可删除的视图，以及 `defineTool()` 推断。[`tools.spec.ts`](../../../../packages/core/tools/tests/tools.spec.ts) 覆盖进入时已中止的物化与阶段跳过、策略和包装层竞态、工具主体调用分类、调用方信号融合、错误优先级、上下文保留和完全停稳。[`tool-calls.spec.ts`](../../../../packages/core/agent-loop/tests/tool-calls.spec.ts) 与 [`contract-regressions.spec.ts`](../../../../packages/core/agent-loop/tests/contract-regressions.spec.ts) 覆盖为未调度的同批调用补齐持久化结果。[`ptc.spec.ts`](../../../../packages/core/tools/tests/ptc.spec.ts) 和第一方集成测试覆盖显式转发，[`timeout-policy.spec.ts`](../../../../packages/guard/timeout-policy/tests/timeout-policy.spec.ts) 保持超时归属。
 
 任何注册表测试都无法证明任意第三方同进程代码会观察信号或在有界时间内停止。各能力的测试仍需在拥有相应副作用的边界证明取消与完全停稳。
 
@@ -62,7 +62,7 @@ Status: implemented
 
 **禁止环绕包装层替换信号。** 不予采纳，因为截止时间和嵌套操作作用域需要词法派生信号。捕获并融合调用方信号既保留组合能力，也不允许切断调用方取消。
 
-**让工具 promise 与取消竞速。** 不予采纳，因为这种方式会在副作用仍可能存活时报告完成，违反[dispose（资源释放）必须完全停稳的规则](../../../../docs/defensive-patterns.md#dispose-must-reach-quiescence-not-just-request-it)。
+**让工具 promise 与取消竞速。** 不予采纳，因为这种方式会在副作用仍可能存活时报告完成，违反[dispose（资源释放）必须完全停稳的规则](../../../../docs/defensive-patterns.zh.md#dispose-must-reach-quiescence-not-just-request-it)。
 
 ## 后果
 

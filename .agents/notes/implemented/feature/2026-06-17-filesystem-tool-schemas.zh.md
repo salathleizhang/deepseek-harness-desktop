@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-[文件系统能力 seam Agent Note](../architecture/2026-06-17-filesystem-capability-seam.md) 定义了文件系统能力 seam（`ctx.fs`）、包拆分（`dsh-fs`、`dsh-fs-local`、`dsh-tool-fs`，加上 `dsh-fs-observation-policy` 策略插件），以及针对 read-before-write/edit 检查的已观测文件／陈旧版本策略——[拆分文件系统 seam](../simplification/2026-06-26-fsspec-style-fs-seam.md)和[事件门](../architecture/2026-06-26-file-context-as-event-gate.md) Agent Note 后来将其从 `ctx.fs` 移至 `dsh-fs-observation-policy` 插件的 `fs/*` 事件门上。首次文件系统工具交付剩余的决策是面向模型的 schema：模型在 `read`、`write` 和 `edit` 中看到哪些参数。
+[文件系统能力 seam Agent Note](../architecture/2026-06-17-filesystem-capability-seam.zh.md) 定义了文件系统能力 seam（`ctx.fs`）、包拆分（`dsh-fs`、`dsh-fs-local`、`dsh-tool-fs`，加上 `dsh-fs-observation-policy` 策略插件），以及针对 read-before-write/edit 检查的已观测文件／陈旧版本策略——[拆分文件系统 seam](../simplification/2026-06-26-fsspec-style-fs-seam.zh.md)和[事件门](../architecture/2026-06-26-file-context-as-event-gate.zh.md) Agent Note 后来将其从 `ctx.fs` 移至 `dsh-fs-observation-policy` 插件的 `fs/*` 事件门上。首次文件系统工具交付剩余的决策是面向模型的 schema：模型在 `read`、`write` 和 `edit` 中看到哪些参数。
 
 该 schema 必须足够小，但又要足够稳定，使本地、远程、沙箱文件系统后端不需要改动面向模型的接口，并且必须避免从参考系统中照搬所有选项。Claude Code 和 OpenCode 暴露了类似的核心文件工具，但在命名风格和额外 flag 上有所不同；本决策选择最小的共有接口。
 
@@ -70,7 +70,7 @@ schema 不将 `expected_hash`、`expected_version` 或 `create_only` 作为面�
 
 ## 结果形状
 
-首次实现曾将 `ContentBlock[]` 格式化逻辑放在 `execute` 中。[规范工具输出约定](../architecture/2026-07-20-canonical-tool-output-contract.md)如今将 `ctx.fs` 的结果事实保留为工具经校验的值，并通过 `output.render` 派生相同的模型文本；文件状态的记录/刷新仍归 `ctx.fs` 所有。
+首次实现曾将 `ContentBlock[]` 格式化逻辑放在 `execute` 中。[规范工具输出约定](../architecture/2026-07-20-canonical-tool-output-contract.zh.md)如今将 `ctx.fs` 的结果事实保留为工具经校验的值，并通过 `output.render` 派生相同的模型文本；文件状态的记录/刷新仍归 `ctx.fs` 所有。
 
 默认原生投影：
 
@@ -90,7 +90,7 @@ schema 不将 `expected_hash`、`expected_version` 或 `create_only` 作为面�
 - 目录列表、glob、grep 和搜索工具。
 - 二进制安全的读/写操作。
 - PDF/图片/多模态 `read`。
-- 文件系统工具的 Code Mode 投影值。
+- 文件系统工具的 PTC mode 投影值。
 - 规范的 edit diff 格式。
 
 ## 测试
@@ -107,6 +107,6 @@ schema 测试固定每个工具的必填/可选参数集、空 `old_string` 拒�
 
 **首版 schema 有意小于 Claude Code 的。** 去掉 PDF pages、多模态 read、丰富的 grep/list flag 和 expected hash 字段使实现保持聚焦，但用户可能很快就会提出这些需求。这些功能将通过独立 Agent Note 或聚焦的后续工作引入，而不是让初始 schema 承载过多内容。
 
-**v1 中没有显式的面向模型的陈旧版本防护。** schema 不要求模型提供 expected hash/version。这是有意为之：陈旧检查来自后端产生的版本和 `dsh-fs-observation-policy` 插件的观测状态，而非模型复制的脆弱令牌。文件系统安全失败通过 `dsh-fs` 拥有的结构化 `FsError` 代码暴露，而非模型提供的版本字段。
+**没有显式的面向模型的陈旧版本防护。**schema 不要求模型提供 expected hash/version。这是有意为之：陈旧检查来自后端产生的版本和 `dsh-fs-observation-policy` 插件的观测状态，而非模型复制的脆弱令牌。文件系统安全失败通过 `dsh-fs` 拥有的结构化 `FsError` 代码暴露，而非模型提供的版本字段。
 
 **命名成为公开 API。** 一旦发布，将 `file_path` 改为 `filePath` 或 `old_string` 改为 `oldString` 会导致提示词、示例和下游客户端随之改动。本 Agent Note 预先选择 snake_case，并将其视为稳定的面向模型的约定。

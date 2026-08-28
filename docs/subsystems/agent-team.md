@@ -74,7 +74,7 @@ interface TeamTaskSnapshot {
 
 ## Replay
 
-`foldTeam()` replays one root Session into the roster, task board, and queued-minus-delivered mailbox that every Team operation reads. It selects records by `TeamId`, so events inherited by an ordinary fork retain the ancestor id and never enter the new root's state. Session event `seq` and `time` remain the ordering and timing record; Team snapshots do not duplicate them. Roster and task reads reach callers as views that add owner name, readiness, and write-scope warnings, while pending mail stays internal to delivery and recovery. The package [README](../../packages/experimental/agent-team/README.md) owns operation, authorization, recovery, and limit behavior.
+`foldTeam()` replays one root Session into the roster, task board, and queued-minus-delivered mailbox that every Team operation reads. It selects records by `TeamId`, so events inherited by an ordinary fork retain the ancestor id and never enter the new root's state. Session event `seq` and `time` remain the ordering and timing record; Team snapshots do not duplicate them. Roster and task reads reach callers as views; pending mail stays internal to delivery and recovery. The package [README](../../packages/experimental/agent-team/README.md) owns operation, authorization, recovery, and limit behavior.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -82,7 +82,7 @@ interface TeamTaskSnapshot {
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxagentteams--teamservice"></a>
 
@@ -175,9 +175,32 @@ interrupt(caller: Agent, targetName: string): { previousStatus: 'running' | 'idl
  * @returns Team membership, or undefined for non-Team subagents and stale identities.
  */
 tryMembership(agent: Agent): TeamMembership | undefined
+
+/**
+ * Read the current roster and non-deleted task board through the generated Remote API.
+ * @param agent - exact live Team member used as the authority credential.
+ * @returns detached current roster and task views.
+ */
+@Remote('view') remoteView(agent: Agent): TeamView
+
+/**
+ * Create one shared task through the generated Remote API.
+ * @param agent - exact live Team member creating the task.
+ * @param request - task text, blockers, and advisory write scopes.
+ * @returns the revision-one task or a typed Team rejection.
+ */
+@Remote('createTask') remoteCreateTask(agent: Agent, request: CreateTeamTaskRequest): Promise<TeamTaskMutationResult>
+
+/**
+ * Apply one task mutation and preserve Team rejections as business results.
+ * @param agent - exact live Team member authorizing the mutation.
+ * @param request - task identity, expected revision, action, and action fields.
+ * @returns the committed task or a typed Team rejection.
+ */
+@Remote('updateTask') remoteUpdateTask(agent: Agent, request: UpdateTeamTaskRequest): Promise<TeamTaskMutationResult>
 ```
 
 Types: [Agent](core.md)
 
-Source: [`packages/experimental/agent-team/src/index.ts:56`](../../packages/experimental/agent-team/src/index.ts)
+Source: [`packages/experimental/agent-team/src/index.ts`](../../packages/experimental/agent-team/src/index.ts)
 <!-- END GENERATED cordis-surface -->

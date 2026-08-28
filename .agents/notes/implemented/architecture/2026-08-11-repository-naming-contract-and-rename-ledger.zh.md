@@ -26,7 +26,7 @@ Status: implemented
 
 `SDK` 表示受支持的 Python 和 TypeScript SDK 所使用、基于 JSON-RPC 的客户端／服务器协议。仓库保留 `@deepseek-ai/dsh-sdk-client`、`@deepseek-ai/dsh-sdk-protocol` 和协议身份 `deepseek-harness-sdk-runtime`；JSON-RPC 服务器属于同一系列。DeepSeek Harness 本身不是 SDK，已移除的项目生成器、启动器、辅助工具和启动器遥测包继续保持不存在。
 
-本决策部分取代三项现行决策。它替换[包重新分组决策](2026-07-29-package-regrouping.md)中保留的 `bash/`、`pty/` 和 `self-modification/` 组名，以及两项暂定包名。它只替换[移除 SDK 项目工具链](../simplification/2026-08-11-remove-sdk-project-toolchain.md)中将整个仓库称为 SDK 的说法；后者仍负责说明删除范围和保留的运行时 SDK。它只替换[工具调用超时策略](2026-07-07-tool-call-timeout-policy.md)中的包名理由；超时机制及其 `guard/timeout-policy/` 归属保持不变。
+本决策部分取代三项现行决策。它替换[包重新分组决策](2026-07-29-package-regrouping.zh.md)中保留的 `bash/`、`pty/` 和 `self-modification/` 组名，以及两项暂定包名。它只替换[移除 SDK 项目工具链](../simplification/2026-08-11-remove-sdk-project-toolchain.zh.md)中将整个仓库称为 SDK 的说法；后者仍负责说明删除范围和保留的运行时 SDK。它只替换[工具调用超时策略](2026-07-07-tool-call-timeout-policy.zh.md)中的包名理由；超时机制及其 `guard/timeout-policy/` 归属保持不变。
 
 如果其他已实现说明中的包、路径或类型被重命名，而其边界和理由保持不变，则本决策不会取代这些说明。这些说明使用已实现的事实名称。三项被部分取代的决策都链接回本决策。
 
@@ -274,10 +274,14 @@ PascalCase 标识符中的首字母缩略词使用首字母大写格式：`Ui`�
 | `E2BSandboxService` | `E2BRuntime` | 该类创建、复用和释放文件系统与子进程适配器所使用的 E2B 执行环境。它比单个沙箱句柄的职责更广，又比通用所有者更具体。保留 `@deepseek-ai/dsh-e2b`、`ctx.e2b` 和 `e2b/` 组。 |
 | `@deepseek-ai/dsh-frontend-static` | `@deepseek-ai/dsh-host-frontend-static` | 该包是提供前端资源的 Host 插件。此前缀可将它与前端应用代码区分开。 |
 | `PluginInventoryService` | `PluginInventoryGateway` | 该类只负责把实时 Loader 树适配到 `pluginInventory/list` RPC。它不拥有同进程服务、缓存、历史或修改路径。`Gateway` 准确说明现有角色。 |
-| `@deepseek-ai/dsh-jsonrpc-demo` | `@deepseek-ai/dsh-sdk-jsonrpc-demo` | 该示例演示通过 JSON-RPC 使用运行时 SDK，属于 SDK 的唯一含义。 |
+| `@deepseek-ai/dsh-jsonrpc-demo`、`@deepseek-ai/dsh-sdk-jsonrpc-demo`、`@deepseek-ai/dsh-sdk-python-runtime` | 已删除 | Python 运行时打包现有 `@deepseek-ai/dsh` CLI 与其 `sdk` profile；私有应用包会重新产生第二个启动器。 |
+| `packages/examples/jsonrpc-demo/`、`packages/sdk/python-runtime/` | 已删除 | Python 运行时 wheel 的闭包 manifest 负责打包，无需独立应用包。 |
+| `examples/jsonrpc-agent/` | `python/sdk/examples/` | 该示例演示 Python 使用 `sdk` profile 与有序 patch。 |
+| `@deepseek-ai/dsh-acp-demo` | `@deepseek-ai/dsh-acp-app` | 该包是 ACP profile 的应用组合包，不是独立 demo bin。 |
+| 部署根 manifest `dsh-jsonrpc-agent-pkg`、`dsh-sdk-python-runtime-closure` | `dsh-python-runtime-closure` | 该零代码 manifest 定义 Python 运行时 wheel 的完整 `dsh` 依赖闭包，不再命名独立 SDK 应用。 |
 | `@deepseek-ai/dsh-frontend` | `@deepseek-ai/dsh-web-frontend` | 该应用是 Web 前端。保留其物理目录 `apps/web/`。 |
 
-保留 atomic-write、brand、native-command、timeout 实用工具、目录选择器、`dsh-base`、`dsh-web-app`、应用启动、CLI（命令行界面）名称，以及 `headless` 包、组合包和示例身份。`headless` 是预期的产品本质，未来也可以支持不止一次性执行。
+保留 atomic-write、brand、native-command、timeout 实用工具、目录选择器、`dsh-base`、`dsh-web-app`、`dsh-sdk-app`、`dsh-acp-app`、应用启动、CLI（命令行界面）名称，以及 `headless` 包、组合包和示例身份。`headless` 是预期的产品本质，未来也可以支持不止一次性执行。
 
 ### 客户端运行时与 UI
 
@@ -309,7 +313,7 @@ PascalCase 标识符中的首字母缩略词使用首字母大写格式：`Ui`�
 | `ConversationService` | `ConversationController` | 该对象控制当前对话状态和用户操作。 |
 | `InputService` | `SessionInputResolver` | 该接口为一个会话作用域解析输入外观。它既不是全局输入注册表，也不是执行服务。保留 `InputHub` 作为具体中枢，并保留 `ctx.conversation.input` 作为对外接口。 |
 
-PascalCase 标识符内部使用 `Ui`，不要使用 `UI`。除非清单明确要求重命名，否则保留其余客户端包名。暂时保留已弃用的客户端连接和 Host `ApiProxy` 词汇；API 平面将替换它们，而在计划移除的表面上重命名只会增加改动量。
+PascalCase 标识符内部使用 `Ui`，不要使用 `UI`。除非清单明确要求重命名，否则保留其余客户端包名。在 API 平面移除相关表层之前，保留已弃用的客户端连接与 Host `ApiProxy` 词汇；提前重命名只会增加改动量，不会建立持久名称。
 
 ## 明确保留的名称
 

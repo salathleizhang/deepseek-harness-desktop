@@ -2,22 +2,22 @@
 
 [English](core.md) | 中文
 
-**核心**子系统即 [`packages/core`](../../packages/core/README.md)，包含每个组合都会启动的包：事件溯源的会话日志、系统提示词组装、工具注册表、agent（智能体）类型，以及驱动它们的具体循环。本页说明 `agent`/`agent-loop` 这对包所声明的内容：agent 如何被创建与拥有，以及 `Agent` 句柄的投递、取消与拦截约定；本页还说明每个子系统都遵循的两个类型模式。该组的专属页面与目录其余部分见[子系统 README](README.md)。
+**核心**子系统即 [`packages/core`](../../packages/core/README.zh.md)，包含每个组合都会启动的包：事件溯源的会话日志、系统提示词组装、工具注册表、agent（智能体）类型，以及驱动它们的具体循环。本页说明 `agent`/`agent-loop` 这对包所声明的内容：agent 如何被创建与拥有，以及 `Agent` 句柄的投递、取消与拦截约定；本页还说明每个子系统都遵循的两个类型模式。该组的专属页面与目录其余部分见[子系统 README](README.zh.md)。
 
 ## 主干逐包速览
 
-一个轮次按同一条循环流经六个包：[`agent-loop`](../../packages/core/agent-loop) 中的 driver 认领一条排队的提示词，在[会话日志](session.md)（`ctx.sessions`）上开启轮次，通过 [system-prompt](system-prompt.md)（`ctx.systemPrompt`）组装请求前缀并从日志派生历史，经 [LLM（大语言模型） seam](llm-streaming.md) 流式获取模型响应，经[工具注册表](tools.md)（`ctx.tools`）分发工具调用，并把每个模型可见的事实追加回日志，供下一步派生。循环搬运的对话词汇——`Message`、`ContentBlock`、`StreamChunk`、模型请求——由 [`packages/llm`](../../packages/llm/README.md) 声明，记录在 [llm-streaming.md](llm-streaming.md)。
+一个轮次按同一条循环流经六个包：[`agent-loop`](../../packages/core/agent-loop) 中的 driver 认领一条排队的提示词，在[会话日志](session.zh.md)（`ctx.sessions`）上开启轮次，通过 [system-prompt](system-prompt.zh.md)（`ctx.systemPrompt`）组装请求前缀并从日志派生历史，经 [LLM（大语言模型） seam](llm-streaming.zh.md) 流式获取模型响应，经[工具注册表](tools.zh.md)（`ctx.tools`）分发工具调用，并把每个模型可见的事实追加回日志，供下一步派生。循环搬运的对话词汇——`Message`、`ContentBlock`、`StreamChunk`、模型请求——由 [`packages/llm`](../../packages/llm/README.zh.md) 声明，记录在 [llm-streaming.md](llm-streaming.zh.md)。
 
 | 包 | 负责内容 | 页面 |
 |---|---|---|
-| `session/` | 仅追加的 `SessionEvent` 日志与内存 store——唯一真源（`ctx.sessions`） | [session.md](session.md) |
-| `system-prompt/` | 提示词段落与工具 schema 组装（`ctx.systemPrompt`） | [system-prompt.md](system-prompt.md) |
-| `tools/` | 带作用域的工具注册表与受保护的执行流水线（`ctx.tools`） | [tools.md](tools.md) |
+| `session/` | 仅追加的 `SessionEvent` 日志与内存 store——唯一真源（`ctx.sessions`） | [session.md](session.zh.md) |
+| `system-prompt/` | 提示词段落与工具 schema 组装（`ctx.systemPrompt`） | [system-prompt.md](system-prompt.zh.md) |
+| `tools/` | 带作用域的工具注册表与受保护的执行流水线（`ctx.tools`） | [tools.md](tools.zh.md) |
 | `agent/` | `Agent` 接口、实时注册表、发起者作用域与 `agent/*` 事件词汇（`ctx.agents`） | 本页 |
 | `agent-loop/` | 实现公开 `Agent` 约定的具体 driver（`ctx.agentLoop`） | 本页 |
-| `scope/` | 注册表与循环用于构建按 agent 作用域的注册原语 | [scope.md](scope.md) |
+| `scope/` | 注册表与循环用于构建按 agent 作用域的注册原语 | [scope.md](scope.zh.md) |
 
-`scope/` 是这里唯一的非服务包：一个零依赖库（`createScope`/`scopeOf`/`scopeTarget`），在模块图中位于 `session/` 与 `system-prompt/` 之下，正是为了让它们消费它而不形成环。`agent-loop` 是公开 `Agent` 约定的唯一具体实现，放在这里因为它是 harness 的默认产品循环；它在 `ctx.agents.withInitiator()` 内运行每个 driver。扩展插件依赖 `agent`——包括需要发起 Agent 时——而绝不直接依赖 `agent-loop`，因此循环保持可替换。把这条主干接成可运行 agent 的默认组合是 [`examples/agent-spine-demo`](../../packages/examples/agent-spine-demo/README.md)。
+`scope/` 是这里唯一的非服务包：一个零依赖库（`createScope`/`scopeOf`/`scopeTarget`），在模块图中位于 `session/` 与 `system-prompt/` 之下，正是为了让它们消费它而不形成环。`agent-loop` 是公开 `Agent` 约定的唯一具体实现，放在这里因为它是 harness 的默认产品循环；它在 `ctx.agents.withInitiator()` 内运行每个 driver。扩展插件依赖 `agent`——包括需要发起 Agent 时——而绝不直接依赖 `agent-loop`，因此循环保持可替换。把这条主干接成可运行 agent 的默认组合是 [`examples/agent-spine-demo`](../../packages/examples/agent-spine-demo/README.zh.md)。
 
 <a id="creation-and-ownership"></a>
 
@@ -61,9 +61,9 @@ interface AgentHandle {
 源码：[`packages/core/agent/src/types.ts`](../../packages/core/agent/src/types.ts)
 
 ```ts type-equiv
-/** Public live-agent handle. */
+/** Public live-agent handle; the runtime face augments its live capabilities. */
 interface Agent {
-  /** The single identity shared with {@link session}. */
+  /** Session-backed Agent identity. */
   readonly id: SessionId
   /** The provider route and model this agent's requests use. */
   readonly options: AgentOptions
@@ -156,7 +156,7 @@ interface Agent {
 type AgentStatus = 'idle' | 'running'
 ```
 
-`running` 描述整个驱动器的排空区间，可能跨越连续的排队轮次；它不能证明某个轮次仍然打开。dispose 会把 agent 从注册表移除并发出 `agent/disposed`；它不是一个终态 status 值。`followup()` 不返回句柄：其 `MessageId` 标识的是持久的 inbox 插入、认领与丢弃事实，而非之后的助手输出或轮次结束。`whenIdle()` 观察的是整个 agent，因此只有当调用方明确拥有从回执到空闲的这段区间时，才能把它称为一次 run（[决策](../../.agents/notes/implemented/architecture/2026-07-30-followup-enqueue-and-owned-runs.md)）。
+`running` 描述整个驱动器的排空区间，可能跨越连续的排队轮次；它不能证明某个轮次仍然打开。dispose 会把 agent 从注册表移除并发出 `agent/disposed`；它不是一个终态 status 值。`followup()` 不返回句柄：其 `MessageId` 标识的是持久的 inbox 插入、认领与丢弃事实，而非之后的助手输出或轮次结束。`whenIdle()` 观察的是整个 agent，因此只有当调用方明确拥有从回执到空闲的这段区间时，才能把它称为一次 run（[决策](../../.agents/notes/implemented/architecture/2026-07-30-followup-enqueue-and-owned-runs.zh.md)）。
 
 ```ts type-equiv
 /** Merge-extensible agent creation options. Persona belongs to system-prompt sections. */
@@ -165,12 +165,14 @@ interface AgentOptions {
   provider?: string
   /** Model id interpreted by the selected provider adapter. */
   model?: string
+  /** Adapter-owned reasoning effort for the selected provider/model route. */
+  reasoningEffort?: ReasoningEffortId
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number
 }
 ```
 
-在 `agent/request` 之后，分发要求 `provider` 与 `model` 都存在。提供 `maxTokens` 时，它必须是正安全整数，并限制每次对话模型请求的输出；省略时，系统会在写入请求 header 前填入确切模型的适配器默认值，否则提供方行为保持不变。agent 作用域的 `deployment:persona` 提示词段落可以遮蔽全局默认 persona。
+在 `agent/request` 之后，分发要求 `provider` 与 `model` 都存在。显式 `reasoningEffort` 会为该路由的首次请求提供初始值；确切模型解析会校验该值，省略时则允许填入适配器默认值。提供 `maxTokens` 时，它必须是正安全整数，并限制每次对话模型请求的输出；省略时，系统会在写入请求 header 前填入确切模型的适配器默认值，否则提供方行为保持不变。agent 作用域的 `deployment:persona` 提示词段落可以遮蔽全局默认 persona。
 
 inbox 即投递词汇——agent 以持久投影形式拥有的两条有序待处理消息列表：
 
@@ -204,15 +206,17 @@ type AgentCancelCause =
   | { readonly kind: 'disposed' }
 ```
 
-cause 是由 TypeScript 强制约束的同进程输入。活跃的取消持有者会将它复制到仅运行时的 `AbortSignal.reason`；signal 不授予协作监听器任何分类权限。持久 `turn/end` 保留粗粒度 `{ kind: 'aborted' }` 结果；若需记录谁请求了取消，应使用单独的持久事件，而不是让终态结果承担额外含义。
+cause 是由 TypeScript 强制约束的同进程输入。活跃的取消持有者会将它复制到仅运行时的 `AbortSignal.reason`；signal 不授予协作监听器任何分类权限。持久 `turn/end` 以 `{ kind: 'aborted', reason: TurnEndCancelCause }` 记录结果，取消原因随终态结果一起持久化。
 
-[事件分类](../architecture.md#events)负责 `agent/*` 生命周期、检查点与 waterfall（瀑布式事件）约定。轮次和步骤边界是持久会话事件，而不是 agent emit。
+[事件分类](../architecture.zh.md#events)负责 `agent/*` 生命周期、检查点与 waterfall（瀑布式事件）约定。轮次和步骤边界是持久会话事件，而不是 agent emit。
 
 <a id="initiating-agent"></a>
 
 ## 发起 Agent
 
-`ctx.agents` 携带的进程本地 initiator 就是上面的确切 `Agent`，不是单独的 frame 或复制的标识。环境中存在该值既不能证明存活，也不代表授权；[initiator 作用域决策](../../.agents/notes/implemented/architecture/2026-07-15-agent-initiator-scope.md)定义其生命周期和作用域规则。
+`ctx.agents` 携带的进程本地 initiator 就是上面的确切 `Agent`，不是单独的 frame 或复制的标识。环境中存在该值既不能证明存活，也不代表授权；[initiator 作用域决策](../../.agents/notes/implemented/architecture/2026-07-15-agent-initiator-scope.zh.md)定义其生命周期和作用域规则。
+
+<a id="interception-decisions"></a>
 
 ## 拦截决策
 
@@ -228,7 +232,12 @@ pre-step 决策使用与持久 user-role 输入相同、带标识的 `UserMessag
 /** Whether and with which messages the loop enters a proposed step. */
 type PreStepDecision =
   | { kind: 'reject' }
-  | { kind: 'enter'; messages: UserMessage[] }
+  | {
+    kind: 'enter'
+    messages: UserMessage[]
+    /** Start a distinct model-message series before this step's admitted messages. */
+    startsRequestSeries?: true
+  }
 ```
 
 `agent/request-error` 在失败的模型步骤关闭之后、其轮次关闭之前运行。listener 可以在失败轮次的 signal 仍然存活时修复持久状态或 await 策略工作。处理该错误的 listener 返回 `{ kind: 'retry' }` 且不调用 `next()`；默认的 `undefined` 会让失败保持终态。
@@ -238,7 +247,7 @@ type PreStepDecision =
 type RequestErrorAction = { kind: 'retry' } | undefined
 ```
 
-`agent/pre-step` 是请求推导前唯一的串行监听器链。`agent/turn-stopping` 在轮次没有工具或 steering（中途引导）后续时运行，先于最后一次 steering 排空。
+`agent/pre-step` 是请求推导前唯一的 waterfall（瀑布式）监听器链。`agent/turn-stopping` 在轮次没有工具或 steering（中途引导）后续时运行，先于最后一次 steering 排空。
 
 `agent/session-start` 携带 `SessionStartSource`（会话生命周期为何开始；桥接层据此匹配其 SessionStart）：
 
@@ -251,13 +260,13 @@ type SessionStartSource = 'startup' | 'resume' | 'clear' | 'compact'
 
 `Session` 是一份类型化 `SessionEvent` 的**仅追加日志**——唯一的真源。LLM 消息历史从日志*派生*（`deriveMessages()`），而非单独存储。每个条目携带单调的 `seq`、`time` 与按 `type` 判别的 `data` payload；surface 变体还可以在 `sourceEventSeqs` 中列出被引用的较早事件，并携带 `surfaceOp`。
 
-`SessionEvent` 信封的确切条件字段、十二种事件变体（`turn/start`、`turn/end`、`step/start`、`step/end`、`user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`steering/message`、`todo/write`、`request/header`）、`deriveMessages()` 投影规则、`TurnTrigger`/`TurnEndReason` 原因以及执行封闭和独立事件规则都在 **[session.md](session.md)** 中。日志如何持久化——`SessionPersistence` 接口、JSONL/SQLite 后端、`session/flush` 检查点、崩溃恢复与 `SessionHeader`——则在 **[persistence.md](persistence.md)** 中。
+`SessionEvent` 信封的确切条件字段、十二种核心事件变体（`turn/start`、`turn/end`、`step/start`、`step/end`、`user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`request/header`、`request/context`、`session/end-seed`）、`deriveMessages()` 投影规则、`TurnEndReason` 原因以及执行封闭和独立事件规则都在 **[session.md](session.zh.md)** 中。日志如何持久化——`SessionPersistence` 接口、JSONL/SQLite 后端、`session/flush` 检查点、崩溃恢复与 `SessionHeader`——则在 **[persistence.md](persistence.zh.md)** 中。
 
 ## `ToolDefinition`
 
 唯一属于核心的流水线编写类型：每个已注册工具*是什么*——一个面向模型的 `ToolSchema` 加上一个 `execute` 函数，以及可选的最终内容回调与 UI 回调。工具作者很少手动构造它（`defineTool` DSL 会使用类型化参数构建），但它是注册表存储并由循环用于分发的约定。
 
-其完整字段、`defineTool`/`ValueSchemaSpec`/`ParameterSchemaSpec` 类型化 schema DSL、`ToolExecution`/`ToolExecutionResult` waterfall 类型，以及工具展示 UI 类型都在 **[tools.md](tools.md)** 中。
+其完整字段、`defineTool`/`ValueSchemaSpec`/`ParameterSchemaSpec` 类型化 schema DSL、`ToolExecution`/`ToolExecutionResult` waterfall 类型，以及工具展示 UI 类型都在 **[tools.md](tools.zh.md)** 中。
 
 ## 全仓通用类型模式
 
@@ -286,16 +295,15 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 ```
 
-六个规范 map 使用此模式；插件作者扩展它们：
+五个规范 map 使用此模式；插件作者扩展它们：
 
 | Map | 包 | 派生 | 目录 |
 |---|---|---|---|
-| `ContentBlockMap` | dsh-llm | `ContentBlock` | [llm-streaming.md](llm-streaming.md#content-blocks-and-messages) |
-| `MessageSourceMap` | dsh-llm | `MessageSource` | [llm-streaming.md](llm-streaming.md#content-blocks-and-messages) |
-| `FinishReasonMap` | dsh-llm | `FinishReason` | [llm-streaming.md](llm-streaming.md#the-model-request-and-result) |
-| `TurnTriggerMap` | dsh-session | `TurnTrigger` | [session.md](session.md) |
-| `TurnEndReasonMap` | dsh-session | `TurnEndReason` | [session.md](session.md) |
-| `SessionEventMap` | dsh-session | `SessionEvent` | [session.md](session.md) |
+| `ContentBlockMap` | dsh-llm | `ContentBlock` | [llm-streaming.md](llm-streaming.zh.md#content-blocks-and-messages) |
+| `MessageSourceMap` | dsh-llm | `MessageSource` | [llm-streaming.md](llm-streaming.zh.md#content-blocks-and-messages) |
+| `FinishReasonMap` | dsh-llm | `FinishReason` | [llm-streaming.md](llm-streaming.zh.md#the-model-request-and-result) |
+| `TurnEndReasonMap` | dsh-session | `TurnEndReason` | [session.md](session.zh.md) |
+| `SessionEventMap` | dsh-session | `SessionEvent` | [session.md](session.zh.md) |
 
 消费方最常 `switch` 的两个大型判别联合类型是：**`StreamChunk`**（流式协议）和 **`SessionEvent`**（日志条目）。按仓库约定，对标签做 `switch`——不要链式 `if`——这样每个分支都能窄化类型，拼错的标签会编译失败。
 
@@ -303,7 +311,7 @@ declare module '@deepseek-ai/dsh-llm' {
 
 ### 品牌化 ID
 
-在包之间传递的 ID 都经过**品牌化**——结构上是字符串，但在类型层面不可互换（不能把 `SessionId` 传给需要 `CallId` 的位置）。每种类型通过各自的工厂构造；比较、日志记录和 JSON 行为与普通字符串相同。
+在包之间传递的 ID 都经过**品牌化**——结构上是字符串，但在类型层面不可互换（不能把 `SessionId` 传给需要 `ToolCallId` 的位置）。每种类型通过各自的工厂构造；比较、日志记录和 JSON 行为与普通字符串相同。
 
 `Branded<B>` 原语位于独立的纯类型包 [dsh-brand](../../packages/util/brand) 中（没有运行时代码，也不依赖 harness 包），因此任何包都能品牌化其拥有的 id，而无需依赖无关的能力包。
 
@@ -314,7 +322,7 @@ declare module '@deepseek-ai/dsh-llm' {
 type Branded<B extends string> = string & { readonly [BRAND]: B }
 ```
 
-两个核心 ID 是 `CallId`（关联工具调用及其结果；dsh-llm）和 `SessionId`（活跃 agent 与持久会话共享的标识；dsh-session）。能力包也会品牌化各自的 id，例如 [jobs.md](jobs.md) 中的 `JobId`。
+两个核心 ID 是 `ToolCallId`（关联工具调用及其结果；dsh-llm）和 `SessionId`（活跃 agent 与持久会话共享的标识；dsh-session）。能力包也会品牌化各自的 id，例如 [jobs.md](jobs.zh.md) 中的 `JobId`。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -322,7 +330,7 @@ type Branded<B extends string> = string & { readonly [BRAND]: B }
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxagentdefaultmodel--agentdefaultmodelconfig"></a>
 
@@ -346,7 +354,7 @@ currentSelection(): ModelSelection
 async saveSelection(next: ModelSelection): Promise<void>
 ```
 
-Source: [`packages/core/agent-default-model/src/index.ts:64`](../../packages/core/agent-default-model/src/index.ts)
+Source: [`packages/core/agent-default-model/src/index.ts`](../../packages/core/agent-default-model/src/index.ts)
 
 <a id="ctxagentloop--agentloop"></a>
 
@@ -383,9 +391,9 @@ async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<Agent
 async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>
 ```
 
-Types: [SessionHeader](persistence.md)
+Types: [SessionHeader](persistence.zh.md)
 
-Source: [`packages/core/agent-loop/src/index.ts:296`](../../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts`](../../packages/core/agent-loop/src/index.ts)
 
 <a id="ctxagentpresets--agentpresets"></a>
 
@@ -401,6 +409,16 @@ Discovery is unmemoized: `list()` and `resolve()` re-read the roots on every cal
  * @returns the presets, first-root-wins per id.
  */
 async list(): Promise<AgentPreset[]>
+
+/**
+ * The roster off the Host: {@link list} projected to path-free rows, with
+ * the default marked and this deployment's authoring capability beside it.
+ *
+ * Whether a client can open a preset's directory is the Host's own opener
+ * capability, not a roster property — a caller needing both joins them.
+ * @returns the rows and the authoring capability.
+ */
+@Remote('list') async remoteExportList(): Promise<AgentPresetRoster>
 
 /**
  * Resolve one preset by id.
@@ -477,6 +495,15 @@ composedPreset(agentCtx: Context): string | undefined
 async read(id: string): Promise<string>
 
 /**
+ * One preset's composition text with the roster row it belongs to.
+ * @param agentPreset - the preset id.
+ * @returns the composition beside its trust and published metadata.
+ * @throws {TypertRemoteFailure} `bad-request` for an empty id, or
+ * `agent-preset-not-found` when no configured root supplies it.
+ */
+@Remote('read') async readDocument(agentPreset: string): Promise<AgentPresetDocument>
+
+/**
  * Create a locally authored preset by copying an existing one whole.
  *
  * Copy is the only authoring write. Composition text never crosses this
@@ -494,11 +521,32 @@ async read(id: string): Promise<string>
 async copy(from: string, id: string, name?: string): Promise<void>
 
 /**
+ * Copy one preset through the Remote API.
+ * @param from - the source preset id.
+ * @param id - the new preset id.
+ * @param name - the copy's optional display name.
+ * @returns once the copy is stored.
+ * @throws {TypertRemoteFailure} with the corresponding stable preset code
+ * and details when the copy is refused.
+ */
+@Remote('copy') async remoteExportCopy(from: string, id: string, name?: string): Promise<void>
+
+/**
  * Delete a locally authored preset.
+ *
  * @param id - the preset id.
  * @throws when the preset is unknown or ships with the deployment.
  */
 async remove(id: string): Promise<void>
+
+/**
+ * Delete one preset through the Remote API.
+ * @param id - the preset id.
+ * @returns once the preset is deleted.
+ * @throws {TypertRemoteFailure} with the corresponding stable preset code
+ * and details when deletion is refused.
+ */
+@Remote('deletePreset') async remoteExportDelete(id: string): Promise<void>
 
 /**
  * One agent's instance of a service its preset mounted.
@@ -532,13 +580,25 @@ serviceFor<K extends string & keyof Context>(agent: { ctx: Context }, name: K): 
  * state to restore. The re-link runs through the binding this roster kept
  * from the agent's mount — dsh-scope's only re-link authority. An agent
  * that never composed one has nothing to re-link: the switch is then the
- * agent's first bind, exactly a mount.
+ * agent's first bind, exactly a mount. A committed re-link emits
+ * `tools/change` because changing the parent scope changes the Agent's
+ * resolved tool set without adding or removing registry entries.
  * @param agentCtx - the agent's scope context.
  * @param id - the preset to compose the agent from instead.
  * @returns the preset now installed.
  * @throws when the preset is unknown or its composition is unusable.
  */
 async recompose(agentCtx: Context, id: string): Promise<AgentPreset>
+
+/**
+ * Compose a blank session's agent from a different preset and record it.
+ * @param agent - the session's live agent, resolved from the wire identity.
+ * @param agentPreset - the preset to compose the agent from instead.
+ * @returns the preset id that was recorded.
+ * @throws {TypertRemoteFailure} with `bad-request`, `agent-preset-locked`,
+ * `agent-preset-not-found`, or `agent-preset-invalid` when refused.
+ */
+@Remote('select') async select(agent: Agent, agentPreset: string): Promise<string>
 
 /**
  * The standing scope key of one preset, for a host reader with no agent.
@@ -554,9 +614,9 @@ async recompose(agentCtx: Context, id: string): Promise<AgentPreset>
 async standingKeyFor(id?: string): Promise<ScopeKey>
 ```
 
-Types: [ScopeKey](scope.md)
+Types: [ScopeKey](scope.zh.md)
 
-Source: [`packages/preset/agent-presets/src/index.ts:82`](../../packages/preset/agent-presets/src/index.ts)
+Source: [`packages/preset/agent-presets/src/index.ts`](../../packages/preset/agent-presets/src/index.ts)
 
 <a id="ctxagents--agentregistry"></a>
 
@@ -728,7 +788,7 @@ list(): Agent[]
 roots(): Agent[]
 ```
 
-Source: [`packages/core/agent/src/index.ts:256`](../../packages/core/agent/src/index.ts)
+Source: [`packages/core/agent/src/index.ts`](../../packages/core/agent/src/index.ts)
 
 <a id="agent-events"></a>
 
@@ -754,9 +814,9 @@ A fully configured agent and live session were published. Setup is composition-o
 'agent/created'(this: Scoped<Agent>, payload: { agent: Agent }): void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:159`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentdisposed--emit"></a>
 
@@ -776,9 +836,9 @@ An agent left the registry; AgentLoop emits this after driver quiescence and sco
 'agent/disposed'(this: Scoped<Agent>, payload: { agent: Agent }): void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:168`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agenterror--emit"></a>
 
@@ -800,9 +860,9 @@ A step or turn errored. The machine reports a failure here even when the error h
 'agent/error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; error: unknown }): void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:290`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxclaimed--emit"></a>
 
@@ -824,9 +884,9 @@ One message left the inbox inside its open turn. If the proposed step is rejecte
 'agent/inbox/claimed'(this: Scoped<Agent>, payload: { agent: Agent; message: UserMessage; turn: number }): void
 ```
 
-Types: [Scoped](scope.md) · [UserMessage](session.md)
+Types: [Scoped](scope.zh.md) · [UserMessage](session.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:197`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxdiscarded--emit"></a>
 
@@ -845,9 +905,9 @@ One message was discarded from the live inbox.
 'agent/inbox/discarded'(this: Scoped<Agent>, payload: { agent: Agent; message: UserMessage }): void
 ```
 
-Types: [Scoped](scope.md) · [UserMessage](session.md)
+Types: [Scoped](scope.zh.md) · [UserMessage](session.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:205`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxinserted--emit"></a>
 
@@ -866,9 +926,9 @@ One message entered the live inbox.
 'agent/inbox/inserted'(this: Scoped<Agent>, payload: { agent: Agent; message: UserMessage }): void
 ```
 
-Types: [Scoped](scope.md) · [UserMessage](session.md)
+Types: [Scoped](scope.zh.md) · [UserMessage](session.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:186`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentpre-step--waterfall"></a>
 
@@ -891,9 +951,9 @@ Reject a proposed step or replace the messages that enter it. Calling `next()` p
 'agent/pre-step'(this: Scoped<Agent>, payload: { agent: Agent; messages: UserMessage[]; turn: number; step: number; signal: AbortSignal }, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>
 ```
 
-Types: [Scoped](scope.md) · [UserMessage](session.md)
+Types: [Scoped](scope.zh.md) · [UserMessage](session.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:231`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentrequest--waterfall"></a>
 
@@ -917,9 +977,9 @@ Replace the frozen call configuration. `await next()` yields the config the mach
 'agent/request'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<LlmCallConfig>): Promise<LlmCallConfig>
 ```
 
-Types: [LlmCallConfig](llm-streaming.md) · [Scoped](scope.md)
+Types: [LlmCallConfig](llm-streaming.zh.md) · [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:244`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentrequest-error--waterfall"></a>
 
@@ -946,9 +1006,9 @@ Handle one failed model-request attempt before the loop retries or closes its st
 'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
 ```
 
-Types: [LlmFailure](llm-streaming.md) · [ResolvedRetryPolicy](llm-streaming.md) · [Scoped](scope.md)
+Types: [LlmFailure](llm-streaming.zh.md) · [ResolvedRetryPolicy](llm-streaming.zh.md) · [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:260`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentsession-start--emit"></a>
 
@@ -970,9 +1030,9 @@ The session lifecycle began, once before the first turn. Use `agent.inject()` to
 'agent/session-start'(this: Scoped<Agent>, payload: { agent: Agent; source: SessionStartSource }): void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:217`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentstatus--emit"></a>
 
@@ -993,9 +1053,9 @@ Agent status changed (`idle` ⇄ `running`). A waking delivery enters `running` 
 'agent/status'(this: Scoped<Agent>, payload: { agent: Agent; status: AgentStatus }): void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:178`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentturn-stopping--serial"></a>
 
@@ -1024,9 +1084,9 @@ The turn is about to close: the model owes no response (no live tool calls, no f
 'agent/turn-stopping'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal }): Promise<void> | void
 ```
 
-Types: [Scoped](scope.md)
+Types: [Scoped](scope.zh.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:278`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agent-loop-events"></a>
 
@@ -1051,7 +1111,7 @@ A declarative agent entry failed before it could publish a live agent. Consumers
 'agent-loop/config-start-failed'(payload: { sessionId: SessionId; error: unknown }): void
 ```
 
-Source: [`packages/core/agent-loop/src/index.ts:183`](../../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts`](../../packages/core/agent-loop/src/index.ts)
 
 <a id="agent-preset-events"></a>
 
@@ -1074,5 +1134,5 @@ One session committed a different agent preset to its durable log. Consumers inv
 'agent-preset/selected'(sessionId: SessionId, agentPreset: string): void
 ```
 
-Source: [`packages/preset/agent-presets/src/types.ts:13`](../../packages/preset/agent-presets/src/types.ts)
+Source: [`packages/preset/agent-presets/src/types.ts`](../../packages/preset/agent-presets/src/types.ts)
 <!-- END GENERATED cordis-surface -->

@@ -10,11 +10,11 @@ Status: implemented
 
 ## 决策
 
-`verify-md-links` 现在也解析 fragment（取代[跨链接决策](2026-06-18-markdown-cross-link-lint.md)中暂缓纳入该检查范围的决定）。对每条目标为 Markdown 文件的相对链接——包括旧检查器完全跳过的同文件 `#anchor` 链接——fragment 必须命名目标中的真实锚点：标题的 GitHub slug，或真实 HTML 流中的显式 `<a id>`（代码示例与注释掉的锚点不注册任何东西）。slug 由仓库自有的 `markdownHeadingLines` 从**渲染后**的标题文本计算，因此，标题内的链接、行内代码与强调都会按 GitHub 的渲染结果参与 slug 计算；下划线保留（`#showcase-web_fetch`）；重复 slug 获得 GitHub 的占用集 `-1`、`-2`……后缀；匹配区分大小写，因为元素 id 本就区分大小写。指向非 Markdown 目标的 fragment（`file.ts#L10`）语义归渲染器所有，不在范围内；外部与根绝对 URL 同样不检查。锚点集合对任意存在的目标惰性收集（`anchorCache`），因此链入归档 note 与 vendor 文档的链接照常校验，而这些文件不会因此成为扫描源。
+`verify-md-links` 现在也解析 fragment（取代[跨链接决策](2026-06-18-markdown-cross-link-lint.zh.md)中暂缓纳入该检查范围的决定）。对每条目标为 Markdown 文件的相对链接——包括旧检查器完全跳过的同文件 `#anchor` 链接——fragment 必须命名目标中的真实锚点：标题的 GitHub slug，或真实 HTML 流中的显式 `<a id>`（代码示例与注释掉的锚点不注册任何东西）。slug 由仓库自有的 `markdownHeadingLines` 从**渲染后**的标题文本计算，因此，标题内的链接、行内代码与强调都会按 GitHub 的渲染结果参与 slug 计算；下划线保留（`#showcase-web_fetch`）；重复 slug 获得 GitHub 的占用集 `-1`、`-2`……后缀；匹配区分大小写，因为元素 id 本就区分大小写。指向非 Markdown 目标的 fragment（`file.ts#L10`）语义归渲染器所有，不在范围内；外部与根绝对 URL 同样不检查。锚点集合对任意存在的目标惰性收集（`anchorCache`），因此链入归档 note 与 vendor 文档的链接照常校验，而这些文件不会因此成为扫描源。
 
 slug 函数与 `gen-cordis-catalog` 的区块锚点 slugger 不同（后者丢弃下划线）：生成器的标题总能通过其显式 `<a id>` 锚点到达，两者无需共享一条规则。中文侧沿用既有语料惯例（`docs/glossary.zh.md`、`docs/cordis-primer.zh.md`）：链接保留英文 fragment，在中文标题前放置显式 `<a id>`，使两个语言侧暴露相同的锚点。
 
-15 条坏 fragment 在同一变更中修复：陈旧 slug 重定向到当前标题，搬迁的无超时约定改链其属主 group README，四份中文文档补上显式锚点。`docs/AGENTS.md` 与 `dsh-doc-standards` skill 不再要求为 Markdown 链接手工 grep 锚点；人工 grep 只对输出从不进入受检 Markdown 的 TypeScript 字符串锚点保留（当下三处全部渲染进受检页面，gate 经由提交的产物覆盖它们）。
+15 条坏 fragment 在同一变更中修复：陈旧 slug 重定向到当前标题，搬迁的无超时约定改链其属主 group README，四份中文文档补上显式锚点。`docs/AGENTS.md` 与 `dsh-doc` skill 不再要求为 Markdown 链接手工 grep 锚点；人工 grep 只对输出从不进入受检 Markdown 的 TypeScript 字符串锚点保留（三处受扫描引用全部渲染进受检页面，因此 gate 经由提交的产物覆盖它们）。
 
 ## 验证
 

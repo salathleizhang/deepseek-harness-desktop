@@ -24,8 +24,25 @@
  */
 
 import { z } from 'zod'
-import { isTokenDelta } from '@deepseek-ai/dsh-llm/message'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm/types'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+
+/* jscpd:ignore-start -- Session Stats owns its whole-log timing projection independently. */
+
+/** Whether a stream chunk carries a non-empty first-token delta. */
+function isTokenDelta(chunk: StreamChunk): boolean {
+  switch (chunk.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return chunk.text !== ''
+    case 'tool-call-delta':
+      return chunk.argumentsDelta !== '' || chunk.name !== undefined
+    default:
+      return false
+  }
+}
+
+/* jscpd:ignore-end */
 
 /** Accumulated whole-log figures (the view is exactly these totals). */
 interface SessionStatsTotals {
@@ -62,6 +79,12 @@ interface SessionStatsState extends SessionStatsTotals {
   pendingCalls: Record<string, number>
 }
 
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    sessionStats: SessionStatsState
+  }
+}
+
 const sessionStatsSchema = z.object({
   turns: z.number().int().nonnegative(),
   steps: z.number().int().nonnegative(),
@@ -72,6 +95,23 @@ const sessionStatsSchema = z.object({
   decodeMs: z.number().nonnegative(),
   decodeTokens: z.number().nonnegative(),
 }).strict()
+
+/**
+ * The fold state's shape (totals plus in-flight boundaries), validated on
+ * persisted-cache rows after their `ver` gate — the unit's input boundary.
+ * The view is a strict subset of the state, so this schema extends
+ * `sessionStatsSchema` (the wire output boundary) with the boundary fields.
+ */
+const sessionStatsStateSchema = sessionStatsSchema.extend({
+  lastTurn: z.number().int().nonnegative().nullable(),
+  openStep: z.object({
+    turn: z.number().int().nonnegative(),
+    step: z.number().int().nonnegative(),
+    startTime: z.number().nonnegative(),
+    firstTokenTime: z.number().nonnegative().nullable(),
+  }).nullable(),
+  pendingCalls: z.record(z.string(), z.number().nonnegative()),
+})
 
 /**
  * Provider-reported completion tokens, guarded the way the window fold guards
@@ -86,9 +126,10 @@ function usageOutputTokens(usage: unknown): number | null {
 }
 
 /** The `sessionStats` unit registered on `ctx.sessionProjections` (exported for the unit spec). */
-export const sessionStatsProjectionDefinition: ProjectionDefinition<'sessionStats', SessionStatsState> = {
+export const sessionStatsProjectionDefinition = {
   key: 'sessionStats',
-  schema: sessionStatsSchema,
+  stateVersion: 1,
+  stateSchema: sessionStatsStateSchema,
   init: () => ({
     turns: 0,
     steps: 0,
@@ -169,15 +210,17 @@ export const sessionStatsProjectionDefinition: ProjectionDefinition<'sessionStat
         return state
     }
   },
-  view: state => ({
-    turns: state.turns,
-    steps: state.steps,
-    llmMs: state.llmMs,
-    toolMs: state.toolMs,
-    ttftMs: state.ttftMs,
-    ttftSteps: state.ttftSteps,
-    decodeMs: state.decodeMs,
-    decodeTokens: state.decodeTokens,
-  }),
-  stateVersion: 1,
-}
+  wire: {
+    viewSchema: sessionStatsSchema,
+    view: state => ({
+      turns: state.turns,
+      steps: state.steps,
+      llmMs: state.llmMs,
+      toolMs: state.toolMs,
+      ttftMs: state.ttftMs,
+      ttftSteps: state.ttftSteps,
+      decodeMs: state.decodeMs,
+      decodeTokens: state.decodeTokens,
+    }),
+  },
+} satisfies ProjectionDefinition<'sessionStats', SessionStatsState>

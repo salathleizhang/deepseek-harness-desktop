@@ -12,6 +12,11 @@ import { fromMarkdown } from 'mdast-util-from-markdown'
 import { gfmFromMarkdown } from 'mdast-util-gfm'
 import { gfm } from 'micromark-extension-gfm'
 import type { Nodes } from 'mdast'
+import {
+  languageSwitcherLinkOffset,
+  semanticTranslationLinkNodeTarget,
+  type TranslationLinkContext,
+} from './translation-links.ts'
 
 /** Complete opening marker line: `<!-- BEGIN GENERATED <slug> … -->` (slug captured). */
 const GENERATED_REGION_BEGIN_LINE = /^<!-- BEGIN GENERATED (\S+)(?: [^>]*)? -->$/
@@ -125,8 +130,7 @@ export interface TranslationPairingManifest {
 }
 
 const README_ARTIFACT = /(?:^|\/)readme(?:\.md|\.zh\.md|\.i18n\.yaml)$/i
-const ROOT_CONTRIBUTING_ARTIFACT = /^contributing(?:\.md|\.zh\.md|\.i18n\.yaml)$/i
-const ROOT_BRAND_GUIDELINES_ARTIFACT = /^brand_guidelines(?:\.md|\.zh\.md|\.i18n\.yaml)$/i
+const ROOT_PAIRED_DOCUMENT_ARTIFACT = /^(?:brand_guidelines|contributing|safety)(?:\.md|\.zh\.md|\.i18n\.yaml)$/i
 const NON_SOURCE_DIRECTORIES = new Set([
   'node_modules',
   'lib',
@@ -161,7 +165,7 @@ export const TRANSLATION_SCOPE_GLOB_EXCLUDES = [
   '**/.pytest_cache/**',
   'apps/web/dist/**',
   '.artifacts/**',
-  'python/sdk-runtime/src/deepseek_harness_runtime/runtime/dsh-jsonrpc-agent-*/**',
+  'python/sdk-runtime/src/deepseek_harness_runtime/runtime/deepseek-harness-sdk-runtime-*/**',
   'python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/**',
   'vendor/**',
 ]
@@ -173,7 +177,7 @@ function isTranslationSourceExcluded(file: string): boolean {
       || segment.startsWith('.doc-typecheck-')
     || segment.startsWith('.node-next-types-'))
     || file.startsWith('apps/web/dist/')
-    || file.startsWith('python/sdk-runtime/src/deepseek_harness_runtime/runtime/dsh-jsonrpc-agent-')
+    || file.startsWith('python/sdk-runtime/src/deepseek_harness_runtime/runtime/deepseek-harness-sdk-runtime-')
     || file.startsWith('python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/')
 }
 
@@ -181,8 +185,7 @@ function isTranslationSourceExcluded(file: string): boolean {
 export function isTranslationScopeFile(file: string): boolean {
   return !file.startsWith('.agents/notes/archived/')
     && !isTranslationSourceExcluded(file) && (README_ARTIFACT.test(file)
-    || ROOT_CONTRIBUTING_ARTIFACT.test(file)
-    || ROOT_BRAND_GUIDELINES_ARTIFACT.test(file)
+    || ROOT_PAIRED_DOCUMENT_ARTIFACT.test(file)
     || file.startsWith('.agents/notes/')
     || file.startsWith('docs/')
     || file.startsWith('python/'))
@@ -213,6 +216,22 @@ export function parseTranslationPairingManifest(content: string): TranslationPai
     throw new Error(`translation-pairing.manifest.json: unsupported field(s): ${unsupported.join(', ')}; every in-scope document is required`)
   }
   return { excluded: excludedField(record) }
+}
+
+/** Whether a manifest entry excludes one exact file or a directory subtree. */
+export function isTranslationPairingManifestExcluded(
+  file: string,
+  manifest: TranslationPairingManifest,
+): boolean {
+  return manifest.excluded.some(entry => (entry.endsWith('/') ? file.startsWith(entry) : file === entry))
+}
+
+/** Build the active bilingual-source predicate shared by every link consumer. */
+export function translationPairSourcePredicate(
+  manifest: TranslationPairingManifest,
+): (sourcePath: string) => boolean {
+  return sourcePath => isTranslationScopeFile(sourcePath)
+    && !isTranslationPairingManifestExcluded(sourcePath, manifest)
 }
 
 /**
@@ -311,18 +330,6 @@ export function languageSwitcherTargets(counterpart: string): string[] {
   return [basename(counterpart), `${PUBLIC_REPOSITORY_BLOB_ROOT}${counterpart}`]
 }
 
-/** Whether the tree contains a link to any accepted target. */
-export function linksTo(tree: Nodes, targets: string | readonly string[]): boolean {
-  const accepted = new Set(typeof targets === 'string' ? [targets] : targets)
-  let found = false
-  const visit = (node: Nodes): void => {
-    if (node.type === 'link' && accepted.has(node.url)) found = true
-    if ('children' in node) for (const child of node.children) visit(child)
-  }
-  visit(tree)
-  return found
-}
-
 /** Generated English sources cannot carry a switcher without making their generator stale. */
 export function requiresSourceLanguageSwitcher(source: string): boolean {
   return ![
@@ -349,11 +356,21 @@ export function requiresSourceLanguageSwitcher(source: string): boolean {
 export function translationStructureSignature(
   tree: Nodes,
   switcherTargets: string | readonly string[],
+  linkContext: TranslationLinkContext & { markdown: string },
 ): TranslationStructureSignature {
-  const acceptedSwitchers = new Set(
-    typeof switcherTargets === 'string' ? [switcherTargets] : switcherTargets,
-  )
+  const switcherOffset = languageSwitcherLinkOffset(tree, linkContext.markdown, switcherTargets)
   const sig: TranslationStructureSignature = { headings: [], code: [], tables: [], lists: [], links: [] }
+  const definitions = new Map<string, Extract<Nodes, { type: 'definition' }>>()
+  const collectDefinitions = (node: Nodes): void => {
+    if (node.type === 'definition' && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node)
+    }
+    if ('children' in node) for (const child of node.children) collectDefinitions(child)
+  }
+  collectDefinitions(tree)
+  const linkTarget = (node: Extract<Nodes, { type: 'link' | 'definition' }>): string => (
+    semanticTranslationLinkNodeTarget(node, linkContext.markdown, linkContext)
+  )
   const visit = (node: Nodes): void => {
     switch (node.type) {
       case 'heading':
@@ -371,8 +388,17 @@ export function translationStructureSignature(
           : `bullet:items=${node.children.length}`)
         break
       case 'link':
-        if (!acceptedSwitchers.has(node.url)) sig.links.push(node.url)
+        if (node.position?.start.offset !== switcherOffset) {
+          sig.links.push(linkTarget(node))
+        }
         break
+      case 'linkReference': {
+        const definition = definitions.get(node.identifier)
+        if (definition !== undefined) {
+          sig.links.push(linkTarget(definition))
+        }
+        break
+      }
       default:
         // Every other node kind is prose or a container, not part of the signature.
         break

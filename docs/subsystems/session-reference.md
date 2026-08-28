@@ -34,7 +34,7 @@ interface SessionReferenceInput {
 }
 ```
 
-`SessionReferenceCandidate` is host-facing discovery output. Its label uses the latest session title when present, while filtering still searches only session id and cwd and never transcript text.
+`SessionReferenceCandidate` is host-facing discovery output. Its label uses the latest session title when present, and filtering searches that label alongside session id and cwd, never transcript text.
 
 ```ts type-equiv
 /** One host-facing candidate from exact session metadata. */
@@ -45,6 +45,12 @@ interface SessionReferenceCandidate {
   label: string
   /** Source session working directory, when recorded. */
   cwd?: string
+  /**
+   * True when {@link SessionReferenceCandidate.cwd} is recorded and equals the
+   * requesting agent's. Hosts that only surface a distinguishing location
+   * read this instead of comparing paths they never received.
+   */
+  sameWorkspace: boolean
   /** Source session creation time in Unix epoch milliseconds. */
   createdAt: number
 }
@@ -96,7 +102,7 @@ type SessionReferenceErrorCode =
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxfilereferences--filereferenceservice-abstract-seam"></a>
 
@@ -113,21 +119,32 @@ Host capability for cancellable file-reference discovery.
  * @returns deterministic path-only candidates.
  */
 abstract list( agent: Agent, query: string, signal: AbortSignal, ): Promise<FileReferenceCandidate[]>
-
-/**
- * Remote face of {@link list}; the decorator cannot mark the abstract
- * member, so this concrete adapter carries the identical contract.
- * @param agent - target agent whose session cwd bounds discovery.
- * @param query - path text following `@` or `@"`.
- * @param signal - caller cancellation.
- * @returns deterministic path-only candidates.
- */
-@Remote('list') remoteExportList( agent: Agent, query: string, signal: AbortSignal, ): Promise<FileReferenceCandidate[]>
 ```
 
 Types: [Agent](core.md)
 
-Source: [`packages/context/file-reference/src/index.ts:27`](../../packages/context/file-reference/src/index.ts)
+Source: [`packages/context/file-reference/src/index.ts`](../../packages/context/file-reference/src/index.ts)
+
+<a id="ctxsessionfilereferences--sessionfilereferences"></a>
+
+### `ctx.sessionFileReferences` — `SessionFileReferences`
+
+Host Remote adapter over the composed file-reference provider.
+
+```ts cordis-catalog
+/**
+ * List file and directory candidates for one Agent's working directory.
+ * @param agent - target Agent resolved from the Session identity on the wire.
+ * @param query - path text following `@` or `@"`.
+ * @param signal - caller cancellation.
+ * @returns deterministic path-only candidates from the composed provider.
+ */
+@Remote list( agent: Agent, query: string, signal: AbortSignal, ): Promise<FileReferenceCandidate[]>
+```
+
+Types: [Agent](core.md)
+
+Source: [`packages/api/session-controller/src/file-references.ts`](../../packages/api/session-controller/src/file-references.ts)
 
 <a id="ctxsessionreferenceresolver--sessionreferenceresolver"></a>
 
@@ -138,6 +155,10 @@ Exact-read consumer that prepares immutable cross-session message context.
 ```ts cordis-catalog
 /**
  * List reference candidates, ranked by working-directory affinity.
+ *
+ * Discovery runs at keystroke rate, so a title only ever comes from a
+ * projection read: see {@link SessionReferenceResolver.projectedTitle} for
+ * which sessions can answer one and which fall back to their id.
  * @param agent - target agent; self is excluded and its cwd drives ranking.
  * @param query - optional case-insensitive session-id/cwd/title substring.
  * @param limit - optional positive result cap.
@@ -170,5 +191,5 @@ async prepare( agent: Agent, content: ContentBlock[], references: SessionReferen
 
 Types: [Agent](core.md) · [ContentBlock](llm-streaming.md)
 
-Source: [`packages/context/session-reference/src/index.ts:75`](../../packages/context/session-reference/src/index.ts)
+Source: [`packages/context/session-reference/src/index.ts`](../../packages/context/session-reference/src/index.ts)
 <!-- END GENERATED cordis-surface -->

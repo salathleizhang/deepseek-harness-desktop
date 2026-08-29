@@ -8,7 +8,7 @@ import {
 } from '../src/client/NotificationsRow.tsx'
 
 const unusedHook = (() => { throw new Error('unused by notifications row') }) as never
-const kit = { useSessions: unusedHook, useWorkspaces: unusedHook }
+const kit = { useSessions: unusedHook, useWorkspaces: unusedHook, useSessionPendingInteraction: unusedHook }
 
 describe('readDesktopNotificationsBridge', () => {
   afterEach(() => {

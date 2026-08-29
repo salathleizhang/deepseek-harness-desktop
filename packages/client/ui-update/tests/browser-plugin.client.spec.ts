@@ -78,6 +78,7 @@ describe('ui-update browser half', () => {
 
   it('registers both dictionaries under its own namespace and releases them with the fiber', async () => {
     const { ctx, fiber } = await bench({ withBridge: true })
+    ctx.locale.setLocale('zh')
     const translate = ctx.locale.bind('update')
     expect(translate('available')).toBe(zh.available)
     ctx.locale.setLocale('en')

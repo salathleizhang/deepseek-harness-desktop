@@ -8,7 +8,7 @@ import {
 } from '../src/client/CloseBehaviorRow.tsx'
 
 const unusedHook = (() => { throw new Error('unused by close-behavior row') }) as never
-const kit = { useSessions: unusedHook, useWorkspaces: unusedHook }
+const kit = { useSessions: unusedHook, useWorkspaces: unusedHook, useSessionPendingInteraction: unusedHook }
 
 describe('readDesktopCloseBehaviorBridge', () => {
   afterEach(() => {

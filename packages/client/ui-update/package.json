@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-update",
   "description": "Desktop auto-update footer action: surfaces the Electron shell's update status beside Settings",
-  "version": "0.1.0-rc.14",
+  "version": "0.1.0-rc.15",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

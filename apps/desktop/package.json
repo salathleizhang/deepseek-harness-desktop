@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-desktop",
   "description": "Electron desktop shell: runs the harness as a child process and hosts the existing Web GUI",
-  "version": "0.1.0-rc.14",
+  "version": "0.1.0-rc.15",
   "private": true,
   "type": "module",
   "main": "lib/main.js",

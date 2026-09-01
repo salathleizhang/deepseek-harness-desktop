@@ -29,7 +29,7 @@ Mount the registry when a composition should verify its own runtime contracts, t
 
 ### When to use it
 
-Use the registry for compositions that want live diagnostics. The standard agent composition in [`agent-spine-demo`](../../../packages/examples/agent-spine-demo/README.md) already mounts it with the four core stateful companions — `dsh-session`, `dsh-agent`, `dsh-scope`, and `dsh-agent-loop`. Custom compositions mount the registry and add companions for any other loaded package whose contracts they want checked. Loading the registry alone installs no checks: it ships no product checks of its own, so a composition that never mounts a companion observes no diagnostic behavior.
+Use the registry for compositions that want live diagnostics. [`dsh-sdk-minimal`](../../bundle/sdk-minimal/README.md) mounts it with the four core stateful companions — `dsh-session`, `dsh-agent`, `dsh-scope`, and `dsh-agent-loop`; `dsh-base` deliberately omits runtime diagnostics. Custom compositions mount the registry and add companions for any other loaded package whose contracts they want checked. Loading the registry alone installs no checks: it ships no product checks of its own, so a composition that never mounts a companion observes no diagnostic behavior.
 
 ### Enabling checks and selecting packages
 

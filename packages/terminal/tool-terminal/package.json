@@ -63,6 +63,7 @@
     "@deepseek-ai/dsh-jobs-local": "workspace:^",
     "@deepseek-ai/dsh-tool-jobs": "workspace:^",
     "@deepseek-ai/dsh-tools": "workspace:^",
-    "@deepseek-ai/cordis": "workspace:^"
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-session-projection": "workspace:^"
   }
 }

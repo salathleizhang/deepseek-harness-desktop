@@ -58,7 +58,7 @@ interface CatalogFetch {
 }
 
 /** Required services: reference source faces plus the tool-row and locale registries. */
-export const inject = ['inputTriggers', 'connection', 'sessions', 'slots', 'locale', 'remote', 'remote.skills']
+export const inject = ['inputTriggers', 'sessions', 'slots', 'locale', 'remote', 'remote.skills']
 
 /**
  * Client plugin body: register the '/' source, dictionaries, and keyed tool row.

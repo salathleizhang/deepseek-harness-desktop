@@ -5,8 +5,9 @@
  * @module @deepseek-ai/dsh-session/repair
  */
 
-import { MessageId, freezeMessage, type ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { ToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import type { MessageId, ToolCallId, ToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { SessionEvent } from './types.ts'
 
 /** Recovery code for an assistant tool request that never reached a recorded call start. */
@@ -90,8 +91,8 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
   // and Map insertion order preserves their transcript order.
   for (const [callId, { step, callSeq }] of pendingCalls) {
     const started = callSeq !== undefined
-    const message: ToolResultMessage = freezeMessage({
-      id: MessageId(`interrupted-tool-result-${callId}-${seq}`),
+    const message: ToolResultMessage = deepFreeze({
+      id: brandString<MessageId>(`interrupted-tool-result-${callId}-${seq}`),
       role: 'user',
       source: { kind: 'tool', callId },
       content: [{

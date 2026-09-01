@@ -76,13 +76,16 @@ const PACKAGE_LIBRARIES: Readonly<Record<string, string>> = {
   'packages/typert/generator': 'Build-time generator run outside any agent runtime.',
   'packages/typert/protocol': 'Compiler-independent protocol declarations.',
   'packages/util/atomic-write': 'Zero-dependency filesystem write utility.',
-  'packages/util/brand': 'Type-only branding primitive erased at compile time.',
+  'packages/util/brand': 'Stateless nominal-string and canonical-key constructors.',
   'packages/util/crypto': 'Zero-dependency identifier minting utility.',
+  'packages/util/deque': 'Zero-dependency circular deque utility.',
   'packages/util/home-paths': 'Zero-dependency harness-home path resolver.',
   'packages/util/launch-environment': 'Zero-dependency environment resolver.',
   'packages/util/native-command': 'Host-side subprocess runner utility.',
   'packages/util/output-retention': 'Zero-dependency retention utility.',
+  'packages/util/time': 'Zero-dependency time-zone canonicalization utility.',
   'packages/util/timeout': 'Zero-dependency timeout utility.',
+  'packages/util/values': 'Stateless lossless-JSON and immutable-value helpers.',
   'packages/util/workspace-path': 'Zero-dependency Workspace path formatter.',
 }
 
@@ -162,8 +165,8 @@ describe('dsh-doc skill consolidation', () => {
 
   it('keeps the reference example linked from the skill', () => {
     const skill = readFileSync(resolve(root, '.agents/skills/dsh-doc/SKILL.md'), 'utf8')
-    expect(skill).toContain('session-persistence-sqlite/README.md')
-    expect(skill).toContain('session-persistence-sqlite/README.zh.md')
+    expect(skill).toContain('session-persistence-jsonl/README.md')
+    expect(skill).toContain('session-persistence-jsonl/README.zh.md')
   })
 
   it('defines controlled English as a precision-preserving review discipline', () => {
@@ -249,7 +252,7 @@ describe('dsh-doc skill consolidation', () => {
 })
 
 describe('reference-example README pair', () => {
-  const dir = 'packages/session/session-persistence-sqlite'
+  const dir = 'packages/session/session-persistence-jsonl'
 
   it('keeps exact English/Chinese physical line alignment', () => {
     const sourceLines = readFileSync(resolve(root, dir, 'README.md'), 'utf8').split('\n').length

@@ -5,7 +5,7 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ISession } from '@deepseek-ai/dsh-api-session-controller/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import {
-  SlotTestRuntime, TestRemote, stubSettingsScope, usePinnedBrowserLanguages,
+  RemoteError, SlotTestRuntime, TestRemote, stubSettingsScope, usePinnedBrowserLanguages,
 } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionBehaviorOverrides } from '@deepseek-ai/dsh-client-test-runtime'
 import type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client'
@@ -35,6 +35,7 @@ type ChatActions = ChatInstance['actions']
 function sessionFakeFor() {
   return {
     loadOlder: vi.fn<ISession['loadOlder']>(() => Promise.resolve()),
+    loadThrough: vi.fn<ISession['loadThrough']>(() => Promise.resolve()),
     readAttachment: vi.fn<ISession['readAttachment']>(() => Promise.resolve({
       ok: true,
       value: { attachment: ATTACHMENT, data: Uint8Array.of(1) },
@@ -92,6 +93,9 @@ describe('Chat inject API', () => {
     injected.loadOlder()
     expect(b.session.loadOlder).toHaveBeenCalledOnce()
 
+    void injected.loadThrough(42)
+    expect(b.session.loadThrough).toHaveBeenCalledWith(42)
+
     injected.forkAt(17)
     await vi.waitFor(() => {
       expect(b.runtime.sessions.calls).toContainEqual({ method: 'open', args: [ROOT] })
@@ -127,7 +131,7 @@ describe('Chat inject API', () => {
 
     b.openWorkspacePath.mockResolvedValueOnce({
       ok: false,
-      error: { code: 'internal', message: 'xdg-open is not available', details: {} },
+      error: new RemoteError('gateway/internal', 'xdg-open is not available', {}),
     })
     await expect(injected.openFile('src/b.ts')).rejects.toThrow('path open failed: xdg-open is not available')
     await b.runtime.dispose()

@@ -155,7 +155,6 @@ describe('global test invariant host', () => {
     expect(usesManualInvariantTree('/repo/packages/core/session/tests/invariant.spec.ts')).toBe(true)
     expect(usesManualInvariantTree('/repo/packages/core/session/tests/request-invariant-hmr.spec.ts')).toBe(true)
     expect(usesManualInvariantTree('C:\\repo\\packages\\runtime-diagnostics\\invariants\\tests\\service.spec.ts')).toBe(true)
-    expect(usesManualInvariantTree('/repo/packages/examples/agent-spine-demo/tests/agent-core.spec.ts')).toBe(true)
     expect(usesManualInvariantTree('/repo/packages/core/session/tests/session.spec.ts')).toBe(false)
   })
 

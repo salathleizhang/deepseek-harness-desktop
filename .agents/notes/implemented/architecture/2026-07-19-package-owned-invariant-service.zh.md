@@ -74,7 +74,7 @@ blocklist 匹配优先于 allowlist 匹配。每个条目都是区分大小写�
 
 ### 示例组合与 SDK 输出
 
-示例 agent 主干会挂载服务和四个有状态伴随子路径，并把 `enabled`、`package_allowlist` 与 `package_blocklist` 转发给服务。生成的 SDK Cordis 组合输出相同条目。子路径条目添加可安装的根 npm 包，而不会把子路径误当成包名。根据[交付配置决策](../simplification/2026-08-03-omit-invariants-from-shipped-config.zh.md)，交付的 `dsh` TUI 与 Web 配置树会省略该服务及其伴随插件。
+`dsh-sdk-minimal` patch 将该服务与四个有状态配套子路径作为显式配置行挂载。子路径配置行会添加可安装的根 npm 包，而不会把子路径误当成包名。根据[交付配置决策](../simplification/2026-08-03-omit-invariants-from-shipped-config.zh.md)，交付的、基于 base 的配置树会省略该服务及其配套插件。
 
 Workspace 约束识别独立的不变式 bundle；包 exports、项目引用、构建配置、依赖声明和 lockfile 描述同一份发布元数据。生成的配置目录、模块图和 API 文档都从这些源派生。
 

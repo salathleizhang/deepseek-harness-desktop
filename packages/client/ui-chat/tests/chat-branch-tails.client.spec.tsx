@@ -2,8 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
-import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   ChatConversationViewNode, ConversationNode,
@@ -39,6 +38,12 @@ const t: ChatNodeViewProps['t'] = makeTranslate(zh, commonZh)
 const renderMessageImages: AssistantMarkdownProps['renderMessageImages'] = () => null
 const RETRY_ID = 'retry-fixture' as Extract<ConversationNode, { kind: 'model-retry' }>['retryId']
 
+// Recency scans the whole transcript; a detached fixture is its own latest row.
+const useDetachedChat: ChatNodeViewProps['useChat'] = bindSnapshotSelector({
+  subscribe: () => () => {},
+  getSnapshot: () => ({ order: [], nodes: new Map() }),
+} as never)
+
 interface MessageItemProps {
   readonly node: ConversationNode
   readonly t: ChatNodeViewProps['t']
@@ -62,7 +67,7 @@ function MessageItem({ node, t: translate, referenceLabels }: MessageItemProps) 
         ? { ...node, referenceLabels }
         : node,
   }
-  const props = { node: viewNode, t: translate, renderMessageImages } as ChatNodeViewProps
+  const props = { node: viewNode, t: translate, renderMessageImages, useChat: useDetachedChat } as ChatNodeViewProps
   switch (node.kind) {
     case 'user':
     case 'steering':

@@ -9,6 +9,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as SubagentFork from '@deepseek-ai/dsh-subagent-fork-in-process'
 import type { GenerateOptions, MessageId, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -72,6 +73,9 @@ async function setupWith(
 ) {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  // The registry is a required injection of AgentLoop and SubagentRuntime
+  // (both register projection units on activation).
+  await ctx.plugin(SessionProjectionRegistry)
   let disposePersistence: (() => Promise<void>) | undefined
   let root: string | undefined
   if (options.persistence !== false) {
@@ -455,6 +459,7 @@ describe('SubagentRuntime.startContinuable', () => {
 
     const fresh = new Context()
     await mountAgentLoopTestDependencies(fresh)
+    await fresh.plugin(SessionProjectionRegistry)
     const freshPersistence = await fresh.plugin(JsonlSessionPersistence, { root: root! })
     // This context opened a second handle on the same root; register it so
     // afterEach closes it before removing the root (even on a failure path).
@@ -520,6 +525,126 @@ describe('SubagentRuntime.startContinuable', () => {
     await waitNoActivation(ctx, started.childId)
     const resumed = await ctx.sessionPersistence.load(started.childId)
     expect(hasUserText(resumed.events, 'resume it')).toBe(true)
+  })
+})
+
+describe('continuable image follow-ups', () => {
+  const imageBlock = {
+    type: 'image' as const,
+    attachment: {
+      attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 1, width: 1, height: 1,
+    },
+  }
+
+  it('refuses an image follow-up when the child model declines image input, leaving no partial message', async () => {
+    const { ctx, parent } = await setup([textResponse('child work')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await waitNoActivation(ctx, started.childId)
+    const resolve = vi.spyOn(ctx.llm, 'resolveModelInfo')
+      .mockResolvedValue({ inputModalities: ['text'] } as never)
+
+    await expect(ctx.subagents.followup(parent, started.childId, [
+      { type: 'text' as const, text: 'see this' },
+      imageBlock,
+    ], { source: { kind: 'user' }, signal: testSignal }))
+      .rejects.toMatchObject({ code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' })
+
+    expect(resolve).toHaveBeenCalledWith('mock', 'mock', testSignal)
+    const loaded = await ctx.sessionPersistence.load(started.childId)
+    expect(hasUserText(loaded.events, 'see this')).toBe(false)
+    await drainManager(ctx)
+  })
+
+  it('delivers an image follow-up to a resident child when its model accepts image input', async () => {
+    const releaseFirst = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child work'), gate: releaseFirst.promise },
+      { chunks: textResponse('image reply') },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await vi.waitFor(() => {
+      expect(adapter.requests).toHaveLength(1)
+    })
+    vi.spyOn(ctx.llm, 'resolveModelInfo')
+      .mockResolvedValue({ inputModalities: ['text', 'image'] } as never)
+
+    await ctx.subagents.followup(parent, started.childId, [
+      { type: 'text' as const, text: 'compare' },
+      imageBlock,
+    ], { source: { kind: 'user' }, signal: testSignal })
+    releaseFirst.resolve(undefined)
+    await waitNoActivation(ctx, started.childId)
+
+    const loaded = await ctx.sessionPersistence.load(started.childId)
+    const delivered = loaded.events.find(event => event.type === 'user/message'
+      && event.data.content.some(block => block.type === 'image'))
+    expect(delivered?.type === 'user/message' && delivered.data.content).toEqual([
+      { type: 'text', text: 'compare' },
+      imageBlock,
+    ])
+    await drainManager(ctx)
+  })
+
+  it('re-checks the disposal cutoff when a drain begins during a live image capability read', async () => {
+    const releaseFirst = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([{ chunks: textResponse('child work'), gate: releaseFirst.promise }])
+    const { ctx, parent } = await setupWith(adapter)
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(1) })
+    const capability = Promise.withResolvers<{ inputModalities: string[] }>()
+    const resolve = vi.spyOn(ctx.llm, 'resolveModelInfo').mockReturnValue(capability.promise as never)
+
+    const delivery = ctx.subagents.followup(parent, started.childId, [imageBlock], {
+      source: { kind: 'user' }, signal: testSignal,
+    })
+    delivery.catch(() => undefined)
+    await vi.waitFor(() => { expect(resolve).toHaveBeenCalled() })
+    releaseFirst.resolve(undefined)
+    const draining = drainManager(ctx)
+    capability.resolve({ inputModalities: ['text', 'image'] })
+
+    await expect(delivery).rejects.toMatchObject({ code: 'DRAINING' })
+    await draining
+  })
+
+  it('rejects a materialized image follow-up whose capability read raced a drain', async () => {
+    const { ctx, parent } = await setup([textResponse('child work')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await waitNoActivation(ctx, started.childId)
+    const capability = Promise.withResolvers<{ inputModalities: string[] }>()
+    const resolve = vi.spyOn(ctx.llm, 'resolveModelInfo').mockReturnValue(capability.promise as never)
+
+    const delivery = ctx.subagents.followup(parent, started.childId, [imageBlock], {
+      source: { kind: 'user' }, signal: testSignal,
+    })
+    delivery.catch(() => undefined)
+    await vi.waitFor(() => { expect(resolve).toHaveBeenCalled() })
+    const draining = drainManager(ctx)
+    capability.resolve({ inputModalities: ['text', 'image'] })
+
+    await expect(delivery).rejects.toMatchObject({ code: 'ACTIVATION_CLOSING' })
+    await draining
+    const loaded = await ctx.sessionPersistence.load(started.childId)
+    expect(loaded.events.some(event => event.type === 'user/message'
+      && event.data.content.some(block => block.type === 'image'))).toBe(false)
+  })
+
+  it('defers to the text-only projection when the descriptor declares no model route', async () => {
+    const { ctx } = await setup([])
+    const routeless = ctx.agentLoop.create(SessionId('routeless-image'), {})
+    const started = await ctx.subagents.startContinuable(startSpec(routeless))
+    await waitNoActivation(ctx, started.childId)
+    const resolve = vi.spyOn(ctx.llm, 'resolveModelInfo')
+
+    // Acceptance is the success boundary: with no declared route there is no
+    // model to refuse against, so the image message enters the child inbox.
+    await ctx.subagents.followup(routeless, started.childId, [imageBlock], {
+      source: { kind: 'user' }, signal: testSignal,
+    })
+
+    expect(resolve).not.toHaveBeenCalled()
+    await drainManager(ctx)
   })
 })
 
@@ -2512,6 +2637,7 @@ describe('continuable errors', () => {
     const adapter = new GatedAdapter([{ chunks: textResponse('child'), gate: hold.promise }])
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     const root = mkdtempSync(join(tmpdir(), 'dsh-subagent-continuation-'))
     const persistenceFiber = await ctx.plugin(JsonlSessionPersistence, { root })
     cleanups.push(async () => {

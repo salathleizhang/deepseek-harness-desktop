@@ -25,7 +25,7 @@ import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/t
 import {
   createSnapshotStore, type SnapshotStore,
 } from '@deepseek-ai/dsh-client-store'
-import type { ClientFailure, ClientResult } from '../contract/result.ts'
+import type { RemoteFailure, RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { SessionEventSource } from '../contract/events.ts'
 import type { SessionFace } from '../contract/session.ts'
 import type { AgentContext, ISessions } from '../contract/sessions.ts'
@@ -101,7 +101,7 @@ export class SessionCreateError extends Error {
    * @param requestedSessionId - caller-preallocated id used for later stream/list reconciliation.
    */
   constructor(
-    readonly rpcError: ClientFailure,
+    readonly rpcError: RemoteFailure,
     readonly requestedSessionId: SessionId | undefined,
   ) {
     super(`session create failed: ${rpcError.code}: ${rpcError.message}`)
@@ -117,7 +117,7 @@ export class SessionForkError extends Error {
    * @param sourceSessionId - the session the fork was cut from.
    */
   constructor(
-    readonly rpcError: ClientFailure,
+    readonly rpcError: RemoteFailure,
     readonly sourceSessionId: SessionId,
   ) {
     super(`session fork failed: ${rpcError.code}: ${rpcError.message}`)
@@ -335,7 +335,7 @@ export class ClientSessions implements ISessions {
   search(
     query: string,
     signal: AbortSignal,
-  ): Promise<ClientResult<{ items: SessionSearchResultItem[]; hasMore: boolean }>> {
+  ): Promise<RemoteResult<{ items: SessionSearchResultItem[]; hasMore: boolean }>> {
     return this.manager.search(query, signal)
   }
 

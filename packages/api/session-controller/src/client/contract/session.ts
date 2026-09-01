@@ -13,7 +13,6 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { PromptContentPart, QueueAction, SessionRequestId } from '../../types.ts'
-import type { ClientResult } from './result.ts'
 import type { PendingSubmissionImage, SessionSnapshot } from './snapshot.ts'
 
 /**
@@ -28,6 +27,8 @@ export type PendingSubmissionRetirement =
 
 /** Input registering one local submission echo ahead of its prompt call. */
 export interface BeginSubmissionInput {
+  /** Delivery mode used with the upcoming prompt. */
+  readonly mode: 'queue' | 'steer'
   /** Prompt text exactly as the upcoming prompt will send it. */
   readonly text: string
   /** Ordered image previews matching the upcoming prompt's image parts. */
@@ -84,7 +85,7 @@ export interface ISession {
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
     requestId?: SessionRequestId,
-  ): Promise<ClientResult<{ accepted: true }>>
+  ): Promise<RemoteResult<{ accepted: true }>>
   /**
    * Resolve one durable image referenced by this session.
    * @param attachmentId - opaque id found in the folded session log.
@@ -92,32 +93,41 @@ export interface ISession {
    */
   readAttachment(
     attachmentId: AttachmentIdType,
-  ): Promise<ClientResult<{ attachment: ImageAttachmentRef; data: Uint8Array }>>
+  ): Promise<RemoteResult<{ attachment: ImageAttachmentRef; data: Uint8Array }>>
   /**
    * Apply one edit, remove, or strict steer action to a still-pending queue occurrence.
    * @param itemId - agent-owned inbox occurrence identity.
    * @param action - requested queue operation.
    * @returns acceptance, or a business/transport error.
    */
-  updateQueue(itemId: MessageId, action: QueueAction): Promise<ClientResult<{ accepted: true }>>
+  updateQueue(itemId: MessageId, action: QueueAction): Promise<RemoteResult<{ accepted: true }>>
   /**
    * Cancel the running turn. Pending queued work remains and resumes in FIFO
    * order after the Host reaches cancellation quiescence.
    * @returns acceptance, or the business error.
    */
-  cancel(): Promise<ClientResult<{ accepted: true }>>
+  cancel(): Promise<RemoteResult<{ accepted: true }>>
   /**
    * Rename this session (explicit user title; pins it against automatic
    * regeneration).
    * @param title - raw title text (the host normalizes acceptance).
    * @returns the normalized accepted title and its event seq, or the business error.
    */
-  rename(title: string): Promise<ClientResult<{ title: string; seq: number }>>
+  rename(title: string): Promise<RemoteResult<{ title: string; seq: number }>>
   /**
    * Extend the history window backwards (older messages pagination).
    * @returns completion; failures land in snapshot.openState/loadingOlder.
    */
   loadOlder(): Promise<void>
+  /**
+   * Page history backwards until the window covers `seq` (inclusive) — the
+   * turn-jump loader. Repeated calls while a jump is paging lower its shared
+   * target and return the in-flight completion; `snapshot.loadingOlder` is
+   * the busy signal for the whole jump.
+   * @param seq - durable event seq the window must reach (a turn's `turn/start` seq).
+   * @returns completion once covered, exhausted, superseded, or failed soft.
+   */
+  loadThrough(seq: number): Promise<void>
   /**
    * Execute one slash-command line against this session's agent — pure
    * admission semantics (the host executor durably logs the lifecycle).

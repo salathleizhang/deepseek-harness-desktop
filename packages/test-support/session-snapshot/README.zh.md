@@ -87,7 +87,7 @@ defineAcpSnapshotSuite({
 ### 可能出什么问题
 
 - **fixture 保护拒绝已提交文件**——遗留场景目录、缺失文件、一个 header 类别包含多个 pin、重复的伴随文件内容、未擦除的 JSONL header 与格式错误的 pin header 都会在比较运行前使套件失败。
-- **会话收集需要原始 JSONL mode**——快照配置使用 JSONL 后端的 `compression: 'none'`；压缩 JSONL 与 SQLite 组合没有快照收集路径。
+- **会话收集需要原始 JSONL mode**——快照配置使用 JSONL 后端的 `compression: 'none'`；压缩 JSONL 没有快照收集路径。
 - **构建 mode 需要当前产物**——选择 `DSH_EXAMPLE_MODE=lib` 前先运行 `pnpm run build`；源 mode 仍是零构建路径。
 
 -----
@@ -154,7 +154,7 @@ defineAcpSnapshotSuite({
 
 这些限制说明何时需要对该工具包特别小心。它们是当前包约束，不是任务积压。
 
-- **会话收集需要原始 JSONL mode**——`runScenario` 收集持久化 `.jsonl` 日志，因此快照配置使用 JSONL 后端的 `compression: 'none'`；压缩 JSONL 与 SQLite 组合没有快照收集路径。
+- **会话收集需要原始 JSONL mode**——`runScenario` 收集持久化 `.jsonl` 日志，因此快照配置使用 JSONL 后端的 `compression: 'none'`；压缩 JSONL 没有快照收集路径。
 - **构建 mode 需要当前产物**——选择 `DSH_EXAMPLE_MODE=lib` 前先运行 `pnpm run build`；源 mode 仍是零构建路径。
 - **ACP 继续覆盖协议行为**——刺激来自 ACP 客户端的取消与权限往返留在该适配器；组装式一次性行为与持久控制行为使用 headless 与 SDK 适配器。
 

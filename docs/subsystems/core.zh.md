@@ -17,7 +17,7 @@
 | `agent-loop/` | 实现公开 `Agent` 约定的具体 driver（`ctx.agentLoop`） | 本页 |
 | `scope/` | 注册表与循环用于构建按 agent 作用域的注册原语 | [scope.md](scope.zh.md) |
 
-`scope/` 是这里唯一的非服务包：一个零依赖库（`createScope`/`scopeOf`/`scopeTarget`），在模块图中位于 `session/` 与 `system-prompt/` 之下，正是为了让它们消费它而不形成环。`agent-loop` 是公开 `Agent` 约定的唯一具体实现，放在这里因为它是 harness 的默认产品循环；它在 `ctx.agents.withInitiator()` 内运行每个 driver。扩展插件依赖 `agent`——包括需要发起 Agent 时——而绝不直接依赖 `agent-loop`，因此循环保持可替换。把这条主干接成可运行 agent 的默认组合是 [`examples/agent-spine-demo`](../../packages/examples/agent-spine-demo/README.zh.md)。
+`scope/` 是这里唯一的非服务包：一个零依赖库（`createScope`/`scopeOf`/`scopeTarget`），在模块图中位于 `session/` 与 `system-prompt/` 之下，正是为了让它们消费它而不形成环。`agent-loop` 是公开 `Agent` 约定的唯一具体实现，放在这里因为它是 harness 的默认产品循环；它在 `ctx.agents.withInitiator()` 内运行每个 driver。扩展插件依赖 `agent`——包括需要发起 Agent 时——而绝不直接依赖 `agent-loop`，因此循环保持可替换。[`dsh-base`](../../packages/bundle/base/README.zh.md) 是默认产品组合，[`dsh-sdk-minimal`](../../packages/bundle/sdk-minimal/README.zh.md) 则声明一棵更小的独立配置树。
 
 <a id="creation-and-ownership"></a>
 
@@ -260,7 +260,7 @@ type SessionStartSource = 'startup' | 'resume' | 'clear' | 'compact'
 
 `Session` 是一份类型化 `SessionEvent` 的**仅追加日志**——唯一的真源。LLM 消息历史从日志*派生*（`deriveMessages()`），而非单独存储。每个条目携带单调的 `seq`、`time` 与按 `type` 判别的 `data` payload；surface 变体还可以在 `sourceEventSeqs` 中列出被引用的较早事件，并携带 `surfaceOp`。
 
-`SessionEvent` 信封的确切条件字段、十二种核心事件变体（`turn/start`、`turn/end`、`step/start`、`step/end`、`user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`request/header`、`request/context`、`session/end-seed`）、`deriveMessages()` 投影规则、`TurnEndReason` 原因以及执行封闭和独立事件规则都在 **[session.md](session.zh.md)** 中。日志如何持久化——`SessionPersistence` 接口、JSONL/SQLite 后端、`session/flush` 检查点、崩溃恢复与 `SessionHeader`——则在 **[persistence.md](persistence.zh.md)** 中。
+`SessionEvent` 信封的确切条件字段、十二种核心事件变体（`turn/start`、`turn/end`、`step/start`、`step/end`、`user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`request/header`、`request/context`、`session/end-seed`）、`deriveMessages()` 投影规则、`TurnEndReason` 原因以及执行封闭和独立事件规则都在 **[session.md](session.zh.md)** 中。日志如何持久化——`SessionPersistence` 接口、JSONL provider、`session/flush` 检查点、崩溃恢复与 `SessionHeader`——则在 **[persistence.md](persistence.zh.md)** 中。
 
 ## `ToolDefinition`
 
@@ -311,9 +311,9 @@ declare module '@deepseek-ai/dsh-llm' {
 
 ### 品牌化 ID
 
-在包之间传递的 ID 都经过**品牌化**——结构上是字符串，但在类型层面不可互换（不能把 `SessionId` 传给需要 `ToolCallId` 的位置）。每种类型通过各自的工厂构造；比较、日志记录和 JSON 行为与普通字符串相同。
+在包之间传递的 ID 都经过**品牌化**——结构上是字符串，但在类型层面不可互换（不能把 `SessionId` 传给需要 `ToolCallId` 的位置）。构造使用共享 `brandString<T>()` helper 或所属方自定义的校验工厂；比较、日志记录和 JSON 行为与普通字符串相同。
 
-`Branded<B>` 原语位于独立的纯类型包 [dsh-brand](../../packages/util/brand) 中（没有运行时代码，也不依赖 harness 包），因此任何包都能品牌化其拥有的 id，而无需依赖无关的能力包。
+`Branded<B>` 原语与无状态构造函数位于 [dsh-brand](../../packages/util/brand)，该包不依赖 harness 能力。`brandString<T>()` 应用仅编译期存在的字符串品牌。
 
 源码：[`packages/util/brand/src/index.ts`](../../packages/util/brand/src/index.ts)
 
@@ -421,6 +421,25 @@ async list(): Promise<AgentPreset[]>
 @Remote('list') async remoteExportList(): Promise<AgentPresetRoster>
 
 /**
+ * Every preset's composition as flattened plugin rows, for plugin-listing
+ * surfaces beside the roster's own picker.
+ *
+ * A preset with a live standing mount answers from its newest generation's
+ * Loader entries — the composition new sessions join — even when the file
+ * behind it has since been edited into an unreadable state: the mount is
+ * what sessions actually run, so the broken verdict only applies to a
+ * preset nothing composed. One never composed since boot answers from its
+ * file, with `!!js` disabled gates evaluated against the Loader context so
+ * both answers reflect the same host. Reading never mounts: an unmounted
+ * preset is parsed, not composed, so listing a preset's plugins cannot
+ * activate them early. A composition that stopped reading between
+ * discovery's health verdict and this read is reported broken with the
+ * raced reason rather than dropped.
+ * @returns one composition per roster preset, in roster order.
+ */
+async compositionInventory(): Promise<AgentPresetComposition[]>
+
+/**
  * Resolve one preset by id.
  *
  * A broken preset resolves — deleting one, reading one, and reporting one
@@ -498,8 +517,8 @@ async read(id: string): Promise<string>
  * One preset's composition text with the roster row it belongs to.
  * @param agentPreset - the preset id.
  * @returns the composition beside its trust and published metadata.
- * @throws {TypertRemoteFailure} `bad-request` for an empty id, or
- * `agent-preset-not-found` when no configured root supplies it.
+ * @throws {RemoteError} `gateway/bad-request` for an empty id, or
+ * `agent-preset/not-found` when no configured root supplies it.
  */
 @Remote('read') async readDocument(agentPreset: string): Promise<AgentPresetDocument>
 
@@ -526,8 +545,8 @@ async copy(from: string, id: string, name?: string): Promise<void>
  * @param id - the new preset id.
  * @param name - the copy's optional display name.
  * @returns once the copy is stored.
- * @throws {TypertRemoteFailure} with the corresponding stable preset code
- * and details when the copy is refused.
+ * @throws {RemoteError} with the corresponding stable preset code and
+ * details when the copy is refused.
  */
 @Remote('copy') async remoteExportCopy(from: string, id: string, name?: string): Promise<void>
 
@@ -543,8 +562,8 @@ async remove(id: string): Promise<void>
  * Delete one preset through the Remote API.
  * @param id - the preset id.
  * @returns once the preset is deleted.
- * @throws {TypertRemoteFailure} with the corresponding stable preset code
- * and details when deletion is refused.
+ * @throws {RemoteError} with the corresponding stable preset code and
+ * details when deletion is refused.
  */
 @Remote('deletePreset') async remoteExportDelete(id: string): Promise<void>
 
@@ -595,8 +614,8 @@ async recompose(agentCtx: Context, id: string): Promise<AgentPreset>
  * @param agent - the session's live agent, resolved from the wire identity.
  * @param agentPreset - the preset to compose the agent from instead.
  * @returns the preset id that was recorded.
- * @throws {TypertRemoteFailure} with `bad-request`, `agent-preset-locked`,
- * `agent-preset-not-found`, or `agent-preset-invalid` when refused.
+ * @throws {RemoteError} with `gateway/bad-request`, `agent-preset/locked`,
+ * `agent-preset/not-found`, or `agent-preset/invalid` when refused.
  */
 @Remote('select') async select(agent: Agent, agentPreset: string): Promise<string>
 

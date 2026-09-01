@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement, type ComponentProps, type FC, type ReactNode } from 'react'
-import { bindSnapshotSelector, SlotTestRuntime } from '@deepseek-ai/dsh-client-test-runtime'
+import { bindSnapshotSelector, SlotTestRuntime, stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
 import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   EMPTY_CONVERSATION_SNAPSHOT, UiConversation,
@@ -39,7 +39,6 @@ import {
 import { createConversationStore } from '@deepseek-ai/dsh-client-ui-conversation/src/client/stores.ts'
 import { zh as conversationZh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.ts'
 import { apply as localeApply, inject as localeInject } from '@deepseek-ai/dsh-client-locale/client'
-import { stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-trajectory/client'
 import { apply as nodeApply } from '@deepseek-ai/dsh-client-ui-trajectory'
 import type { TrajectoryTurnModel } from '../src/client/layout.ts'
@@ -265,6 +264,7 @@ async function bench(snapshot = historySnapshot(NODES)) {
   }
   const binding: ConversationBinding = {
     snapshot: conversationStore,
+    activate: () => {},
     target: target => targetSources[target],
   }
   vi.spyOn(uiConversation, 'binding').mockReturnValue(binding)
@@ -390,6 +390,7 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
         actions={conversation.actions}
         renderSlot={() => null}
         open={vi.fn()}
+        selectView={conversation.actions.setView}
         t={tConversation}
       />
       <ConversationSession
@@ -399,6 +400,7 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
         actions={conversation.actions}
         renderSlot={renderSlot}
         bindDraftMirror={() => () => {}}
+        openView={conversation.actions.openView}
       />
     </>,
   )

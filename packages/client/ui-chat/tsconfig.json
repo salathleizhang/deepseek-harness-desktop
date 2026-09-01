@@ -57,6 +57,9 @@
       "path": "../../session/session-stats"
     },
     {
+      "path": "../../session/session-turn-outline"
+    },
+    {
       "path": "../../settings/settings"
     },
     {

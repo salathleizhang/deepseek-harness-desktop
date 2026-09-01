@@ -11,10 +11,12 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { $getRoot, $isTextNode } from 'lexical'
-import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
+import {
+  bindSnapshotSelector, conversationSnapshot as conversationFixture, makeTranslate, RemoteError,
+  sessionSnapshot as sessionFixture,
+} from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SessionListState, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
-import { conversationSnapshot as conversationFixture, makeTranslate, sessionSnapshot as sessionFixture } from '@deepseek-ai/dsh-client-test-runtime'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -340,7 +342,7 @@ describe('image draft rail', () => {
   it('announces server attachment rejections as product copy, other codes as developer text', () => {
     const attachmentError = (reason: string): SessionSnapshot['promptError'] => ({
       op: 'send',
-      error: { code: 'attachment-error', message: 'raw wire text', details: { reason } },
+      error: new RemoteError('session/attachment-invalid', 'raw wire text', { reason }),
     })
     const model = bench({ promptError: attachmentError('MODEL_DOES_NOT_SUPPORT_IMAGES') })
     expect(model.view.getByRole('alert').textContent).toContain('当前模型不支持图片，请切换支持图片的模型')
@@ -348,10 +350,21 @@ describe('image draft rail', () => {
     const unknown = bench({ promptError: attachmentError('ATTACHMENT_NOT_REFERENCED') })
     expect(unknown.view.getByRole('alert').textContent).toContain('图片发送失败（ATTACHMENT_NOT_REFERENCED）')
     cleanup()
-    const other = bench({
-      promptError: { op: 'send', error: { code: 'internal', message: 'boom', details: {} } },
+    // A subagent refusal uses the same product copy for the same reason.
+    const subagent = bench({
+      promptError: {
+        op: 'send',
+        error: new RemoteError('subagent/attachment-invalid', 'raw wire text', {
+          reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+        }),
+      },
     })
-    expect(other.view.getByRole('alert').textContent).toContain('boom (internal)')
+    expect(subagent.view.getByRole('alert').textContent).toContain('当前模型不支持图片，请切换支持图片的模型')
+    cleanup()
+    const other = bench({
+      promptError: { op: 'send', error: new RemoteError('gateway/internal', 'boom', {}) },
+    })
+    expect(other.view.getByRole('alert').textContent).toContain('boom (gateway/internal)')
   })
 
   it('marks the attachment slot unavailable while the composer is locked', () => {
@@ -1224,10 +1237,12 @@ describe('strips and variants', () => {
   it('announces promptError as a fading toast (ordinary failure — no transaction UI, no Retry)', () => {
     vi.useFakeTimers()
     try {
-      const send = bench({ promptError: { op: 'send', error: { code: 'agent-busy', message: 'boom', details: { reason: 'boom' } } } })
+      const send = bench({
+        promptError: { op: 'send', error: new RemoteError('session/agent-busy', 'boom', { reason: 'boom' }) },
+      })
       // The toast body-portals (transformed ancestors must not trap it), so
       // queries go through the view's document-bound helpers.
-      expect(send.view.getByRole('alert').textContent).toContain('boom (agent-busy)')
+      expect(send.view.getByRole('alert').textContent).toContain('boom (session/agent-busy)')
       expect(send.view.queryByRole('button', { name: 'Retry' })).toBeNull()
       act(() => { vi.advanceTimersByTime(4000) })
       expect(send.view.queryByRole('alert')).toBeNull()
@@ -1314,24 +1329,43 @@ describe('command launcher chrome and control seats', () => {
     }
     const { view } = bench({ permissions, command })
     const trigger = view.getByLabelText(/^访问模式/) as HTMLButtonElement
-    // Title-case display is presentation only; the menu ids stay machine names.
-    expect(trigger.textContent).toBe('Read Only')
+    // Product-label display is presentation only; the menu ids stay machine names.
+    expect(trigger.textContent).toBe('仅可查看')
     expect([...trigger.querySelectorAll('svg')]
       .every(icon => icon.closest('[aria-hidden="true"]') !== null)).toBe(true)
     fireEvent.click(trigger)
     const items = view.getAllByRole('menuitem')
-    expect(items.map(o => o.textContent)).toEqual(['Read Only', 'Workspace Write', 'Full access'])
+    expect(items.map(o => o.textContent)).toEqual(['仅可查看', '工作区内修改', '完全权限'])
     fireEvent.click(items[1]!)
     // Optimistic pick + disable until admission resolves (command stub resolves true).
     const busy = view.getByLabelText(/^访问模式/) as HTMLButtonElement
-    expect(busy.textContent).toBe('Workspace Write')
+    expect(busy.textContent).toBe('工作区内修改')
     expect(busy.disabled).toBe(true)
     expect(command).toHaveBeenCalledWith('/permission workspace-write')
     await act(async () => {})
     expect((view.getByLabelText(/^访问模式/) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('requires explicit risk acknowledgement before submitting Full access', async () => {
+  it('the Access chip preserves host labels for built-in preset values', () => {
+    const permissions = {
+      options: [
+        { value: 'read-only', name: 'Review Only' },
+        { value: 'workspace-write', name: 'Project Files' },
+        { value: 'danger-full-access', name: 'Operator Mode' },
+        { value: 'custom-mode', name: 'custom-mode' },
+        { value: '__proto__', name: '__proto__' },
+      ],
+      currentValue: 'workspace-write',
+    }
+    const { view } = bench({ permissions })
+    const trigger = view.getByLabelText(/^访问模式/) as HTMLButtonElement
+    expect(trigger.textContent).toBe('Project Files')
+    fireEvent.click(trigger)
+    expect(view.getAllByRole('menuitem').map(item => item.textContent))
+      .toEqual(['Review Only', 'Project Files', 'Operator Mode', 'Custom Mode', '__proto__'])
+  })
+
+  it('requires explicit risk acknowledgement before submitting full access', async () => {
     const command = vi.fn(() => Promise.resolve(true))
     const permissions = {
       options: [
@@ -1342,11 +1376,11 @@ describe('command launcher chrome and control seats', () => {
     }
     const { view } = bench({ permissions, command })
     fireEvent.click(view.getByLabelText(/^访问模式/))
-    fireEvent.click(view.getByRole('menuitem', { name: 'Full access' }))
+    fireEvent.click(view.getByRole('menuitem', { name: '完全权限' }))
 
     expect(command).not.toHaveBeenCalled()
-    expect(view.getByRole('dialog', { name: '确认启用 Full access？' })).toBeTruthy()
-    const enable = view.getByRole('button', { name: '启用 Full access' }) as HTMLButtonElement
+    expect(view.getByRole('dialog', { name: '确认启用完全权限？' })).toBeTruthy()
+    const enable = view.getByRole('button', { name: '启用完全权限' }) as HTMLButtonElement
     expect(enable.disabled).toBe(true)
 
     fireEvent.click(view.getByRole('checkbox', { name: '我已了解风险，并愿意继续' }))
@@ -1356,11 +1390,11 @@ describe('command launcher chrome and control seats', () => {
     expect(command).toHaveBeenCalledOnce()
     expect(command).toHaveBeenCalledWith('/permission danger-full-access')
     expect(view.queryByRole('dialog')).toBeNull()
-    expect((view.getByLabelText(/^访问模式/) as HTMLButtonElement).textContent).toBe('Full access')
+    expect((view.getByLabelText(/^访问模式/) as HTMLButtonElement).textContent).toBe('完全权限')
     await act(async () => {})
   })
 
-  it('cancels a Full access selection without changing permission and resets acknowledgement', () => {
+  it('cancels a full access selection without changing permission and resets acknowledgement', () => {
     const command = vi.fn(() => Promise.resolve(true))
     const permissions = {
       options: [
@@ -1372,21 +1406,21 @@ describe('command launcher chrome and control seats', () => {
     const { view } = bench({ permissions, command })
     const openConfirmation = () => {
       fireEvent.click(view.getByLabelText(/^访问模式/))
-      fireEvent.click(view.getByRole('menuitem', { name: 'Full access' }))
+      fireEvent.click(view.getByRole('menuitem', { name: '完全权限' }))
     }
 
     openConfirmation()
     fireEvent.click(view.getByRole('checkbox'))
     fireEvent.click(view.getByRole('button', { name: '取消' }))
     expect(command).not.toHaveBeenCalled()
-    expect((view.getByLabelText(/^访问模式/) as HTMLButtonElement).textContent).toBe('Workspace Write')
+    expect((view.getByLabelText(/^访问模式/) as HTMLButtonElement).textContent).toBe('工作区内修改')
 
     openConfirmation()
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(false)
-    expect((view.getByRole('button', { name: '启用 Full access' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((view.getByRole('button', { name: '启用完全权限' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('revokes an open Full access confirmation when the task locks', () => {
+  it('revokes an open full access confirmation when the task locks', () => {
     const command = vi.fn(() => Promise.resolve(true))
     const permissions = {
       options: [
@@ -1397,14 +1431,14 @@ describe('command launcher chrome and control seats', () => {
     }
     const { view, session } = bench({ permissions, command })
     fireEvent.click(view.getByLabelText(/^访问模式/))
-    fireEvent.click(view.getByRole('menuitem', { name: 'Full access' }))
+    fireEvent.click(view.getByRole('menuitem', { name: '完全权限' }))
     fireEvent.click(view.getByRole('checkbox'))
     act(() => { session.set(snapshotOf({ removed: true })) })
     expect(view.queryByRole('dialog')).toBeNull()
     expect(command).not.toHaveBeenCalled()
   })
 
-  it('resets an open Full access confirmation when switching tasks', () => {
+  it('resets an open full access confirmation when switching tasks', () => {
     const command = vi.fn(() => Promise.resolve(true))
     const permissions = {
       options: [
@@ -1415,7 +1449,7 @@ describe('command launcher chrome and control seats', () => {
     }
     const { view, props } = bench({ permissions, command })
     fireEvent.click(view.getByLabelText(/^访问模式/))
-    fireEvent.click(view.getByRole('menuitem', { name: 'Full access' }))
+    fireEvent.click(view.getByRole('menuitem', { name: '完全权限' }))
     fireEvent.click(view.getByRole('checkbox'))
     view.rerender(<InputBar {...props} sessionId={'s2' as SessionId} />)
     expect(view.queryByRole('dialog')).toBeNull()

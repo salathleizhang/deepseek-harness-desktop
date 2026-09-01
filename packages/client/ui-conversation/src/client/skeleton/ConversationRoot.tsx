@@ -7,7 +7,7 @@ import clsx from 'clsx'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import type { ConversationSlotProps, InputZone } from '../contract/slots.ts'
 import { conversationPhase } from '../contract/snapshot.ts'
-import { HeroGlow, HeroShell, WorkspaceChip, workspaceLabel } from './EmptyHero.tsx'
+import { HeroShell, WorkspaceChip, workspaceLabel } from './EmptyHero.tsx'
 import css from './ConversationRoot.module.css'
 
 /** Full props composed from the slot contract. */
@@ -350,7 +350,6 @@ export function ConversationRoot({
 
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)}>
-      {hero && <HeroGlow className={css.heroGlow} />}
       {hero && <HeroShell t={t} renderSlot={renderSlot} />}
       {hero && heroWorkspaceRow}
       {zone !== undefined && renderSlot('conversation.input.dock', zone)}
@@ -378,22 +377,24 @@ export function ConversationRoot({
   return (
     <div ref={rootResizeRef} className={css.root} data-phase={phase}>
       {sessionId === undefined ? null : renderSlot('conversation.session.header', {})}
-      <div className={css.scrollBody} data-conversation-scroll="">
-        {sessionId === undefined ? null : renderSlot('conversation.session', {})}
-        {composerSeat}
+      <div className={css.body}>
+        <div className={css.scrollBody} data-conversation-scroll="">
+          {sessionId === undefined ? null : renderSlot('conversation.session', {})}
+          {composerSeat}
+        </div>
+        {/* Width handles only while a transcript is on screen; the hero has no
+            content column to size. */}
+        {phase === 'active' && (['left', 'right'] as const).map(side => (
+          <WidthHandle
+            key={side}
+            side={side}
+            onStart={onHandleStart}
+            onDrag={onHandleDrag}
+            onCommit={onHandleCommit}
+            onEnd={onHandleEnd}
+          />
+        ))}
       </div>
-      {/* Width handles only while a transcript is on screen; the hero has no
-          content column to size. */}
-      {phase === 'active' && (['left', 'right'] as const).map(side => (
-        <WidthHandle
-          key={side}
-          side={side}
-          onStart={onHandleStart}
-          onDrag={onHandleDrag}
-          onCommit={onHandleCommit}
-          onEnd={onHandleEnd}
-        />
-      ))}
     </div>
   )
 }

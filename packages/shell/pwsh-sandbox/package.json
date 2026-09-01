@@ -46,6 +46,7 @@
     "@deepseek-ai/dsh-sandbox": "workspace:^",
     "@deepseek-ai/dsh-sandbox-local": "workspace:^",
     "@deepseek-ai/dsh-sandbox-policy": "workspace:^",
+    "@deepseek-ai/dsh-session-projection": "workspace:^",
     "@deepseek-ai/dsh-subprocess-local": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   }

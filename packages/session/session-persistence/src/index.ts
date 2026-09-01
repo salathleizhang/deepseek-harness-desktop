@@ -109,8 +109,8 @@ export abstract class SessionPersistence extends Service {
 
   /**
    * Resolve this backend's independent local artifact for a session without
-   * reading, creating, flushing, or otherwise materializing it. Backends such
-   * as SQLite that do not own one artifact per session return `undefined`.
+   * reading, creating, flushing, or otherwise materializing it. A backend
+   * that does not own one artifact per Session returns `undefined`.
    * @param meta - the immutable session header whose artifact is requested.
    * @returns the backend-specific absolute location, when one exists.
    */
@@ -250,10 +250,10 @@ export abstract class SessionPersistence extends Service {
    * publication. Only events from the valid contiguous stored prefix are
    * returned, so a torn fragment never reaches the caller. `fromSeq` at or
    * beyond the stored prefix returns an empty event list (never an error).
-   * Backends whose medium can seek by seq
-   * (SQLite) read only the suffix; sequential media (JSONL, both encodings)
-   * still parse the whole artifact and skip forward — the primitive bounds
-   * what is RETURNED and refolded, not every backend's physical read.
+   * A backend whose medium can seek by seq may read only the suffix;
+   * sequential media such as JSONL still parse the whole artifact and skip
+   * forward. The primitive bounds what is returned and refolded, not every
+   * backend's physical read.
    * @param id - the persisted session to read.
    * @param fromSeq - first event seq to include; a non-negative safe integer.
    * @param signal - optional cancellation for queued and backend read work.

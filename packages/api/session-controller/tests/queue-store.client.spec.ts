@@ -73,7 +73,7 @@ describe('Session queue snapshot intake', () => {
     ])
   })
 
-  it('marks mixed-content messages non-editable while retaining their preview', () => {
+  it('marks mixed-content messages non-editable and keeps image blocks out of the text preview', () => {
     const session = makeSession()
     session.handleControlFrame(queueFrame([{
       id: 'q-image',
@@ -86,7 +86,9 @@ describe('Session queue snapshot intake', () => {
       {
         id: 'q-image', placement: 'queued',
         content: [{ type: 'text', text: 'hi' }, { type: 'image', data: 'x' }],
-        preview: 'hi [image]', text: null,
+        // Image blocks render as thumbnails from `content`, so the preview
+        // carries only the text; non-image foreign blocks keep their marker.
+        preview: 'hi', text: null,
       },
     ])
   })

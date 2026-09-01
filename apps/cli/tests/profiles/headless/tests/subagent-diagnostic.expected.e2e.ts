@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest'
 const fixtureDir = fileURLToPath(new URL('./expected/subagent-diagnostic', import.meta.url))
 const replayOverride = join(fixtureDir, 'replay.override.json')
 const parentExpected = join(fixtureDir, 'parent.expected.jsonl')
-const configPath = fileURLToPath(new URL('../subagent-diagnostic.cordis.snapshot.yml', import.meta.url))
+const configPath = fileURLToPath(new URL('../subagent-diagnostic-snapshot.patch.yml', import.meta.url))
 const binScript = fileURLToPath(new URL('../../../../../../packages/test-support/loader-smoke/tests/fixtures/headless-driver.ts', import.meta.url))
 const tsconfigPath = fileURLToPath(new URL('../../../../../../tsconfig.json', import.meta.url))
 const parentId = SessionId('subagent-diagnostic-parent')

@@ -53,6 +53,7 @@
     "@deepseek-ai/dsh-sandbox": "workspace:^",
     "@deepseek-ai/dsh-sandbox-policy": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-session-projection": "workspace:^",
     "@deepseek-ai/dsh-subprocess-local": "workspace:^",
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
     "@deepseek-ai/dsh-timeout": "workspace:^",

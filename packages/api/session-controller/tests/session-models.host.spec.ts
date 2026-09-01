@@ -22,7 +22,7 @@ import type { SessionPromptRequest, SessionRequestId } from '../src/types.ts'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { buildModelCatalog } from '../src/catalog.ts'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import { TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { createSessionTestRemote } from './test-remote.ts'
 
 function request<P>(payload: P): P {
@@ -110,11 +110,7 @@ async function harness(logged?: {
     'Remote Rejected',
     [],
     undefined,
-    new TypertRemoteFailure({
-      code: 'fixture-rejected',
-      message: 'fixture rejected the selection',
-      details: { provider: 'remote-rejected' },
-    }),
+    new RemoteError('gateway/internal', 'fixture rejected the selection', {}),
   ))
   ctx.llm.registerAdapter(['empty'], new CatalogAdapter('Empty Provider', []))
   ctx.llm.registerAdapter(['duplicate'], new CatalogAdapter('Duplicate Provider', [
@@ -225,9 +221,61 @@ describe('Web session model selection', () => {
     }))
     expect(denied).toMatchObject({
       ok: false,
-      error: { code: 'attachment-error', details: { reason: 'TOO_MANY_IMAGES' } },
+      error: { code: 'session/attachment-invalid', details: { reason: 'TOO_MANY_IMAGES' } },
     })
     expect(saveImage).toHaveBeenCalledTimes(2)
+    await ctx.fiber.dispose()
+  })
+
+  it('delivers an admitted image batch through steer with the same ordered content as queue', async () => {
+    const { ctx, agent, sessionId } = await harness()
+    const attachments = {
+      imageLimits: {
+        maxImageBytes: 4,
+        maxImagesPerMessage: 2,
+        maxMessageImageBytes: 4,
+        maxImagePixels: 4,
+        maxImageDimension: 2000,
+        mediaTypes: ['image/png'],
+      },
+      validateImage: vi.fn(() => Promise.resolve()),
+      saveImage: vi.fn((input: { data: Uint8Array; mediaType: 'image/png'; name?: string }) => Promise.resolve({
+        attachmentId: `att-${String(input.data[0])}`,
+        mediaType: input.mediaType,
+        bytes: input.data.byteLength,
+        width: 1,
+        height: 1,
+        ...input.name === undefined ? {} : { name: input.name },
+      })),
+    }
+    ctx.provide('attachments', Object.setPrototypeOf(attachments, AttachmentStore.prototype) as never)
+    const steer = vi.fn()
+    const followup = vi.fn()
+    Object.assign(agent, { steer, followup })
+    const remote = createSessionTestRemote(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      cwd: '/tmp',
+    })
+
+    const result = await remote.prompt(promptRequest({
+      sessionId,
+      mode: 'steer' as const,
+      content: [
+        { type: 'text' as const, text: 'look at this' },
+        { type: 'image' as const, mediaType: 'image/png' as const, data: 'AQ==', name: 'mid-turn.png' },
+      ],
+    }))
+    expect(result.ok).toBe(true)
+    expect(followup).not.toHaveBeenCalled()
+    expect((steer.mock.calls[0]?.[0] as UserMessage).content).toEqual([
+      { type: 'text', text: 'look at this' },
+      {
+        type: 'image',
+        attachment: {
+          attachmentId: 'att-1', mediaType: 'image/png', bytes: 1, width: 1, height: 1, name: 'mid-turn.png',
+        },
+      },
+    ])
     await ctx.fiber.dispose()
   })
 
@@ -294,7 +342,7 @@ describe('Web session model selection', () => {
     }))
     expect(denied).toMatchObject({
       ok: false,
-      error: { code: 'attachment-error', details: { reason: 'ATTACHMENT_NOT_REFERENCED' } },
+      error: { code: 'session/attachment-invalid', details: { reason: 'ATTACHMENT_NOT_REFERENCED' } },
     })
     expect(readImage).toHaveBeenCalledOnce()
     await ctx.fiber.dispose()
@@ -423,7 +471,7 @@ describe('Web session model selection', () => {
     expect(unsupported).toMatchObject({
       ok: false,
       error: {
-        code: 'model-unavailable',
+        code: 'session/model-unavailable',
         message: 'provider "deepseek-official" model "private-preview" does not support reasoning effort "medium"',
       },
     })
@@ -433,10 +481,10 @@ describe('Web session model selection', () => {
       provider: 'missing',
       model: 'model',
     }))
-    expect(rejected).toEqual({
+    expect(rejected).toMatchObject({
       ok: false,
       error: {
-        code: 'model-unavailable',
+        code: 'session/model-unavailable',
         message: 'no adapter registered for provider "missing"',
         details: { provider: 'missing', model: 'model' },
       },
@@ -445,12 +493,12 @@ describe('Web session model selection', () => {
       sessionId,
       provider: 'remote-rejected',
       model: 'model',
-    }))).toEqual({
+    }))).toMatchObject({
       ok: false,
       error: {
-        code: 'fixture-rejected',
+        code: 'gateway/internal',
         message: 'fixture rejected the selection',
-        details: { provider: 'remote-rejected' },
+        details: {},
       },
     })
     expect(currentSelection(ctx, sessionId))
@@ -561,7 +609,7 @@ describe('Web session model selection', () => {
     }))
     expect(refused).toMatchObject({
       ok: false,
-      error: { code: 'model-unavailable', details: { provider: 'deleted-gateway', model: 'deleted-model' } },
+      error: { code: 'session/model-unavailable', details: { provider: 'deleted-gateway', model: 'deleted-model' } },
     })
     const unavailableCatalog = await buildModelCatalog(ctx)
     expect(unavailableCatalog.routableProviders.includes(currentSelection(ctx, sessionId).provider)).toBe(false)
@@ -621,9 +669,7 @@ describe('Web session model selection', () => {
       saveImages: () => {
         if (saveMode === 'error') return Promise.reject(new Error('image store offline'))
         if (saveMode === 'remote') {
-          return Promise.reject(new TypertRemoteFailure({
-            code: 'fixture-rejected', message: 'fixture rejected', details: {},
-          }))
+          return Promise.reject(new RemoteError('gateway/internal', 'fixture rejected', {}))
         }
         return Promise.resolve([savedRef])
       },
@@ -643,7 +689,7 @@ describe('Web session model selection', () => {
       sessionId, mode: 'queue', content: [image],
     }))).toMatchObject({
       ok: false,
-      error: { code: 'attachment-error', details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } },
+      error: { code: 'session/attachment-invalid', details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } },
     })
 
     expectValue(await remote.selectModel(request({
@@ -653,17 +699,17 @@ describe('Web session model selection', () => {
       sessionId, mode: 'queue', content: [{ ...image, data: '' }],
     }))).toMatchObject({
       ok: false,
-      error: { code: 'attachment-error', details: { reason: 'INVALID_IMAGE_BASE64' } },
+      error: { code: 'session/attachment-invalid', details: { reason: 'INVALID_IMAGE_BASE64' } },
     })
 
     saveMode = 'error'
     expect(await remote.prompt(promptRequest({
       sessionId, mode: 'queue', content: [image],
-    }))).toMatchObject({ ok: false, error: { code: 'agent-busy' } })
+    }))).toMatchObject({ ok: false, error: { code: 'session/agent-busy' } })
     saveMode = 'remote'
     expect(await remote.prompt(promptRequest({
       sessionId, mode: 'queue', content: [image],
-    }))).toMatchObject({ ok: false, error: { code: 'fixture-rejected' } })
+    }))).toMatchObject({ ok: false, error: { code: 'gateway/internal', message: 'fixture rejected' } })
     saveMode = 'success'
     expectValue(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content: [image] })))
     expect(followup).toHaveBeenCalledOnce()
@@ -681,13 +727,13 @@ describe('Web session model selection', () => {
     expect(await remote.selectModel(request({
       sessionId, provider: 'metadata-broken', model: 'broken',
     }))).toMatchObject({
-      ok: false, error: { code: 'model-unavailable', message: 'reasoning metadata offline' },
+      ok: false, error: { code: 'session/model-unavailable', message: 'reasoning metadata offline' },
     })
     expect(await remote.selectModel(request({
       sessionId, provider: 'string-error', model: 'broken',
     }))).toMatchObject({
       ok: false,
-      error: { code: 'model-unavailable', message: 'string selection failure' },
+      error: { code: 'session/model-unavailable', message: 'string selection failure' },
     })
     await ctx.fiber.dispose()
   })

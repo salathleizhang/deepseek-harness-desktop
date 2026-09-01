@@ -19,8 +19,8 @@ import type { ReactNode } from 'react'
 import type { LlmDiscoveredModel } from '@deepseek-ai/dsh-api-remotes/client'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { formatCapacity, parseCapacity } from './DeepSeekModelsEditor.tsx'
+import type { ModelsOperations } from './operations.ts'
 import type { DeepSeekModelDraft } from './DeepSeekModelsEditor.tsx'
-import { messageOf, type ModelsWire } from './store.ts'
 import type { en } from './locales.ts'
 import styles from './ModelsSection.module.css'
 
@@ -79,8 +79,8 @@ export interface ModelListEditorProps {
    * told what the field already says.
    */
   probeBlocked?: keyof typeof en | undefined
-  /** Wire face the fetch action calls. */
-  api: Pick<ModelsWire, 'llm'>
+  /** The Host operations whose interrogation answers the fetch action. */
+  operations: ModelsOperations
   /** Section copy. */
   t: (key: keyof typeof en) => string
   /** Disable every control (read-only deployment or a pending write). */
@@ -157,7 +157,7 @@ function adopt(candidate: LlmDiscoveredModel): ModelDraft {
  * @returns the model-list editor.
  */
 export function ModelListEditor(props: ModelListEditorProps): ReactNode {
-  const { models, onChange, probe, api, t, disabled } = props
+  const { models, onChange, probe, operations, t, disabled } = props
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | undefined>(undefined)
   const [candidates, setCandidates] = useState<readonly LlmDiscoveredModel[] | undefined>(undefined)
@@ -229,17 +229,17 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     setBusy(true)
     setFailure(undefined)
     try {
-      const response = await api.llm.discoverModels(probe.settingsNs, {
+      const answer = await operations.discoverModels(probe.settingsNs, {
         ...probe.provider === undefined ? {} : { provider: probe.provider },
         ...probe.baseURL === undefined || probe.baseURL.length === 0 ? {} : { baseURL: probe.baseURL },
         ...probe.api === undefined ? {} : { api: probe.api },
         ...probe.apiKey === undefined ? {} : { apiKey: probe.apiKey },
       })
-      if (!response.ok) {
-        setFailure(response.error.message)
+      if (answer.kind === 'refused') {
+        setFailure(answer.message)
         return
       }
-      const found = response.value
+      const found = answer.models
       if (found.length === 0) {
         setFailure(t('fetchEmpty'))
         return
@@ -249,10 +249,6 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
       const known = new Set(models.map(model => textOf(model, 'id')))
       setCandidates(found)
       setPicked(new Set(found.filter(model => !known.has(model.id)).map(model => model.id)))
-    } catch (error) {
-      // The transport rejected rather than answering; without this the button
-      // would stay busy with nothing shown.
-      setFailure(messageOf(error))
     } finally {
       setBusy(false)
     }

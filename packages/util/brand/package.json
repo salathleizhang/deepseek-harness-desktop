@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-brand",
-  "description": "Type-only Branded<B> nominal-typing primitive for the DeepSeek Harness",
+  "description": "Stateless branded-string primitives for the DeepSeek Harness",
   "version": "0.1.0-rc.14",
   "publishConfig": {
     "access": "public"

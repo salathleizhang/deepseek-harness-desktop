@@ -1,15 +1,19 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, ToolCallId, HarnessError, type ContentBlock  } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, HarnessError, type ContentBlock  } from '@deepseek-ai/dsh-llm'
+import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import ApprovalService, { type ApprovalOutcome, type ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import ToolRuntime, {
   defineContentToolFixture, defineTool, JsonSchemaError, parameterSchemaSpecToJsonSchema, validateArgs, ToolArgsError, ToolNotFoundError,
   TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH,
-  type InferArgs, type JsonValue, type ParameterSchemaSpec, type PreToolDecision, type PostToolDecision,
+  type InferArgs, type ParameterSchemaSpec, type PreToolDecision, type PostToolDecision,
   type JsonSchemaNode, type ToolDefinition, type ToolDispatchExecution, type ToolExecutionResult, type ToolExecutionToken,
 } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 const testToolSignal = new AbortController().signal
 
@@ -718,19 +722,21 @@ describe('ToolRuntime', () => {
   })
 
   describe('ask routing through ctx.approval', () => {
-    /**
-     * A minimal Agent stand-in — the approval seam reaches
-     * `agent.session.append` and folds `.events`; the seeded open turn
-     * satisfies request()'s enclosure precondition.
-     */
     function fakeAgent(): Agent {
-      return {
-        session: { events: [{ type: 'turn/start' }], append: () => ({}) },
-      } as unknown as Agent
+      const session = Session.create(SessionId('approval-fake-agent'))
+      session.append('turn/start', { turn: 1 })
+      return { session } as unknown as Agent
     }
 
     async function approvalSetup() {
-      const ctx = await setup()
+      const ctx = new Context()
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(SessionProjectionRegistry)
+      await ctx.plugin(SystemPrompt)
+      await ctx.plugin(ToolRuntime)
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(AgentLoop, { agents: [] })
       await ctx.plugin(ApprovalService)
       ctx.tools.register(echoTool)
       return ctx

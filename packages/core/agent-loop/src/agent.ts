@@ -21,16 +21,17 @@ import {
   BlockAssembler,
   LlmError,
   createAssistantMessage,
-  deepFreeze,
   errorChain,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
+import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { EpochHeader, RequestContext, Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Context } from '@deepseek-ai/cordis'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
@@ -96,7 +97,8 @@ export class ReactLoopAgent implements Agent {
       discarded: (message) => { this.dispatch.emit('agent/inbox/discarded', { message }) },
       claimed: (message, turn) => { this.dispatch.emit('agent/inbox/claimed', { message, turn }) },
     })
-    const lastTurn = session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 0
+    /* v8 ignore next -- the loop registers its own turnBoundary unit, so the key is always present */
+    const lastTurn = this.loopCtx.sessionProjections.stateOf(session, 'turnBoundary')?.lastTurn ?? 0
     this.phase = { kind: 'idle', lastTurn }
     this.scope = createScope(loopCtx, this)
     this.ctx = this.scope.ctx.extend({ agent: this })

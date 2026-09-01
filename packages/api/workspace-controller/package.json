@@ -70,6 +70,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@deepseek-ai/dsh-deque": "workspace:^",
     "zod": "^4.4.3"
   },
   "peerDependencies": {

@@ -9,6 +9,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { ClientSessions, SessionCreateError } from '../src/client/sessions/service.ts'
 import { scopeOf } from '../src/client/scope.ts'
 import type { SessionFollowFrame } from '../src/types.ts'
@@ -18,7 +19,6 @@ import {
   err,
   fakeRemote,
   ok,
-  remoteOk,
   type RuntimeRemotes,
 } from './fake-api.client.ts'
 
@@ -525,7 +525,7 @@ describe('catalog-addressed navigation', () => {
     b.api.onSubagentList = (payload) => {
       const parentSessionId = payload as SessionId
       if (parentSessionId === sid('root')) {
-        return Promise.resolve(remoteOk({
+        return Promise.resolve(ok({
           entries: [{
             kind: 'child', id: sid('child'), mode: 'continuable', label: 'Child',
             activity: 'inactive', hasChildren: true,
@@ -534,7 +534,7 @@ describe('catalog-addressed navigation', () => {
         }))
       }
       if (parentSessionId === sid('child')) {
-        return Promise.resolve(remoteOk({
+        return Promise.resolve(ok({
           entries: [{
             kind: 'child', id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
             activity: 'inactive', hasChildren: false,
@@ -542,7 +542,7 @@ describe('catalog-addressed navigation', () => {
           parentAvailable: false,
         }))
       }
-      return Promise.resolve(remoteOk({ entries: [], parentAvailable: false }))
+      return Promise.resolve(ok({ entries: [], parentAvailable: false }))
     }
     await feedList(b, [
       { id: 'root' },
@@ -564,7 +564,7 @@ describe('catalog-addressed navigation', () => {
     b.api.onSubagentList = (payload) => {
       const parentSessionId = payload as SessionId
       if (parentSessionId === sid('root')) {
-        return Promise.resolve(remoteOk({
+        return Promise.resolve(ok({
           entries: [{
             kind: 'child', id: sid('child'), mode: 'continuable', label: 'Child',
             activity: 'inactive', hasChildren: true,
@@ -573,7 +573,7 @@ describe('catalog-addressed navigation', () => {
         }))
       }
       if (parentSessionId === sid('child')) {
-        return Promise.resolve(remoteOk({
+        return Promise.resolve(ok({
           entries: [{
             kind: 'child', id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
             activity: 'inactive', hasChildren: false,
@@ -581,7 +581,7 @@ describe('catalog-addressed navigation', () => {
           parentAvailable: false,
         }))
       }
-      return Promise.resolve(remoteOk({ entries: [], parentAvailable: false }))
+      return Promise.resolve(ok({ entries: [], parentAvailable: false }))
     }
     await feedList(b, [{ id: 'root' }])
     await b.svc.refreshSubagents(sid('root'))
@@ -611,15 +611,12 @@ describe('create', () => {
     b.api.onCreate = () => Promise.resolve(ok({ sessionId: sid('fresh') }))
     await expect(b.svc.create({ cwd: '/w', sessionId: sid('fresh') })).resolves.toBe('fresh')
     expect(b.api.callsOf('session.create')).toEqual([{ cwd: '/w', sessionId: 'fresh' }])
-    b.api.onCreate = () => Promise.resolve({
-      rpcId: 'e' as never,
-      result: { ok: false as const, error: { code: 'internal' as const, message: '爆了', details: {} } },
-    } as never)
+    b.api.onCreate = () => Promise.resolve(err(new RemoteError('gateway/internal', '爆了', {})))
     const failure = await b.svc.create({ sessionId: sid('candidate') }).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(SessionCreateError)
     expect(failure).toMatchObject({
       requestedSessionId: 'candidate',
-      rpcError: { code: 'internal', message: '爆了' },
+      rpcError: { code: 'gateway/internal', message: '爆了' },
     })
   })
 
@@ -637,16 +634,11 @@ describe('create', () => {
 
   it('lists the published id after Workspace attachment fails (publication precedes attachment)', async () => {
     const b = bench()
-    b.api.onCreate = () => Promise.resolve({
-      rpcId: 'attach' as never,
-      result: {
-        ok: false,
-        error: {
-          code: 'workspace-attach-failed', message: 'ledger unavailable',
-          details: { sessionId: sid('published'), workspaceId: 'ws' },
-        },
-      },
-    } as never)
+    b.api.onCreate = () => Promise.resolve(err(new RemoteError(
+      'session/workspace-attach-failed',
+      'ledger unavailable',
+      { sessionId: sid('published'), workspaceId: 'ws' },
+    )))
     const failure = await b.svc.create({
       workspaceId: 'ws' as never,
       sessionId: sid('published'),
@@ -655,7 +647,7 @@ describe('create', () => {
     expect(failure).toBeInstanceOf(SessionCreateError)
     expect(failure).toMatchObject({
       requestedSessionId: 'published',
-      rpcError: { code: 'workspace-attach-failed' },
+      rpcError: { code: 'session/workspace-attach-failed' },
     })
     expect(b.svc.list.getSnapshot().byId[sid('published')]).toMatchObject({ id: 'published', blank: true })
   })
@@ -723,12 +715,10 @@ describe('fork', () => {
     })
     await feedList(b, [{ id: 'source' }])
     b.api.onFork = () => Promise.resolve(ok({ sessionId: sid('child') }))
-    b.api.onRename = () => Promise.resolve(err({
-      code: 'title-invalid', message: 'rejected', details: { sessionId: sid('child') },
-    } as never))
+    b.api.onRename = () => Promise.resolve(err(new RemoteError('session/title-invalid', 'rejected', { sessionId: sid('child') })))
 
     await expect(b.svc.fork({ sessionId: sid('source'), increaseTitle: true }))
-      .rejects.toThrow('fork child rename failed: title-invalid: rejected')
+      .rejects.toThrow('fork child rename failed: session/title-invalid: rejected')
     expect(b.svc.binding(sid('child'))).toBeDefined()
   })
 })
@@ -785,10 +775,7 @@ describe('blank mirror', () => {
     const b = bench()
     await feedList(b, [{ id: 's1', blank: true, cwd: '/w/a' }])
     const session = b.svc.binding(sid('s1'))!.session
-    b.api.onPrompt = () => Promise.resolve({
-      rpcId: 'busy' as never,
-      result: { ok: false as const, error: { code: 'internal' as const, message: 'agent busy', details: {} } },
-    } as never)
+    b.api.onPrompt = () => Promise.resolve(err(new RemoteError('gateway/internal', 'agent busy', {})))
     const result = await session.prompt([{ type: 'text', text: 'hi' }], 'queue')
     expect(result.ok).toBe(false)
     // No flip on failure: local stays aligned with the host authority

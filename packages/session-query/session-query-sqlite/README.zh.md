@@ -120,7 +120,7 @@ kind: "package-reference"
 - [dsh-session-query](../session-query/README.zh.md)——服务定义：本后端继承的精确读取、过滤与追踪。
 - [dsh-tool-session-query](../tool-session-query/README.zh.md)——调用这些搜索方法的面向模型消费方。
 - [SQLite FTS5 会话搜索](../../../.agents/notes/implemented/feature/2026-07-10-sqlite-session-query-provider.zh.md)——搜索语义、对账与 tokenizer 决策。
-- [SQLite 会话持久化](../../../packages/session/session-persistence-sqlite/README.zh.md)——兄弟持久化后端；切勿把本包的 `path` 指向其数据库。
+- [JSONL 会话持久化](../../session/session-persistence-jsonl/README.zh.md)——本可丢弃索引观察的权威 Session store；其 root 必须与本包的数据库路径分开。
 
 -----
 

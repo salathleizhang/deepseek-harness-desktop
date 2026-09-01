@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { Session, SessionId, isJsonValue } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { isJsonValue } from '@deepseek-ai/dsh-util-values'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
@@ -8,7 +9,9 @@ import {
   type PersistenceBackend, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
 } from '../src/index.ts'
 import { runPersistenceContract, meta, oneTurnLog } from './contract.ts'
-import { runCoordinatorContract, type CoordinatorFixture } from './coordinator-contract.ts'
+import {
+  legacyMessageLog, preReactLoopLog, runCoordinatorContract, type CoordinatorFixture,
+} from './coordinator-contract.ts'
 
 /** The durable store shape: materialized sessions only (no lazy entries). */
 type MemoryStore = Map<string, { meta: SessionHeader; events: SessionEvent[] }>
@@ -64,8 +67,8 @@ interface CoordinatorInternals {
 /**
  * Reference {@link PersistenceCoordinator} vehicle and abstract-service coverage, backed by a
  * dependency-free map with atomic writes and no torn-tail marker. Supplying the map lets multiple
- * instances share materialized sessions, the in-memory analogue of reload over one file/database;
- * durable behavior is covered by the JSONL and SQLite backends.
+ * instances share materialized sessions, the in-memory analogue of reload over one artifact;
+ * durable behavior is covered by the JSONL provider.
  */
 class MemoryPersistence extends SessionPersistence implements PersistenceBackend<never> {
   override readonly supportsRawArtifacts = false
@@ -284,7 +287,7 @@ describe('the inherited readRaw default', () => {
 })
 
 // Each fixture shares one map across mounts. No `corruptTail` is supplied because map writes are
-// atomic; the suite asserts that skip while JSONL and SQLite cover the repair branch.
+// atomic; the suite asserts that skip while JSONL covers the repair branch.
 runCoordinatorContract('memory', async (): Promise<CoordinatorFixture> => {
   const store: MemoryStore = new Map()
   return {
@@ -1197,6 +1200,78 @@ describe('PersistenceCoordinator session preparations', () => {
       }])).rejects.toThrow(/persisted preparation is reserved/)
     } finally {
       preparation?.[Symbol.dispose]()
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+})
+
+describe('PersistenceCoordinator seek reads', () => {
+  it('loads the whole prefix only when a bounded legacy suffix needs earlier message identities', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new ControlledBackend()
+    const id = SessionId('seek-read-from-legacy')
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    backend.seekHook = async (hookId, fromSeq) => {
+      const entry = backend.store.get(hookId)
+      if (entry === undefined) return undefined
+      return { meta: structuredClone(entry.meta), events: entry.events.filter(e => e.seq >= fromSeq) }
+    }
+
+    try {
+      const assertLegacySuffixUsesWholePrefix = async (
+        events: SessionEvent[],
+        fromSeq: number,
+        firstType: SessionEvent['type'],
+      ): Promise<void> => {
+        backend.store.set(id, { meta: meta(id), events })
+        const loadsBefore = backend.loadAttempts
+        const result = await coordinator.readFrom(id, fromSeq)
+        expect(result.events[0]?.type).toBe(firstType)
+        expect(backend.loadAttempts).toBe(loadsBefore + 1)
+      }
+      const legacyMessages = legacyMessageLog()
+      await assertLegacySuffixUsesWholePrefix(legacyMessages, 1, 'user/message')
+      await assertLegacySuffixUsesWholePrefix(legacyMessages, 3, 'assistant/message')
+      await assertLegacySuffixUsesWholePrefix(legacyMessages, 5, 'tool/result')
+      await assertLegacySuffixUsesWholePrefix(preReactLoopLog(), 3, 'user/message')
+
+      backend.store.set(id, { meta: meta(id), events: legacyMessages })
+      const directCurrent = await coordinator.readFrom(id, 0)
+      backend.store.set(id, { meta: meta(id), events: directCurrent.events })
+      const loadsBeforeCurrent = backend.loadAttempts
+      await coordinator.readFrom(id, 1)
+      await coordinator.readFrom(id, 3)
+      await coordinator.readFrom(id, 5)
+      expect(backend.loadAttempts).toBe(loadsBeforeCurrent)
+
+      for (const [type, data] of [
+        ['user/message', {}],
+        ['assistant/message', {}],
+        ['tool/result', {}],
+      ] as const) {
+        backend.store.set(id, {
+          meta: meta(id),
+          events: [{ type, seq: 0, time: 1, data } as unknown as SessionEvent],
+        })
+        const loadsBefore = backend.loadAttempts
+        await expect(coordinator.readFrom(id, 0)).rejects.toThrow('lacks an identified message')
+        expect(backend.loadAttempts).toBe(loadsBefore)
+      }
+      backend.store.set(id, {
+        meta: meta(id),
+        events: [{
+          type: 'external/null', seq: 0, time: 1, data: null, ignorable: true,
+        } as unknown as SessionEvent],
+      })
+      const loadsBeforeNullData = backend.loadAttempts
+      expect((await coordinator.readFrom(id, 0)).events[0]?.data).toBeNull()
+      expect(backend.loadAttempts).toBe(loadsBeforeNullData)
+    } finally {
       await fiber.dispose()
       await ctx.fiber.dispose()
     }

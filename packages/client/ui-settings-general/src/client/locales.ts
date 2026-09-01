@@ -20,6 +20,12 @@ export const zh = {
   'closeBehavior.description': '选择 DeepSeek Harness 在主窗口关闭后是否继续运行',
   'closeBehavior.keepRunning': '保持运行',
   'closeBehavior.quit': '退出',
+  'connection.error': '连接异常',
+  'connection.retry': '立即重连',
+  'connection.connecting': '连接中',
+  'connection.connected': '连接成功',
+  'connection.reconnect': '连接异常，点击立即重连',
+  'connection.restart': '连接中，点击立即重连',
 } satisfies Record<string, string>
 
 /** The settings namespace key union. */
@@ -45,4 +51,10 @@ export const en = {
   'closeBehavior.description': 'Choose whether DeepSeek Harness keeps running after its main window closes.',
   'closeBehavior.keepRunning': 'Keep running',
   'closeBehavior.quit': 'Quit',
+  'connection.error': 'Disconnected',
+  'connection.retry': 'Reconnect now',
+  'connection.connecting': 'Connecting',
+  'connection.connected': 'Connected',
+  'connection.reconnect': 'Disconnected, reconnect now',
+  'connection.restart': 'Connecting, restart now',
 } satisfies Record<SettingsKey, string>

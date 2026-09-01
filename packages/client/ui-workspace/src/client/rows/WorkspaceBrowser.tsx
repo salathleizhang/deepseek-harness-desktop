@@ -820,11 +820,11 @@ export function WorkspaceBrowser({
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
-  useConnectionGeneration,
+  useHostInfo,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
-  const home = useConnectionGeneration(generation => generation?.host.home)
+  const home = useHostInfo(info => info.home)
   const workspaces = useWorkspaces(state => state.items)
   const workspacePhase = useWorkspaces(state => state.phase)
   const archivedSessionIds = useWorkspaces(state => state.archivedSessionIds)

@@ -11,7 +11,7 @@ import type { ClientWorkspaceModel, WorkspaceSnapshot } from './model.ts'
 export class WorkspaceCreateError extends Error {
   override readonly name = 'WorkspaceCreateError'
 
-  /** @param rpcError - Host business or folded transport failure. */
+  /** @param rpcError - Host business or folded carrier failure. */
   constructor(readonly rpcError: RemoteFailure) {
     super(`workspace create failed: ${rpcError.code}: ${rpcError.message}`)
   }

@@ -69,7 +69,6 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "workspace:^",
-    "@deepseek-ai/dsh-agent-spine-demo": "workspace:^",
     "@deepseek-ai/dsh-bash-local": "workspace:^",
     "@deepseek-ai/dsh-session-projection": "workspace:^",
     "@deepseek-ai/dsh-brand": "workspace:^",

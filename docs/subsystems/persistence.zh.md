@@ -2,9 +2,9 @@
 
 [English](persistence.md) | 中文
 
-事件日志的**持久性 seam**。[session.md](session.zh.md) 描述了内存中的 `Session`：仅追加的 `SessionEvent` 日志即为真源。本页描述如何使该日志持久化：抽象的 `SessionPersistence` 服务、它的后端、flush 检查点、崩溃恢复，以及随日志一同存储的元数据头。日志承载的事件词汇在生成的[持久化日志事件目录](../persistence-catalog.zh.md)中逐项列举。
+事件日志的**持久性 seam**。[session.md](session.zh.md) 描述了内存中的 `Session`：仅追加的 `SessionEvent` 日志即为真源。本页描述如何使该日志持久化：抽象的 `SessionPersistence` 服务、它的提供方模型与随产品交付的 JSONL 后端、flush 检查点、崩溃恢复，以及随日志一同存储的元数据头。日志承载的事件词汇在生成的[持久化日志事件目录](../persistence-catalog.zh.md)中逐项列举。
 
-该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.zh.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上定义 locate/create/append、可复用的 Session 准备流程、逻辑 load/inspect、物理后缀读取，以及轻量的 list/snapshot 观察——**没有平行的持久化事件类型**——以及三个实现同一约定的可互换提供方。见 [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.zh.md)。
+该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.zh.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上定义 locate/create/append、可复用的 Session 准备流程、逻辑 load/inspect、物理后缀读取，以及轻量的 list/snapshot 观察——**没有平行的持久化事件类型**。仓库随产品交付 [dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl) 作为提供方；仓库外提供方可以实现同一服务约定。见 [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.zh.md)。
 
 ## flush 检查点
 
@@ -20,7 +20,7 @@
 
 ## `SessionLocation`——可选的逐会话产物目标
 
-`SessionPersistence.locate(meta)` 会同步解析一个归后端所有的独立产物，而不会读取、创建或 flush 它。JSONL 返回其项目/会话目录内 transcript（文本记录）的绝对路径；SQLite 因各会话共享一个数据库而返回 `undefined`。因此，返回的路径可能指向尚不存在的文件，或指向还不包含当前尚未 flush 轮次的文件；它是位置提示，不是授权或新鲜度保证。
+`SessionPersistence.locate(meta)` 会同步解析一个归后端所有的独立产物，而不会读取、创建或 flush 它。JSONL 返回其项目/会话目录内 transcript（文本记录）的绝对路径；不为每个会话各自拥有独立产物的后端返回 `undefined`。因此，返回的路径可能指向尚不存在的文件，或指向还不包含当前尚未 flush 轮次的文件；它是位置提示，不是授权或新鲜度保证。
 
 ```ts type-equiv
 /**
@@ -91,7 +91,7 @@ interface SessionHeader {
 
 ## 格式拒绝：本构建无法可靠读取的日志
 
-后端用 `SessionFormatUnsupportedError` 拒绝无法可靠解读的日志，它与 `SessionPersistenceCorruptionError` 区分，因为数据没有损坏。header 的 `version` 比 `SESSION_FORMAT_VERSION` 新时，消息说明方向（"由更新的 harness 写入，请升级 harness 后打开"）；比它旧时说明本构建没有升级路径。经过 legacy 形状归一化后，本构建生成集合（`KNOWN_SESSION_EVENT_TYPES`，由 `gen-persistence-catalog` 生成）之外的事件类型也会拒绝重建，因为静默跳过该事件可能改变日志其余部分的解读方式。后端为每个会话保留独立文件时，消息附上原始日志路径，被拒绝的文本仍然可读。JSONL 后端直接从原始 header 行拒绝外来版本，先于校验本格式版本的 header 字段和解码任何事件行，因此结构完全不同的未来格式仍会报告升级方向，绝不会报"损坏"；SQLite 则先由自己的 `SCHEMA_VERSION` pragma 把关整个文件的结构。设计理由与推迟建设的升级器链见[事件词汇表显式拒绝 Agent Note](../../.agents/notes/implemented/simplification/2026-08-25-fail-closed-session-event-vocabulary.zh.md)。
+后端用 `SessionFormatUnsupportedError` 拒绝无法可靠解读的日志，它与 `SessionPersistenceCorruptionError` 区分，因为数据没有损坏。header 的 `version` 比 `SESSION_FORMAT_VERSION` 新时，消息说明方向（"由更新的 harness 写入，请升级 harness 后打开"）；比它旧时说明本构建没有升级路径。经过 legacy 形状归一化后，本构建生成词汇表（`KNOWN_SESSION_EVENT_TYPES`，由 `gen-persistence-catalog` 生成）之外的事件类型同样被拒绝，除非该事件的信封带 `ignorable: true`：静默跳过一个不认识的必需事件可能改变日志其余部分的解读方式。后端为每个会话保留独立文件时，消息附上原始日志路径，被拒绝的文本仍然可读。JSONL 后端直接从原始 header 行拒绝外来版本，先于本格式版本的 header 形状校验和任何事件行解码，因此结构完全不同的未来格式仍会报告升级方向，绝不会报"损坏"。仓库外后端必须在自己的物理格式入口执行等价的方向感知拒绝。设计理由与推迟建设的升级器链见 [session-log 版本机制 Agent Note](../../.agents/notes/implemented/architecture/2026-08-10-session-log-version-mechanism.zh.md)。
 
 ## `CreateSessionOptions`：seed 与元数据
 
@@ -126,7 +126,7 @@ interface CreateSessionOptions {
 
 ## `SessionRawArtifact`——逐字存储工件文本
 
-后端为单个会话自持的工件文本，与其持久化写入的字节逐字一致（按物理编码解码）。`readRaw` 返回它而不从解析后事件重建，因此后端特定的序列化（chunk 打包、键序、换行）得以保留。Consumer 须先检查 `supportsRawArtifacts`：`false` 表示后端不提供此能力（如 SQLite），而 `readRaw(...) === undefined` 表示受支持的后端没有该会话的已实体化工件。
+后端为单个会话自持的工件文本，与其持久化写入的字节逐字一致（按物理编码解码）。`readRaw` 返回它而不从解析后事件重建，因此后端特定的序列化（chunk 打包、键序、换行）得以保留。Consumer 须先检查 `supportsRawArtifacts`：`false` 表示后端不提供此能力，而 `readRaw(...) === undefined` 表示受支持的后端没有该会话的已实体化工件。
 
 ```ts type-equiv
 /** A backend's own raw artifact text for one session, verbatim. */
@@ -230,10 +230,9 @@ interface SessionPersistenceSnapshot {
 
 ## 后端
 
-两者都实现同一个抽象 `SessionPersistence`（在 `SessionEvent` 上执行 locate/create/append/prepare/load/inspect/readFrom/list/listSnapshots，观察方法可选支持取消），并通过共享的 `runPersistenceContract` 套件：
+随产品交付的 provider 实现抽象 `SessionPersistence` 约定（在 `SessionEvent` 上执行 locate/create/append/prepare/load/inspect/readFrom/list/listSnapshots，观察方法可选支持取消），并通过共享的 `runPersistenceContract` 套件：
 
 - **[dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl)**——逐会话仅追加的逻辑 JSONL 日志，默认存储为带 checksum 的连续 Zstandard frame，也可配置为原始行；支持崩溃安全的原子写入、被中断轮次的恢复以及读取/回放路径。
-- **[dsh-session-persistence-sqlite](../../packages/session/session-persistence-sqlite)**：一个可选启用的 `node:sqlite` 后端，使用 schema 19 把同一分片块中字段完全匹配的 delta 连续段存为有界物理 `text-chunks`、`reasoning-chunks` 与 `tool-call-chunks` 行。它在返回前重建完整逻辑事件流，只打包新增的持久批次，并拒绝旧 schema，而不是执行迁移。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -252,8 +251,8 @@ Durable append-only session storage. Implementations preserve contiguous, lossle
 ```ts cordis-catalog
 /**
  * Resolve this backend's independent local artifact for a session without
- * reading, creating, flushing, or otherwise materializing it. Backends such
- * as SQLite that do not own one artifact per session return `undefined`.
+ * reading, creating, flushing, or otherwise materializing it. A backend
+ * that does not own one artifact per Session returns `undefined`.
  * @param meta - the immutable session header whose artifact is requested.
  * @returns the backend-specific absolute location, when one exists.
  */
@@ -367,10 +366,10 @@ abstract borrowSession(id: SessionId, signal?: AbortSignal): Promise<BorrowedSes
  * publication. Only events from the valid contiguous stored prefix are
  * returned, so a torn fragment never reaches the caller. `fromSeq` at or
  * beyond the stored prefix returns an empty event list (never an error).
- * Backends whose medium can seek by seq
- * (SQLite) read only the suffix; sequential media (JSONL, both encodings)
- * still parse the whole artifact and skip forward — the primitive bounds
- * what is RETURNED and refolded, not every backend's physical read.
+ * A backend whose medium can seek by seq may read only the suffix;
+ * sequential media such as JSONL still parse the whole artifact and skip
+ * forward. The primitive bounds what is returned and refolded, not every
+ * backend's physical read.
  * @param id - the persisted session to read.
  * @param fromSeq - first event seq to include; a non-negative safe integer.
  * @param signal - optional cancellation for queued and backend read work.

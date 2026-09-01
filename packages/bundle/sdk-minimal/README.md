@@ -46,7 +46,7 @@ The profile mounts exactly one persistent shell stack: Bash on Linux and macOS, 
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The bundle's single insert is the complete application tree: SDK stdio startup and JSON-RPC serving, one environment-configured DeepSeek adapter, the executor-less agent spine, local subprocess and unrestricted filesystem providers, a platform-selected persistent shell PTY, the string-replace editor, and uncompressed JSONL persistence under `$DSH_HOME/sessions`. It does not inherit another bundle, so every extra row is an explicit profile change.
+The bundle's single insert is the complete application tree: SDK stdio startup and JSON-RPC serving, one environment-configured DeepSeek adapter, the explicit agent core, local subprocess and unrestricted filesystem providers, a platform-selected persistent shell PTY, the string-replace editor, and uncompressed JSONL persistence under `$DSH_HOME/sessions`. It does not inherit another bundle, so every extra row is an explicit profile change.
 
 ### Source map
 

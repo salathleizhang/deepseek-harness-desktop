@@ -8,9 +8,10 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import {
-  HoverCard, IconArchiveOutline20, IconBranchOutline16, IconEditOutline16,
-  IconEllipsisOutline16, IconFolderClose16, IconFolderOpen16, IconPlusOutline16,
-  IconTrashOutline16, IconTriangleRightFill14, Menu, relativeTime, StateDot,
+  HoverCard, IconAlarmClockOutline16, IconArchiveOutline20, IconBranchOutline16,
+  IconEditOutline16, IconEllipsisOutline16, IconFolderClose16, IconFolderOpen16,
+  IconPlusOutline16, IconTrashOutline16, IconTriangleRightFill14, Menu, relativeTime,
+  StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
@@ -279,6 +280,21 @@ function SessionStatusDots({ statuses }: { statuses: readonly [SessionStatus, ..
   )
 }
 
+/** Non-interactive active-Schedule marker; the enclosing row remains the only action. */
+function ActiveScheduleIndicator({ t, search = false }: { t: RowTranslate; search?: boolean }) {
+  const label = t('schedule.active')
+  return (
+    <span
+      className={clsx(css.scheduleIndicator, search && css.searchScheduleIndicator)}
+      role="img"
+      aria-label={label}
+      title={label}
+    >
+      <IconAlarmClockOutline16 />
+    </span>
+  )
+}
+
 /** Hover-card body: full title, relative time, and every relevant live status. */
 function SessionHoverContent({ node, now, t }: { node: SessionNode; now: number; t: RowTranslate }) {
   const statuses = sessionStatuses(node, t)
@@ -332,6 +348,7 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
           )}
         </span>
         <span className={css.searchResultTitle}>{result.title}</span>
+        {result.hasActiveSchedule && <ActiveScheduleIndicator t={t} search />}
       </span>
       <span className={css.searchResultMeta}>
         <span className={css.searchResultWorkspace}>{result.workspace || t('group.ungrouped')}</span>
@@ -436,6 +453,7 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
         </span>
       )}
       <span className={css.title}>{title}</span>
+      {row.hasActiveSchedule && <ActiveScheduleIndicator t={t} />}
       {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not

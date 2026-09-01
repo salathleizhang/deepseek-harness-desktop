@@ -61,7 +61,7 @@ The command injects the commands registry and the goal service. A custom app mou
   name: '@deepseek-ai/dsh-command-goal'
 ```
 
-The shipped `dsh` base enables the persisted-goal stack and this command. The Web bundle keeps the goal service and driver on the Host, disables the base command producer, and mounts the producer in the `standard`, `code`, and `cordis` agent presets; `minimal` omits it. The ACP automation app enables the domain and model tools without a command adapter. The UI-less `agent-spine-demo` requires an explicit `goals: {}` so headless one-shot callers do not silently change from one physical turn to a multi-round operation.
+The shipped `dsh` base enables the persisted-goal stack and this command. The Web bundle keeps the goal service and driver on the Host, disables the base command producer, and mounts the producer in the `standard`, `code`, and `cordis` agent presets; `minimal` omits it. The ACP automation app enables the domain and model tools without a command adapter. The standalone `sdk-minimal` profile omits the complete goal stack so its result API still settles one correlated physical turn.
 
 -----
 

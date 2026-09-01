@@ -88,13 +88,15 @@ export function InputBar({
   // and the user resubmits. A remount over a session whose machine still holds
   // an unresolved promptError deliberately re-announces it once — the failure
   // is still pending, and a transient banner is its only surface. Attachment
-  // rejections show product copy keyed by the wire reason; other codes are
-  // developer-facing and keep the raw message plus code.
+  // rejections show product copy keyed by the wire reason — whichever domain
+  // refused them; other codes are developer-facing and keep the raw message
+  // plus code.
   useEffect(() => {
     if (promptError === null) return
-    showToast(promptError.error.code === 'attachment-error'
-      ? attachmentErrorText(t, promptError.error.details.reason, imageLimits)
-      : `${promptError.error.message} (${promptError.error.code})`)
+    const { error } = promptError
+    showToast(error.code === 'session/attachment-invalid' || error.code === 'subagent/attachment-invalid'
+      ? attachmentErrorText(t, error.details.reason, imageLimits)
+      : `${error.message} (${error.code})`)
   }, [promptError, showToast, t, imageLimits])
   useEffect(() => {
     if (notice?.level === 'error') showToast(notice.text)

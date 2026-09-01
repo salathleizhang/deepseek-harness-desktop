@@ -6,6 +6,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, type PostToolDecision } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { ReactLoopAgent } from '../src/agent.ts'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
@@ -30,6 +31,7 @@ async function harness(adapter: MockAdapter) {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
@@ -510,6 +512,55 @@ describe('adapter registration, routing, and accepted-input ownership', () => {
     expect(steeringSources).toEqual([{ kind: 'plugin', plugin: 'goal' }])
   })
 
+  it('records each admitted next-step batch before the following claim', async () => {
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'steer_next', {}),
+      toolCallResponse('c2', 'steer_next', {}),
+      textResponse('done'),
+    ])
+    const ctx = await harness(adapter)
+    const steering = [
+      createUserMessage({ content: [{ type: 'text', text: 'first steer' }], source: { kind: 'user' } }),
+      createUserMessage({ content: [{ type: 'text', text: 'second steer' }], source: { kind: 'user' } }),
+    ]
+    const agent = ctx.agentLoop.create(SessionId('claim-order'), { provider: 'mock', model: 'mock' })
+    let execution = 0
+    ctx.tools.register(defineContentToolFixture({
+      name: 'steer_next',
+      description: '',
+      parameters: {},
+      async execute() {
+        const message = steering[execution]
+        execution += 1
+        if (message !== undefined) agent.steer(message)
+        return []
+      },
+    }))
+
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+
+    const events = agent.session.events
+    const claims = events.flatMap(event => event.type === 'agent/inbox/spliced'
+      && event.data.target === 'next-step'
+      && event.data.outcome !== 'canceled'
+      && (event.data.removedCount ?? 0) > 0
+      ? [event]
+      : [])
+    expect(claims).toHaveLength(2)
+    for (const [index, message] of steering.entries()) {
+      const claim = claims[index]
+      const admitted = events.find(event =>
+        event.type === 'user/message' && event.data.id === message.id)
+      expect(claim).toBeDefined()
+      expect(admitted).toBeDefined()
+      if (claim === undefined || admitted === undefined) continue
+      expect(admitted.seq).toBeGreaterThan(claim.seq)
+      const nextClaim = claims[index + 1]
+      if (nextClaim !== undefined) expect(admitted.seq).toBeLessThan(nextClaim.seq)
+    }
+  })
+
 })
 
 describe('turn numbering continues across seeded sessions', () => {
@@ -525,6 +576,7 @@ describe('turn numbering continues across seeded sessions', () => {
     const ctx2 = new Context()
     await ctx2.plugin(LlmRuntime)
     await ctx2.plugin(SessionStore)
+    await ctx2.plugin(SessionProjectionRegistry)
     await ctx2.plugin(SystemPrompt)
     await ctx2.plugin(ToolRuntime)
     await ctx2.plugin(AgentRegistry)
@@ -676,6 +728,7 @@ describe('turn and step boundary recovery', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1108,6 +1161,7 @@ describe('disposal and cancellation during pre-step assembly', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1158,6 +1212,7 @@ describe('disposal and cancellation during pre-step assembly', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1208,6 +1263,7 @@ describe('disposal and cancellation during pre-step assembly', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1254,6 +1310,7 @@ describe('disposal and cancellation during pre-step assembly', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1302,6 +1359,7 @@ describe('disposal and cancellation during pre-step assembly', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)

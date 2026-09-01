@@ -75,7 +75,7 @@ kind: "package-reference"
 
 ### 打开顺序
 
-打开数据库与会话持久化 SQLite 后端一致：`mkdir` 父目录 `0o700`、以 `0o600` 独占创建缺失文件、应用 `PRAGMA foreign_keys = ON` 与 journal mode、检查 `user_version`、创建 `units` 与 `unit_globals` 元数据表，并在最后给全新数据库盖戳，让失败留下未盖戳的介质。
+打开数据库时会以 `0o700` 创建父目录、以 `0o600` 独占创建缺失文件、应用 `PRAGMA foreign_keys = ON` 与 journal mode、检查 `user_version`、创建 `units` 与 `unit_globals` 元数据表，并在最后给全新数据库盖戳，让失败留下未盖戳的介质。
 
 ### 源码地图
 
@@ -129,7 +129,7 @@ kind: "package-reference"
 - **同步驱动阻塞事件循环**——每次写入都是一次同步 `DatabaseSync` 调用；阻塞只持续一条语句，在领域数据规模下可以接受。
 - **没有忙等待或重试策略**——持有写锁的竞争连接会立即拒绝操作，而不是等待；领域层的写入链在单进程内串行化写入，跨进程协调属于范围外。
 - **只打开当前的物理布局版本**——任何其他已标记的 `user_version` 都会被拒绝而不是迁移（预发布立场）。
-- **打开顺序与会话包重复**——`openDatabase` 与会话持久化 SQLite 的打开顺序一致；提取到共享介质层的工作被推迟到计划的会话后端迁移。
+- **打开顺序与 query provider 重复**——`openDatabase` 与 `session-query-sqlite` 都强制执行 SQLite 文件 ownership，但两个 package 分别拥有不同的 application identity 与 schema；没有共享 medium helper 将其耦合。
 
 <a id="dev-note"></a>
 ### 开发备注

@@ -36,7 +36,7 @@ export interface CoordinatorFixture {
   cleanup: () => Promise<void>
 }
 
-/** A constant absolute cwd; jsonl keys directories off it, memory/sqlite ignore it. */
+/** A constant absolute cwd; JSONL keys directories off it and memory ignores it. */
 const WORK = '/w'
 const OTHER = '/other'
 
@@ -46,7 +46,7 @@ function send(session: Session, events: readonly SessionEvent[]): void {
 }
 
 /** A valid persisted log from immediately before messages gained wrappers and identities. */
-function legacyMessageLog(): SessionEvent[] {
+export function legacyMessageLog(): SessionEvent[] {
   return [
     { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     {
@@ -109,7 +109,7 @@ function legacyMessageLog(): SessionEvent[] {
 }
 
 /** A complete log in the durable event vocabulary of the react-loop refactor base. */
-function preReactLoopLog(): SessionEvent[] {
+export function preReactLoopLog(): SessionEvent[] {
   const prompt = createUserMessage({
     content: [{ type: 'text', text: 'old prompt' }],
     source: { kind: 'user' },
@@ -325,7 +325,7 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
     it('round-trips the seed boundary (seedLength) through persistence', async () => {
       // A forked child records how many leading events were inherited via the seed; the
       // boundary must survive a reload (so a resume/replay can tell the inherited prefix from
-      // the child's own events). JSONL stores it in the header; SQLite uses `seed_length`.
+      // the child's own events). The backend must preserve it in stored metadata.
       const fix = await makeFixture()
       const { ctx, fiber } = await freshCtx(fix)
       try {
@@ -348,7 +348,7 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
     it('round-trips the delegation depth through persistence', async () => {
       // A subagent child's recursion budget lives in its header; a reload that
       // dropped it would reset the child to top-level and un-bound maxDepth
-      // (JSONL stores it in the header line; SQLite uses `delegation_depth`).
+      // The backend must preserve it in stored metadata.
       const fix = await makeFixture()
       const { ctx, fiber } = await freshCtx(fix)
       try {
@@ -706,21 +706,22 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
             .rejects.toThrow('lacks an identified message')
         }
 
-        // A known log-only event with non-object data is not a legacy message
-        // candidate; both whole-log and seek reads preserve it unchanged.
-        const primitiveId = SessionId('non-object-log-only-event')
-        const primitive = {
-          type: 'session/end-seed',
+        // An out-of-repo event type passes only with the envelope's ignorable
+        // marker (unknown-type refusal otherwise), and its non-object data is
+        // not message-validated.
+        const pluginId = SessionId('non-object-plugin-event')
+        await ctx.sessionPersistence.create(meta(pluginId, WORK))
+        await ctx.sessionPersistence.append(pluginId, [{
+          type: 'plugin/test',
           seq: 0,
           time: 1,
           data: null,
-        } as unknown as SessionEvent
-        await ctx.sessionPersistence.create(meta(primitiveId, WORK))
-        await ctx.sessionPersistence.append(primitiveId, [primitive])
-        await expect(ctx.sessionPersistence.inspect(primitiveId))
-          .resolves.toMatchObject({ events: [primitive] })
-        await expect(ctx.sessionPersistence.readFrom(primitiveId, 0))
-          .resolves.toMatchObject({ events: [primitive] })
+          ignorable: true,
+        } as unknown as SessionEvent])
+        await expect(ctx.sessionPersistence.inspect(pluginId))
+          .resolves.toMatchObject({ events: [{ type: 'plugin/test', data: null, ignorable: true }] })
+        await expect(ctx.sessionPersistence.readFrom(pluginId, 0))
+          .resolves.toMatchObject({ events: [{ type: 'plugin/test', data: null, ignorable: true }] })
 
         for (const type of ['user/message', 'assistant/message'] as const) {
           const missingContentId = SessionId(`invalid-${type}-without-content`)
@@ -1356,7 +1357,7 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
       }
     })
 
-    it('rejects an unknown event type on load', async () => {
+    it('rejects an unknown event type on load unless the event is marked ignorable', async () => {
       const fix = await makeFixture()
       const { ctx, fiber } = await freshCtx(fix)
       try {
@@ -1368,7 +1369,16 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         ])
         const failure = await ctx.sessionPersistence.load(required.id).then(() => undefined, (error: unknown) => error as Error)
         expect(failure?.name).toBe('SessionFormatUnsupportedError')
-        expect(failure?.message).toMatch(/event type "future\/event".*unknown to this harness/)
+        expect(failure?.message).toMatch(/event type "future\/event".*not marked ignorable/)
+
+        const skippable = meta('unknown-ignorable', WORK)
+        await ctx.sessionPersistence.create(skippable)
+        await ctx.sessionPersistence.append(skippable.id, [
+          ...oneTurnLog(),
+          { type: 'future/event', seq: oneTurnLog().length, time: 99, data: { payload: 1 }, ignorable: true } as unknown as SessionEvent,
+        ])
+        const loaded = await ctx.sessionPersistence.load(skippable.id)
+        expect(loaded.events.some(event => (event.type as string) === 'future/event')).toBe(true)
       } finally {
         await fiber.dispose()
         await fix.cleanup()

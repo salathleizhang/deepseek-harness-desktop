@@ -2,6 +2,7 @@ import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode 
 import clsx from 'clsx'
 import {
   CodeBlock, DiffBlock, DisclosureRow, IconInspectOutline12, ReadBlock, SearchBlock, StateDot, TerminalBlock, WebBlock,
+  diffTotals,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { CHAT_DIFF_MAX_LINES, type DiffCardModel } from '../models/diff-card-model.ts'
@@ -14,7 +15,9 @@ import {
   diffBlockLabels, readBlockLabels, searchBlockLabels, webBlockLabels,
 } from '../models/primitive-labels.ts'
 import type { AskQuestionCardModel } from '../models/ask-question-card-model.ts'
-import type { ToolRowState, ToolRowVariant } from '../models/tool-call-model.ts'
+import {
+  formatToolBody, type ToolRowState, type ToolRowVariant,
+} from '../models/tool-call-model.ts'
 import type { WebCardModelProps } from '../models/web-card-model.ts'
 import { AskQuestionCard } from './AskQuestionCard.tsx'
 import css from './ToolRow.module.css'
@@ -35,8 +38,8 @@ export interface ToolRowProps {
    * error row, whose collapsed summary is the failure line instead.
    */
   summarySuffix?: string | null | undefined
-  /** Expanded-body input text; null = no input section. */
-  body: string | null
+  /** Original argument JSON formatted only while the row is expanded. */
+  bodyRaw?: string | null | undefined
   /** Flattened result text for the expanded Output section; null/absent = no output section. */
   output?: string | null | undefined
   /** Ask-user transcript card; card fields are mutually exclusive and replace text sections. */
@@ -93,7 +96,7 @@ export function ToolRow({
   title,
   summary,
   summarySuffix,
-  body,
+  bodyRaw,
   output,
   askQuestion,
   errorSummary,
@@ -123,13 +126,25 @@ export function ToolRow({
   const askQuestionBody = askQuestion ?? null
   const outputText = output ?? null
   const card = askQuestionBody ?? terminalBody ?? diffBody ?? readBody ?? searchBody ?? webBody
-  const expandable = body !== null || outputText !== null || card !== null
+  const expandable = bodyRaw != null || outputText !== null || card !== null
   const open = expanded && expandable
+  const bodyText = useMemo(
+    () => open && card === null && bodyRaw != null ? formatToolBody(variant, bodyRaw) : null,
+    [bodyRaw, card, open, variant],
+  )
   const status = stateStatus(state, t)
   // A failure must replace, not supplement, the normal summary.
   const failureLine = state === 'error' ? errorSummary ?? null : null
   const summaryText = failureLine ?? terminalBody?.description ?? summary
-  const suffix = failureLine === null ? summarySuffix ?? null : null
+  // A diff row's collapsed line carries the card's +/- totals (the same
+  // numbers the expanded footer prints) so the change size reads without
+  // expanding; an explicit summarySuffix (none today on diff rows) wins.
+  const diffStat = useMemo(() => {
+    if (diffBody === null) return null
+    const { added, removed } = diffTotals(diffBody.card.diffs)
+    return `+${added} -${removed}`
+  }, [diffBody])
+  const suffix = failureLine === null ? summarySuffix ?? diffStat : null
   const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null
   const toggleExpand = () => {
     setExpanded(v => !v)
@@ -147,7 +162,7 @@ export function ToolRow({
   }
   // The code variant's program renders through CodeBlock (shiki), so only its
   // output joins the IN/OUT card; every other variant's input does too.
-  const cardBody = variant === 'code' ? null : body
+  const cardBody = variant === 'code' ? null : bodyText
   return (
     <div className={css.root} data-variant={variant} data-tool={toolName} data-state={state}>
       {status !== null && <span className={css.visuallyHidden}>{status}</span>}
@@ -184,7 +199,9 @@ export function ToolRow({
                 {summaryText}
               </span>
             )}
-            {suffix !== null && <span className={css.summarySuffix}>{suffix}</span>}
+            {suffix !== null && (
+              <span className={clsx(css.summarySuffix, suffix === diffStat && css.diffStat)}>{suffix}</span>
+            )}
           </>
         )}
       >
@@ -224,9 +241,9 @@ export function ToolRow({
                       ? <WebBlock {...webBody} labels={webLabels} className={css.webBody} />
                       : (
                         <>
-                          {variant === 'code' && body !== null && (
+                          {variant === 'code' && bodyText !== null && (
                             <div className={css.bodyScroll}>
-                              <CodeBlock code={body} lang="typescript" copyLabel={t('copy')} copiedLabel={t('copied')} className={css.codeBody} />
+                              <CodeBlock code={bodyText} lang="typescript" copyLabel={t('copy')} copiedLabel={t('copied')} className={css.codeBody} />
                             </div>
                           )}
                           {(cardBody !== null || outputText !== null) && (

@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-persistence` stores a session's event log durably, reloads it on resume, and lists stored sessions through one backend-neutral service (`ctx.sessionPersistence`) that every persistence backend implements. The persisted unit is the existing `SessionEvent` log — there is no parallel stored message type — and non-replayable metadata (format version, working directory, lineage, seed boundary) travels separately as `SessionHeader`. Backends own their storage, the service owns the semantics: append-only logs, contiguous sequence numbers, crash recovery that preserves an interrupted turn instead of truncating it, and durable writes that resolve only after the batch is safe. Pick a backend (`session-persistence-jsonl` for per-session files, `session-persistence-sqlite` for one database), mount it, and sessions persist and resume without the loop or the model knowing which backend is underneath.
+`dsh-session-persistence` stores a session's event log durably, reloads it on resume, and lists stored sessions through the backend-neutral `ctx.sessionPersistence` service. The persisted unit is the existing `SessionEvent` log — there is no parallel stored message type — and non-replayable metadata (format version, working directory, lineage, seed boundary) travels separately as `SessionHeader`. A backend owns its storage, while the service owns append-only logs, contiguous sequence numbers, crash recovery that preserves an interrupted turn instead of truncating it, and durable writes that resolve only after the batch is safe. The shipped JSONL provider implements this service with one artifact per Session; third-party providers may implement the same contract without changing the loop or model.
 
 ## Table of Contents
 
@@ -29,7 +29,7 @@ Mount one persistence backend to make sessions durable. The backend registers it
 
 ### Choosing a backend
 
-The seam ships two interchangeable backends. Choose [JSONL](../session-persistence-jsonl/README.md) when each session should live in its own on-disk artifact: it stores one append-only `.jsonl.zstd` log per session and returns an absolute artifact path from `locate(meta)`. Choose [SQLite](../session-persistence-sqlite/README.md) when one queryable database fits the deployment: it keeps every session's log in a single database with packed physical rows and returns no per-session artifact. A third-party backend may implement the service directly; the [backend contract](#understand-the-implementation) below is what it must honor.
+The seam ships the [JSONL](../session-persistence-jsonl/README.md) backend. It stores one append-only `.jsonl.zstd` artifact per Session and returns its absolute path from `locate(meta)`. A third-party backend may implement the service directly; the [backend contract](#understand-the-implementation) below is what it must honor.
 
 ### What the service provides
 
@@ -51,7 +51,7 @@ Resume is `load` plus session preparation: the stored log comes back with its he
 
 ### Failures and recovery
 
-A stored log the current build cannot faithfully interpret is refused with a direction-aware error, never misread. `SESSION_FORMAT_VERSION` remains v0 and this build provides no format-migration path; a newer version instructs the operator to upgrade the harness. The decoder accepts only the bounded same-version record variants named below. Every event type unknown to this build refuses reconstruction, while committed-prefix corruption rejects as `SessionPersistenceCorruptionError` ([rationale](../../../.agents/notes/implemented/simplification/2026-08-25-fail-closed-session-event-vocabulary.md)). A `load` on an id still bound to a live session first flushes its snapshot and rejects while its turn is open; a cold load applies recovery.
+A stored log the current build cannot faithfully interpret is refused with a direction-aware error, never misread. `SESSION_FORMAT_VERSION` remains v0 and this build provides no format-migration path; a newer version instructs the operator to upgrade the harness. The decoder accepts only the bounded same-version record variants named below. An event type unknown to this build refuses unless its envelope marks it `ignorable`, and committed-prefix corruption rejects as `SessionPersistenceCorruptionError`. A `load` on an id still bound to a live session first flushes its snapshot and rejects while its turn is open; a cold load applies recovery.
 
 -----
 
@@ -65,7 +65,7 @@ This section explains how the seam realizes durable storage and how backends plu
 
 ### Design concept
 
-The package is the Service Definition of a capability seam with two halves. The abstract `SessionPersistence` service is the public contract; a `PersistenceCoordinator` provides backend-neutral orchestration for buffering, serialization, materialization, repair, adoption, and quiescent disposal. A backend implements the small durable primitives for stored reads, append, repair, and listing, so JSONL and SQLite share lifecycle correctness while keeping different storage primitives.
+The package is the Service Definition of a capability seam with two halves. The abstract `SessionPersistence` service is the public contract; a `PersistenceCoordinator` provides backend-neutral orchestration for buffering, serialization, materialization, repair, adoption, and quiescent disposal. The JSONL provider implements the small durable primitives for stored reads, append, repair, and listing; a third-party provider may reuse the same coordinator or implement the service directly.
 
 ### The invariants every backend honors
 
@@ -103,7 +103,6 @@ Read these pages when the package-level contract is not enough. They move from t
 
 - [Session persistence subsystem](../../../docs/subsystems/persistence.md) — the full service contract, flush checkpoint, crash recovery, and generated Cordis API.
 - [JSONL persistence backend](../session-persistence-jsonl/README.md) — the shipped per-session-file backend.
-- [SQLite persistence backend](../session-persistence-sqlite/README.md) — the opt-in single-database backend.
 - [Session checkpoint policy](../session-checkpoint-policy/README.md) — the plugin that flushes through this service at semantic boundaries.
 - [Session package map](../README.md) — adjacent persistence, projection, title, and telemetry packages.
 

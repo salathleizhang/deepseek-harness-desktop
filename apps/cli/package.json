@@ -190,7 +190,6 @@
     "@agentclientprotocol/sdk": "1.4.0",
     "@deepseek-ai/dsh-acp": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
-    "@deepseek-ai/dsh-agent-spine-demo": "workspace:^",
     "@deepseek-ai/dsh-attachment-local": "workspace:^",
     "@deepseek-ai/dsh-bash-local": "workspace:^",
     "@deepseek-ai/dsh-credentials-local": "workspace:^",
@@ -230,5 +229,14 @@
     "@types/ws": "8.18.1",
     "execa": "^10.0.0",
     "ws": "8.21.0"
+  },
+  "dsh": {
+    "configTrees": [
+      {
+        "mount": "config/agent-presets",
+        "path": "../../packages/preset/agent-presets/presets",
+        "scanRoster": true
+      }
+    ]
   }
 }

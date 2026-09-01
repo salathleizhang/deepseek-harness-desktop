@@ -48,7 +48,7 @@ One-shot children run once and settle with a single result, plus an optional str
 
 ### Following up, interrupting, and discovering
 
-Continuable children answer follow-up messages as their next turns, and the parent can interrupt a running turn or list its children at any time. Discovery covers both shapes: the service lists direct children and the full descendant tree — mode, activity, and lineage — reading live session state and optional persistence, without loading any child.
+Continuable children answer follow-up messages as their next turns, and the parent can interrupt a running turn or list its children at any time. A browser continuation prompt may carry image parts: the Host admits and persists each image batch through the attachment store before the child inbox accepts the message, and refuses delivery when the child's declared model does not accept image input. Discovery covers both shapes: the service lists direct children and the full descendant tree — mode, activity, and lineage — reading live session state and optional persistence, without loading any child.
 
 ### Failure and recovery
 

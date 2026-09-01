@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时选择
 
-当消费方受益于每会话一份产物——导航、外部工具或可逐行读取的原始日志——时选择此后端。当单一可查询数据库更适合部署时，选择 [SQLite](../session-persistence-sqlite/README.zh.md)。后端把会话保存在部署控制的根下：项目本地、共享、临时或集中式。
+当消费方受益于每会话一份产物——导航、外部工具或可逐行读取的原始日志——时选择此后端。它是随产品交付的唯一 Session 持久化 provider。后端把会话保存在部署控制的根下：项目本地、共享、临时或集中式。
 
 ### 最小配置
 
@@ -113,7 +113,6 @@ kind: "package-reference"
 
 - [会话持久化子系统](../../../docs/subsystems/persistence.zh.md)——后端无关的服务语义与提供方关系。
 - [会话持久化 seam](../session-persistence/README.zh.md)——本后端实现的服务约定。
-- [SQLite 持久化后端](../session-persistence-sqlite/README.zh.md)——可选启用的单数据库替代方案。
 - [项目会话目录决策](../../../.agents/notes/implemented/architecture/2026-07-24-project-session-directories.zh.md)——项目与会话目录布局背后的取舍。
 - [Zstandard JSONL 会话日志](../../../.agents/notes/implemented/architecture/2026-07-19-zstandard-jsonl-session-logs.zh.md)——带校验和帧编码的理由。
 

@@ -8,14 +8,14 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import { isAbsolute } from 'node:path'
-import { deepFreeze } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { deepFreeze, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type { Message } from '@deepseek-ai/dsh-llm'
-import { SESSION_FORMAT_VERSION, SessionId } from './types.ts'
+import { SESSION_FORMAT_VERSION } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
-import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SurfaceIntent, SurfaceEventType } from './types.ts'
-import { snapshotJsonValue } from './json.ts'
+import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SurfaceIntent, SurfaceEventType } from './types.ts'
 import { deriveEventMessage, SurfaceManager } from './surface.ts'
 import type { SessionSurface } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
@@ -24,8 +24,6 @@ export * from './types.ts'
 export { SessionPreparation } from './preparation.ts'
 export type { SessionPreparationOptions } from './preparation.ts'
 export type { AssistantMessage, ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
-export { isJsonValue, snapshotJsonValue } from './json.ts'
-export type { JsonValue } from './json.ts'
 export { interruptedTurnClosers, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN } from './repair.ts'
 export { decodeStorageRecord, packChunkRuns } from './chunk-rows.ts'
 export type { ChunkRow, StorageRecord } from './chunk-rows.ts'
@@ -223,6 +221,7 @@ function assertSessionEventEnvelope(value: Record<string, unknown>, index: numbe
       case 'data':
       case 'surfaceOp':
       case 'sourceEventSeqs':
+      case 'ignorable':
         break
       default:
         throw new Error(`seed event at index ${index} has an invalid event envelope`)
@@ -234,7 +233,8 @@ function assertSessionEventEnvelope(value: Record<string, unknown>, index: numbe
   if (typeof type !== 'string'
     || typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0
     || typeof time !== 'number' || !Number.isSafeInteger(time)
-    || event['data'] === undefined) {
+    || event['data'] === undefined
+    || (event['ignorable'] !== undefined && event['ignorable'] !== true)) {
     throw new Error(`seed event at index ${index} has an invalid event envelope`)
   }
   switch (type) {
@@ -591,7 +591,7 @@ export class Session {
    *   Map/Set/Date/class instance), or when the candidate violates the
    *   canonical surface contract (marker shape and eligibility, unique
    *   earlier source-event references, positional replacement validity, and complete
-   *   shadowed-node coverage). One recursive pass reads, validates, and
+   *   shadowed-node coverage). One iterative pass reads, validates, and
    *   copies each nested value once, so a stateful getter cannot supply one value
    *   to validation and another to storage. The event log is the durable source
    *   of truth, so a bad event fails at the append site rather than later during
@@ -861,10 +861,10 @@ export class SessionStore extends Service {
   prepare(id?: SessionId, options?: PrepareSessionOptions): Session {
     let sessionId: SessionId
     if (id === undefined) {
-      do sessionId = SessionId(`session-${++this.counter}`)
+      do sessionId = brandString<SessionId>(`session-${++this.counter}`)
       while (this.store.has(sessionId))
     } else {
-      sessionId = SessionId(id)
+      sessionId = brandString<SessionId>(id)
     }
     if (this.store.has(sessionId)) throw new Error(`session "${sessionId}" already exists`)
     if (options?.seedSource === 'persistence') {

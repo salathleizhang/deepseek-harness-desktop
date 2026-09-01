@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时选择
 
-当领域保存客户端应看到、但不应自行重新派生的状态——todo 清单、goal 快照、对话统计——时选择本包。注册表在已提交事件上主动驱动单元，因此任何已注册单元的值按构造即为当前值。当维护的是无客户端读取的 host-only 记账时跳过：不带 `wire` 块的单元保持 host-only，而不带注册表的 headless 组装不受影响。
+当领域保存客户端应看到、但不应自行重新派生的状态——todo 清单、goal 快照、对话统计——时选择本包。注册表在已提交事件上主动驱动单元，因此任何已注册单元的值按构造即为当前值。当维护的是无客户端读取的 host-only 记账时跳过：不带 `wire` 块的单元保持 host-only。host 读取方要么在插件 `inject` 中声明 `sessionProjections`，要么在注册表或必需 key 缺席时明确失败。贡献方可以继续通过 `ctx.inject(['sessionProjections'], ...)` 保持可选注册。
 
 ### 定义投影单元
 
@@ -51,7 +51,7 @@ const definition = {
 }
 ```
 
-`apply` 必须同步，且对与单元无关的事件必须返回同一个状态引用——引用不变意味着零下游工作。携带状态的日志事件必须携带变更后的完整状态，绝不携带裸增量。
+`apply` 必须同步，且对与单元无关的事件必须返回同一个状态引用——引用不变意味着零下游工作。注册表用 `Object.is` 比较相邻的 `wire.view` 原始结果；对象或数组 view 若要在仅内部 state 变化时抑制发布，就必须复用引用，结构相同的新对象仍算变化。携带状态的日志事件必须携带变更后的完整状态，绝不携带裸增量。
 
 ### 注册与读取
 
@@ -78,7 +78,7 @@ const { asOfSeq, values } = ctx.sessionProjections.snapshot(session)
 
 ### 设计理念
 
-本包是能力 seam 的 Service Definition 与驱动角色：框架负责驱动，领域负责计算。注册表只订阅一次 `session/event`；每个已提交事件都会主动经过每个已注册单元的 `apply`（cell 在首次触达时惰性构建）。变更流以 `Object.is` 把关——返回同一状态引用的单元只花一次调用，不产生任何下游工作。载体在切出页面切片的同一 tick 内读取 `snapshot()`，`asOfSeq` 之所以是一个一致切面正系于此；误写成异步的 view 会返回 Promise，并被 `wire.viewSchema.parse` 拒绝。
+本包是能力 seam 的 Service Definition 与驱动角色：框架负责驱动，领域负责计算。注册表只订阅一次 `session/event`；每个已提交事件都会主动经过每个已注册单元的 `apply`（cell 在首次触达时惰性构建）。第一层 `Object.is` 闸门在 state 引用不变时跳过 view 工作；live drive 的双槽缓存复用前一个原始 view，第二层 `Object.is` 闸门在原始 view 引用不变时抑制发布。载体在切出页面切片的同一 tick 内读取 `snapshot()`，`asOfSeq` 之所以是一个一致切面正系于此；误写成异步的 view 会返回 Promise，并被 `wire.viewSchema.parse` 拒绝。
 
 ### 源码地图
 
@@ -90,7 +90,7 @@ const { asOfSeq, values } = ctx.sessionProjections.snapshot(session)
 
 ### 驱动与检查点流程
 
-一个已提交事件按注册顺序驱动每个已注册单元；状态引用变化的客户端可见单元会以经 schema 校验的视图与致因 seq 通知变更流。`checkpoint(session)` 为持久缓存返回每个单元一份独立的 `(key → {ver, seq, val})` 行；`restoreFloor` 把尾部读取锚定在最低可用水位之前一个事件处，使缩短的日志可被检出；`restore` 把持久行在存储后缀上重新折叠，丢弃任何 `ver` 不匹配或声称越过存储末尾的行。
+一个已提交事件按注册顺序驱动每个已注册单元；原始 view 通过 `Object.is` 判定为变化的客户端可见单元会以经 schema 校验的视图与致因 seq 通知变更流。live drive 保留前后两个原始 view；snapshot 与冷读仍是彼此独立的完整读取。`checkpoint(session)` 为持久缓存返回每个单元一份独立的 `(key → {ver, seq, val})` 行；`restoreFloor` 把尾部读取锚定在最低可用水位之前一个事件处，使缩短的日志可被检出；`restore` 把持久行在存储后缀上重新折叠，丢弃任何 `ver` 不匹配或声称越过存储末尾的行。
 
 </details>
 
@@ -127,7 +127,7 @@ const { asOfSeq, values } = ctx.sessionProjections.snapshot(session)
 
 - **每个尾页携带每个 client-visible key**——尚无逐 key 的 opt-out 或惰性 key 请求形状；在值都是 UI 量级的全量状态时可以接受，若某领域的值变大再重议。
 - **单元表是进程级的，因此 key 是否存在不能当作逐会话的能力信号**——任何 agent preset 注册的 key 都会出现在每个会话的快照里；客户端必须读值，不能把 key 缺席当作功能缺席。
-- **主动驱动逐事件触达每个单元**——按构造开销很低（全量值规则、同引用闸门），但若出现热点路径，可加按单元的事件类型预过滤。
+- **主动驱动逐事件触达每个单元**——按构造开销很低（全量值规则与 state/view 引用闸门），但若出现热点路径，可加按单元的事件类型预过滤。
 - **注册表 cell 只活在内存里**——重启后首次触达时靠折叠日志重建；挂载了 `dsh-session-projection-cache` 的组合改由持久行播种该折叠。
 - **单元同步纪律只有部分可机械把关**——`wire.viewSchema.parse` 能拒绝返回 Promise 的 view，但阻塞的 `apply`、或读取撕裂的非会话状态的 `apply`，只能靠评审把关。
 

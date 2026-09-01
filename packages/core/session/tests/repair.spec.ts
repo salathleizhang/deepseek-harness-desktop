@@ -5,7 +5,7 @@ import type { SessionEvent, SurfaceEvent } from '../src/index.ts'
 
 /**
  * Unit coverage for the crash-recovery closer synthesis. The persistence
- * contract exercises it end-to-end through both backends; these tests pin the
+ * contract exercises it end-to-end through the real JSONL provider; these tests pin the
  * pure function's branches directly — especially the synthetic error
  * `tool/result` for a tool call the crash left unanswered (without it a
  * resumed session replays a dangling assistant tool-call and the provider

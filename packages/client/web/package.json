@@ -42,7 +42,6 @@
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   },
   "files": [

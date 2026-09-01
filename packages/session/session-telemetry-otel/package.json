@@ -52,7 +52,6 @@
   "devDependencies": {
     "@deepseek-ai/cordis-plugin-logger-console": "workspace:^",
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
-    "@deepseek-ai/dsh-agent-spine-demo": "workspace:^",
     "@deepseek-ai/dsh-app-boot": "workspace:^",
     "@deepseek-ai/dsh-bash-local": "workspace:^",
     "@deepseek-ai/dsh-command-feedback": "workspace:^",

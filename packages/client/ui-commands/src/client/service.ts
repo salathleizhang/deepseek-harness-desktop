@@ -395,7 +395,7 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
    * the outcome renders as a persistent flow node — the composer never
    * echoes it. A handler error result reports an error outcome so the
    * composer keeps the submission (draft and images) for correction.
-   * Transport failures throw.
+   * A refused call throws.
    */
   private async execute(
     session: ClientSessionContext,
@@ -441,9 +441,9 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
    * Fire-and-forget execute for the internal ('handled') paths. Outcomes are
    * NOT surfaced here: the host executor durably logs the command lifecycle
    * (`command/run`/`command/done`), and the mux-broadcast events render as a
-   * persistent flow node on every tab. Only a transport/admission failure —
-   * which never entered a handler and therefore never logged — falls back to
-   * the composer notice as immediate feedback.
+   * persistent flow node on every tab. Only an admission failure — which never
+   * entered a handler and therefore never logged — falls back to the composer
+   * notice as immediate feedback.
    */
   private runDetached(desc: CommandDescriptor, session: ClientSessionContext, line: string): void {
     void this.execute(session, line).then(
@@ -468,7 +468,7 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     })
   }
 
-  /** Route an admission/transport failure to the session's composer notice channel (scope gone = attempt died with it). */
+  /** Route an admission failure to the session's composer notice channel (scope gone = attempt died with it). */
   private noticeFor(id: SessionId, level: 'info' | 'error', text: string): void {
     const actx = this.scopeFor(id)
     if (actx === undefined) return

@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时使用
 
-需要实时诊断的组合请使用注册表。[`agent-spine-demo`](../../../packages/examples/agent-spine-demo/README.zh.md) 中的标准 agent 组合已挂载它及四个核心有状态配套入口——`dsh-session`、`dsh-agent`、`dsh-scope` 与 `dsh-agent-loop`。自定义组合挂载注册表，并为任何其他已加载、且希望检查其约定的包添加配套入口。单独加载注册表不会安装任何检查：它自身不携带任何产品检查，因此从不挂载配套入口的组合不会观察到任何诊断行为。
+需要实时诊断的组合请使用注册表。[`dsh-sdk-minimal`](../../bundle/sdk-minimal/README.zh.md) 挂载它及四个核心有状态配套入口——`dsh-session`、`dsh-agent`、`dsh-scope` 与 `dsh-agent-loop`；`dsh-base` 刻意省略运行时诊断。自定义组合挂载注册表，并为任何其他已加载、且希望检查其约定的包添加配套入口。单独加载注册表不会安装任何检查：它自身不携带任何产品检查，因此从不挂载配套入口的组合不会观察到任何诊断行为。
 
 ### 启用检查与选择包
 

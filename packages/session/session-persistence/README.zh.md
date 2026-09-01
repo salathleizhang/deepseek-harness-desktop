@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-session-persistence` 通过每个持久化后端都实现的一个后端无关服务（`ctx.sessionPersistence`）持久存储会话的事件日志、在恢复时重新加载并列出已存储会话。持久化单元就是现有 `SessionEvent` 日志——不存在另一套并行的存储消息类型——不可回放的元数据（格式版本、工作目录、血缘、种子边界）作为 `SessionHeader` 单独传输。后端拥有自己的存储，服务拥有语义：仅追加日志、连续序列号、保留中断轮次而非截断的崩溃恢复，以及只在批次安全后才返回的持久写入。选一个后端（按会话存储文件的 `session-persistence-jsonl`，或单库的 `session-persistence-sqlite`），挂载它，会话就会持久化并在恢复时还原，loop 与模型无需知道下面是哪个后端。
+`dsh-session-persistence` 通过后端无关的 `ctx.sessionPersistence` 服务持久存储会话的事件日志、在恢复时重新加载并列出已存储会话。持久化单元就是现有 `SessionEvent` 日志——不存在另一套并行的存储消息类型——不可回放的元数据（格式版本、工作目录、血缘、种子边界）作为 `SessionHeader` 单独传输。后端拥有自己的存储，而服务拥有仅追加日志、连续序列号、保留中断轮次而非截断的崩溃恢复，以及只在批次安全后才返回的持久写入。随产品交付的 JSONL provider 用每个 Session 一份产物实现该服务；第三方 provider 可以实现同一约定，而不改变 loop 或模型。
 
 ## 目录
 
@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 选择后端
 
-seam 随产品交付两个可互换后端。当每个会话应各占一份磁盘产物时选择 [JSONL](../session-persistence-jsonl/README.zh.md)：它把每个会话存为一份仅追加 `.jsonl.zstd` 日志，并由 `locate(meta)` 返回绝对产物路径。当单一可查询数据库适合部署时选择 [SQLite](../session-persistence-sqlite/README.zh.md)：它把每个会话的日志连同物理打包行一起存入单个数据库，不返回按会话的产物。第三方后端可以直接实现该服务；必须遵守的[后端约定](#understand-the-implementation)见下文。
+seam 随产品交付 [JSONL](../session-persistence-jsonl/README.zh.md) 后端。它把每个 Session 存为一份仅追加 `.jsonl.zstd` 产物，并由 `locate(meta)` 返回绝对路径。第三方后端可以直接实现该服务；必须遵守的[后端约定](#understand-the-implementation)见下文。
 
 ### 服务提供什么
 
@@ -51,7 +51,7 @@ const headers = await ctx.sessionPersistence.list()        // every stored sessi
 
 ### 失败与恢复
 
-当前构建无法忠实解读的存储日志会以方向感知的错误被拒绝，绝不错读。`SESSION_FORMAT_VERSION` 保持 v0，本构建不提供格式迁移路径；更高版本会要求操作者升级 harness。解码器只接受下文点名的有限同版本记录变体。本构建不认识的每个事件类型都会拒绝重建，而已提交前缀中的损坏以 `SessionPersistenceCorruptionError` 拒绝（[理由](../../../.agents/notes/implemented/simplification/2026-08-25-fail-closed-session-event-vocabulary.zh.md)）。对仍绑定到活动会话的 id 执行 `load`，会先刷新其快照并在轮次开放时拒绝；冷 load 应用恢复。
+当前构建无法忠实解读的存储日志会以方向感知的错误被拒绝，绝不错读。`SESSION_FORMAT_VERSION` 保持 v0，本构建不提供格式迁移路径；更高版本会要求操作者升级 harness。解码器只接受下文点名的有限同版本记录变体。本构建不认识的事件类型会被拒绝，除非其信封标记为 `ignorable`；已提交前缀中的损坏以 `SessionPersistenceCorruptionError` 拒绝。对仍绑定到活动会话的 id 执行 `load`，会先刷新其快照并在轮次开放时拒绝；冷 load 应用恢复。
 
 -----
 
@@ -65,7 +65,7 @@ const headers = await ctx.sessionPersistence.list()        // every stored sessi
 
 ### 设计理念
 
-本包是能力 seam 的 Service Definition，分两半。抽象的 `SessionPersistence` 服务是公开约定；`PersistenceCoordinator` 为缓冲、串行化、物化、修复、接管与完全停稳的 dispose 提供后端无关编排。后端实现存储读取、追加、修复与列出所需的小型持久原语，因此 JSONL 与 SQLite 共享生命周期正确性，同时保留不同的存储原语。
+本包是能力 seam 的 Service Definition，分两半。抽象的 `SessionPersistence` 服务是公开约定；`PersistenceCoordinator` 为缓冲、串行化、物化、修复、接管与完全停稳的 dispose 提供后端无关编排。JSONL provider 实现存储读取、追加、修复与列出所需的小型持久原语；第三方 provider 可以复用同一 coordinator，也可以直接实现该服务。
 
 ### 每个后端必须遵守的不变量
 
@@ -103,7 +103,6 @@ const headers = await ctx.sessionPersistence.list()        // every stored sessi
 
 - [会话持久化子系统](../../../docs/subsystems/persistence.zh.md)——完整服务约定、flush 检查点、崩溃恢复与生成的 Cordis API。
 - [JSONL 持久化后端](../session-persistence-jsonl/README.zh.md)——随产品交付、按会话存储文件的后端。
-- [SQLite 持久化后端](../session-persistence-sqlite/README.zh.md)——可选启用的单数据库后端。
 - [会话检查点策略](../session-checkpoint-policy/README.zh.md)——在语义边界上经由本服务刷新的插件。
 - [会话包映射](../README.zh.md)——相邻的持久化、投影、标题与遥测包。
 

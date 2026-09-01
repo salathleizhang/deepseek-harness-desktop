@@ -29,7 +29,7 @@ Mount this backend when a composition needs durable sessions backed by per-sessi
 
 ### When to choose it
 
-Choose this backend when consumers benefit from one artifact per session — navigation, external tooling, or a raw line-readable log. Choose [SQLite](../session-persistence-sqlite/README.md) when a single queryable database fits the deployment instead. The backend keeps sessions under a deployment-controlled root: project-local, shared, temporary, or centralized.
+Choose this backend when consumers benefit from one artifact per session — navigation, external tooling, or a raw line-readable log. It is the sole first-party Session-persistence provider. The backend keeps sessions under a deployment-controlled root: project-local, shared, temporary, or centralized.
 
 ### Minimal configuration
 
@@ -113,7 +113,6 @@ Read these pages when the package-level contract is not enough. They move from t
 
 - [Session persistence subsystem](../../../docs/subsystems/persistence.md) — backend-neutral service semantics and provider relationships.
 - [Session persistence seam](../session-persistence/README.md) — the service contract this backend implements.
-- [SQLite persistence backend](../session-persistence-sqlite/README.md) — the opt-in single-database alternative.
 - [Project-session directory decision](../../../.agents/notes/implemented/architecture/2026-07-24-project-session-directories.md) — the layout tradeoff behind project and session directories.
 - [Zstandard JSONL session logs](../../../.agents/notes/implemented/architecture/2026-07-19-zstandard-jsonl-session-logs.md) — the checksummed-frame encoding rationale.
 

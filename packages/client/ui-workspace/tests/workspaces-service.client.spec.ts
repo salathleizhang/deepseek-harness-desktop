@@ -7,7 +7,8 @@ import type {
   IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { ClientRemote, DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
-import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
+import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
+import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { DirectoryBrowseError, UiWorkspaceService } from '../src/client/navigation.ts'
 
@@ -435,20 +436,20 @@ describe('UiWorkspaceService', () => {
     await expect(b.uiWorkspace.createDirectory('/home/u', 'new')).resolves.toBe('/home/u/new')
     expect(b.directoryPicker.callsOf('createDirectory')).toEqual([{ path: '/home/u', name: 'new' }])
     b.directoryPicker.onPick = () => Promise.resolve({
-      ok: false, error: { code: 'internal', message: 'no chooser', details: {} },
+      ok: false, error: new RemoteError('gateway/internal', 'no chooser', {}),
     })
     await expect(b.uiWorkspace.pickDirectory()).rejects.toThrow('directory picker failed: no chooser')
     b.directoryPicker.onList = () => Promise.resolve({
-      ok: false, error: { code: 'directory-unreadable', message: 'denied', details: { path: '/private' } },
+      ok: false, error: new RemoteError('directory-picker/unreadable', 'denied', { path: '/private' }),
     })
     const listFailure = b.uiWorkspace.listDirectory('/private')
     await expect(listFailure).rejects.toBeInstanceOf(DirectoryBrowseError)
-    await expect(listFailure).rejects.toMatchObject({ rpcError: { code: 'directory-unreadable' } })
+    await expect(listFailure).rejects.toMatchObject({ rpcError: { code: 'directory-picker/unreadable' } })
     b.directoryPicker.onCreateDirectory = () => Promise.resolve({
-      ok: false, error: { code: 'directory-exists', message: 'taken', details: { path: '/home/u/new' } },
+      ok: false, error: new RemoteError('directory-picker/exists', 'taken', { path: '/home/u/new' }),
     })
     await expect(b.uiWorkspace.createDirectory('/home/u', 'new')).rejects.toMatchObject({
-      rpcError: { code: 'directory-exists' },
+      rpcError: { code: 'directory-picker/exists' },
     })
   })
 })

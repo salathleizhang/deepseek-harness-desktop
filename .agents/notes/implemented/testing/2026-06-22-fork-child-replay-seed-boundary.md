@@ -24,12 +24,9 @@ Record where a session's **inherited** prefix ends, persist it, and have the rep
 
 `seedLength` is **explicit**, never inferred from `seed.length`. A reconstruction (resume/load) seeds the session with its WHOLE stored log, so `seed.length` there is the full length, not the original boundary — the resume path passes the persisted `seedLength` back from the loaded header instead. (Same shape as `createdAt`, which is also explicitly preserved on reconstruction rather than re-defaulted to now.)
 
-### 2. Both persistence backends round-trip it
+### 2. JSONL round-trips it
 
-- **JSONL**: a `seedLength` field on the header line (`toHeaderLine`/`fromHeaderLine`).
-- **SQLite**: a `seed_length` column on the `sessions` table.
-
-The SQLite layout containing `seed_length`, `source_event_seqs`, and `surface_op` is schema version 4. Earlier version 3 layouts were ambiguous, so every non-current `user_version` is rejected without migration under the pre-release policy.
+JSONL stores `seedLength` on the header line (`toHeaderLine`/`fromHeaderLine`) and returns it through the shared persistence contract.
 
 ### 3. Replay derives a child script after the boundary
 
@@ -40,10 +37,8 @@ This closes the routing correctness gap, and two recorded fork scenarios exercis
 ## Alternatives considered
 
 - **Derive the boundary heuristically in `llm-replay`** (the seeded prefix is contiguous parent events ending at the last `turn/end` before the child's first `user/message`). Rejected: a brittle heuristic in the test harness that re-derives a fact the producer already knows. Persisting the boundary at its source (the fork backend) is the "explicit > implicit at package boundaries" rule applied across the persistence boundary — the reader of a child fixture never has to reconstruct where the inheritance ended.
-- **Pin the format version instead of bumping** (the `SESSION_FORMAT_VERSION = 0` "unstable" stance the event log uses). Rejected for the SQLite *table* layout: `SCHEMA_VERSION` is the monotonic bump-and-reject knob (a small enumerable set of revisions worth telling apart), distinct from the event-vocabulary `version`. Adding a column is precisely the breaking table change it versions, so it bumps.
 
 ## Consequences
 
-- A new persisted header field across core + both backends; the subsystems catalog (`persistence.md`) is updated in the same change (its `SessionHeader` / `CreateSessionOptions` `type-equiv` blocks).
-- Existing SQLite databases at schema v2 are rejected on open (no user data pre-release).
-- Spawn replay is unchanged (`seedLength` 0). Fork replay now routes a child to its own script; covered by a regression in `llm-replay`'s tests (a child fixture whose seeded prefix carries a parent chunk — the derived child script must exclude it, proven red without the slice) and a persistence round-trip test (both backends, via the shared coordinator contract).
+- A new persisted header field spans core and the JSONL provider; the subsystems catalog (`persistence.md`) is updated in the same change (its `SessionHeader` / `CreateSessionOptions` `type-equiv` blocks).
+- Spawn replay is unchanged (`seedLength` 0). Fork replay now routes a child to its own script; covered by a regression in `llm-replay`'s tests (a child fixture whose seeded prefix carries a parent chunk — the derived child script must exclude it, proven red without the slice) and a JSONL persistence round trip through the shared coordinator contract.

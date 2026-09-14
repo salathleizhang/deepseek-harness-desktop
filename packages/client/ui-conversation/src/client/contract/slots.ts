@@ -141,6 +141,18 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       owner: ConversationHeaderActionOwnerProps
     }
     /**
+     * Leading seat before the Session breadcrumbs, for window-chrome-adjacent
+     * controls (macOS desktop sidebar reopen and New Session while the sidebar
+     * is hidden). The seat is laid out only while its occupant renders
+     * something, and it stays mounted through the blank-session state so a
+     * hidden sidebar always keeps a reopen control on screen.
+     */
+    'conversation.session.header.leading': {
+      kind: 'single'
+      scope: 'session'
+      owner: ConversationHeaderLeadingOwnerProps
+    }
+    /**
      * The header's far-right corner, past the utilities' edge and into the
      * header's own padding, for one control. The corner is laid out only while
      * its occupant renders something; an occupant with nothing to show renders
@@ -225,6 +237,12 @@ export interface ConversationHeaderActionOwnerProps {
 
 /** The header corner's occupant derives its state from standard Session props. */
 export interface ConversationHeaderCornerOwnerProps {
+  /** Marker field: the occupant receives no owner-specific values. */
+  children?: never
+}
+
+/** The leading seat's occupant derives its state from standard Session props. */
+export interface ConversationHeaderLeadingOwnerProps {
   /** Marker field: the occupant receives no owner-specific values. */
   children?: never
 }
@@ -393,6 +411,7 @@ export type ConversationSessionHeaderSlotProps =
   PropsRuntime<'conversation.session.header'>
   & PropsRenderSlots<
     'conversation.session.header.lineage'
+    | 'conversation.session.header.leading'
     | 'conversation.session.header.actions'
     | 'conversation.session.header.utilities'
     | 'conversation.session.header.corner'

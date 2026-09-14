@@ -53,6 +53,30 @@
   display: none;
 }
 
+/* macOS hiddenInset titlebar: the title row doubles as the window drag
+   region; interactive children opt out. */
+:global([data-platform='darwin']) .titleRow {
+  -webkit-app-region: drag;
+}
+
+:global([data-platform='darwin']) .titleRow button,
+:global([data-platform='darwin']) .titleRow a,
+:global([data-platform='darwin']) .headerLeading,
+:global([data-platform='darwin']) .headerActions,
+:global([data-platform='darwin']) .headerUtilities,
+:global([data-platform='darwin']) .headerCorner {
+  -webkit-app-region: no-drag;
+}
+
+/* Blank state on macOS desktop: the chrome rows are gone but the leading seat
+   (the hidden sidebar's reopen control) stays on screen, so the header keeps
+   its layout without the rule. */
+:global([data-platform='darwin']) .headerHidden {
+  display: block;
+  min-height: 0;
+  border-bottom: none;
+}
+
 .titleRow {
   display: flex;
   align-items: center;
@@ -66,6 +90,21 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+/* Leading seat before the breadcrumbs; laid out only while its occupant
+   renders something, and the occupant owns its own trailing gap (a CSS-hidden
+   occupant keeps the seat non-empty, so a seat-owned margin would push the
+   breadcrumbs while nothing shows). */
+.headerLeading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.headerLeading:empty {
+  display: none;
 }
 
 .crumbs {

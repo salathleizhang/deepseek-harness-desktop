@@ -319,6 +319,12 @@
   pointer-events: none;
 }
 
+/* macOS desktop: the sidebar is translucent over window vibrancy, so the
+   opaque fill gradient would paint a solid smear instead of a fade. */
+:global([data-platform='darwin']) .fade {
+  display: none;
+}
+
 /* Wide-only content fades back in on expand remount (mirrors the shell). */
 .wide {
   animation: wide-in 200ms var(--ds-ease-in-out);

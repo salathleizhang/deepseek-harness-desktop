@@ -20,6 +20,8 @@ function executeBootstrap(preference?: ThemePreference, fontSize?: number): void
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  document.documentElement.style.removeProperty('color-scheme')
+  delete document.documentElement.dataset.dsThemeSource
   document.body.removeAttribute(DARK_ATTRIBUTE)
   document.body.style.removeProperty('--dsh-content-font-size')
 })
@@ -35,6 +37,8 @@ describe('theme bootstrap row', () => {
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
     if (body?.kind !== 'script') throw new Error('theme body bootstrap row is not a script')
     runInNewContext(body.text, { document, matchMedia: globalThis.matchMedia })
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+    expect(document.documentElement.dataset.dsThemeSource).toBe('dark')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(true)
   })
 
@@ -54,6 +58,8 @@ describe('theme bootstrap row', () => {
   ] as const)('resolves system=%s for the body palette', (matches, dark) => {
     mockSystemDark(matches)
     executeBootstrap('system')
+    expect(document.documentElement.style.colorScheme).toBe(dark ? 'dark' : 'light')
+    expect(document.documentElement.dataset.dsThemeSource).toBe('system')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(dark)
   })
 

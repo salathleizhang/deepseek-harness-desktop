@@ -2,6 +2,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { DESKTOP_IPC, type DshDesktopApi, type DesktopUpdateState } from './ipc.ts'
+import { markDocumentPlatform } from './preload-platform.ts'
 import type { DesktopBackendState } from './backend-controller.ts'
 
 const api: DshDesktopApi = {
@@ -35,4 +36,5 @@ const api: DshDesktopApi = {
   },
 }
 
+markDocumentPlatform()
 contextBridge.exposeInMainWorld('dshDesktop', api)

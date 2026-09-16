@@ -1,8 +1,8 @@
 # Build and publish the Electron desktop app installers: a macOS arm64 .dmg and
-# a Windows x64 NSIS installer. A tag push to
-# dsh-v* (the desktop app shares the dsh family's version and tag) creates a
-# GitHub Release with the installers; a manual dispatch can rehearse the build
-# with publish=false or publish from such a tag.
+# a Windows x64 NSIS installer. A manual dispatch builds the installers without
+# running the repository's
+# other release and CI workflows. Run it from a dsh-v* tag with publish=true to
+# create a GitHub Release with the installers.
 #
 # The macOS job signs with the Developer ID Application identity and notarizes
 # via notarytool (credentials come from repository secrets); the Windows job
@@ -19,12 +19,10 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Create a GitHub Release from the built installers. Only valid from a dsh-v* tag.
+        description: Create a GitHub Release from the built installers. Run this workflow from a dsh-v* tag.
         required: true
         type: boolean
         default: false
-  push:
-    tags: ['dsh-v*']
 
 permissions:
   contents: read
@@ -82,9 +80,7 @@ jobs:
 
       # electron-builder notarizes with notarytool; APPLE_API_KEY must name the
       # App Store Connect API key's .p8 file, so decode the secret to disk and
-      # point the env var at it for the packaging steps. When the API key
-      # secrets are absent, leave the vars unset so electron-builder skips
-      # notarization and still produces a signed installer.
+      # point the env var at it for the packaging steps.
       - name: Prepare notarization credentials
         env:
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
@@ -104,9 +100,9 @@ jobs:
       # the host-arch (arm64) installers.
       - name: Package macOS
         env:
-          DSH_DESKTOP_APP_ID: ${{ secrets.DSH_DESKTOP_APP_ID }}
-          DSH_DESKTOP_MACOS_SIGNING_IDENTITY: ${{ secrets.DSH_DESKTOP_MACOS_SIGNING_IDENTITY }}
-          DSH_DESKTOP_MACOS_TEAM_ID: ${{ secrets.DSH_DESKTOP_MACOS_TEAM_ID }}
+          DSH_DESKTOP_APP_ID: com.deepseek.dsh-desktop
+          DSH_DESKTOP_MACOS_SIGNING_IDENTITY: Junwei Zhang (7HP3X3977Y)
+          DSH_DESKTOP_MACOS_TEAM_ID: 7HP3X3977Y
         run: pnpm run package:desktop:mac:arm64
 
       - uses: actions/upload-artifact@v4
@@ -159,7 +155,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [build-macos, build-windows]
-    if: github.event_name == 'push' || inputs.publish
+    if: inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

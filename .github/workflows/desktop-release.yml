@@ -103,6 +103,7 @@ jobs:
           DSH_DESKTOP_APP_ID: com.deepseek.dsh-desktop
           DSH_DESKTOP_MACOS_SIGNING_IDENTITY: Junwei Zhang (7HP3X3977Y)
           DSH_DESKTOP_MACOS_TEAM_ID: 7HP3X3977Y
+          DSH_DESKTOP_AUTO_UPDATE_ENV: production
         run: pnpm run package:desktop:mac:arm64
 
       - uses: actions/upload-artifact@v4

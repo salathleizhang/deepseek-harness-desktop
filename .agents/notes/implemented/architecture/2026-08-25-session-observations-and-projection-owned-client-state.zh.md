@@ -32,8 +32,8 @@ flowchart LR
   Cache -->|"small miss"| Observe
   Observe --> Source{"live or cold"}
   Source --> Live["attached Session cut"]
-  Source --> Borrow["borrowSession"]
-  Borrow --> Prepared["SessionPreparations.borrow"]
+  Source --> Borrow["persistence read handle"]
+  Borrow --> Prepared["reader's prepared cache"]
   Live --> Mode{"all or none"}
   Prepared --> Mode
   Mode --> Snapshot["SessionObservation"]
@@ -45,13 +45,13 @@ flowchart LR
 
 ### Observation 是 point read 单元
 
-`SessionQueryEngine.observeSession(sessionId, options)` 返回可 dispose（资源释放）的 `SessionObservation`，其中包含同一份 source kind、header、连续事件前缀、cursor、可选 projection snapshot，以及 prepared source 的持久化 revision。已挂载 Session 优先；否则 `SessionPersistence.borrowSession()` 与 `SessionPreparations.borrow()` 共享并固定一份 prepared Session，包括尚未完成的冷加载。
+`SessionQueryEngine.observeSession(sessionId, options)` 返回可 dispose（资源释放）的 `SessionObservation`，其中包含同一份 source kind、header、连续事件前缀、cursor、可选 projection snapshot，以及 prepared source 的持久化 revision。已挂载 Session 优先；否则由读取方自己的 prepared cache——以 `stat().revision` 为键、由 observation lease 固定——提供冷 Session，让并发 observation 共享同一次持久化读取（`open(id, 'read')` + `read`），包括尚未完成的冷加载。
 
 每个 owner 都会 dispose 自己的 observation。`retain()` 为同一切面创建另一份 lease，使 `session.follow` 能够先发布 snapshot，再把完全相同的 prepared source 转交给后台 Agent promotion，而无需重读日志。冷解析期间出现的 live Session 会在发布前胜出；已经消失的 live source 会按 cold source 重试。
 
 ### 数据源解析与生命周期
 
-一份 observation 把所有返回字段绑定到同一 lifecycle witness。调用方不会把 corpus list 的 header、persistence 的 events 和稍后 live Session 的 projections 拼在一起。选中的 header 与事件前缀共同产生 cursor 和 projection snapshot。
+一份 observation 把所有返回字段绑定到同一 lifecycle witness。调用方不会把 corpus list 的 header、persistence 的 events 和稍后 live Session 的 projections 拼在一起。选中的 header 与事件前缀共同产生 cursor 和 projection snapshot。live observation 在读取时以日志长度固定 cut，并在首次访问时才物化 `events`；日志只会追加，所以无论消费者多晚读取，该前缀都完全相同，而只需要 header、cursor 或 projections 的消费者永远不会复制日志。
 
 系统在 cold borrow 前后都检查 live 优先级。第二次检查封住 persistence 加载期间 Agent 完成 attach 的竞态。如果 persistence 报告由 live source 胜出，但 SessionQuery 检查时该 source 已经 detach，解析会重新开始，而不是发布一份无人持有的引用。
 
@@ -164,10 +164,10 @@ Client 本地交互状态也继续留在本地：loading 和 error 状态、打�
 
 ### 与既有决策的关系
 
-- [可复用 Session preparation](2026-08-05-session-preparation.zh.md)拥有冷物化、修复、reservation 和发布。Observation 在该 prepared object 之上增加共享读取 lease，并未把 preparation 移入 SessionQuery。
+- [可复用 Session preparation](../../archived/architecture/2026-08-05-session-preparation.md)拥有冷物化、修复、reservation 和发布。Observation 在该 prepared object 之上增加共享读取 lease，并未把 preparation 移入 SessionQuery。
 - [Session 历史与 Remote event transport](2026-08-18-session-history-and-event-transport.zh.md)拥有 stream generation 与 replacement 语义。本决策提供每个日志 generation 的精确 opening snapshot。
-- [Projection state 与 Client view](2026-08-19-session-projection-state-and-client-views.zh.md)拥有 Host fold state 和 Client value 的区分。本决策规定这些值在哪里消费，以及部分 list hints 与完整 baseline 的差别。
-- [Subagent identity projection](2026-08-06-subagent-list-identity-projection.zh.md)继续拥有 descriptor folding、可序列化 `null` sentinel 和 own-suffix sequence 检查。本决策只取代其中独立 corpus merge 和直接 cold inspection 路径：listing 改为使用 SessionQuery corpus 和 observation。
+- [Projection state 与 Client view](../../archived/architecture/2026-08-19-session-projection-state-and-client-views.md)拥有 Host fold state 和 Client value 的区分。本决策规定这些值在哪里消费，以及部分 list hints 与完整 baseline 的差别。
+- [Subagent identity projection](../../archived/architecture/2026-08-06-subagent-list-identity-projection.md)继续拥有 descriptor folding、可序列化 `null` sentinel 和 own-suffix sequence 检查。本决策只取代其中独立 corpus merge 和直接 cold inspection 路径：listing 改为使用 SessionQuery corpus 和 observation。
 - 更广泛的 [session projection 与 command-log 提案](../../proposed/architecture/2026-07-27-session-projection-and-command-log.zh.md)仍为 proposed，其中尚未由已交付代码体现的部分不受影响。本决策记录已经交付的 observation 与 Client ownership 子集。
 
 ## 验证

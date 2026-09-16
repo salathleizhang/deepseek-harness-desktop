@@ -2,9 +2,12 @@
  * CommandUiRuntime (`ctx.commandUi`): the '/' command source over the
  * session-keyed directory, the client-contribution registry, and the
  * per-session popupSelect controllers. Candidate synthesis merges the host
- * catalog with contributions by availability, then fuzzy query/position
- * filtering; a host/contribution name collision fails loud. Every execute
- * addresses the session's agent by sessionId — sessions are always
+ * catalog with contributions by availability, gives built-in Host rows their
+ * localized face (presentation.ts), then position-filters; an empty query
+ * lists the Add and Commands sections in usage order, a typed query ranks
+ * every row by the `/` menu's shared name-and-label ranking (ui-primitives
+ * `rankByName`). A host/contribution name collision fails loud. Every
+ * execute addresses the session's agent by sessionId — sessions are always
  * agent-backed.
  */
 import { Service } from '@deepseek-ai/cordis'
@@ -17,14 +20,17 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
+import { rankByName } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   CandidateRequest, ClientSessionContext, CommandClaim, PickOutcome, InputTriggerCandidate, InputTriggerPick,
-  SubmitEnvelope, SubmitImageAttachment, SubmitOutcome,
+  SubmitAttachment, SubmitEnvelope, SubmitOutcome,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { CommandContribution, CommandDecoration, CommandUiContract } from './contract.ts'
 import type { CommandDescriptor } from './directory.ts'
 import { CommandDirectory } from './directory.ts'
 import { PopupSelectController } from './popup.ts'
+import { builtinRowFace, sectionRows } from './presentation.ts'
+import { claimToken } from './resolution.ts'
 import type { TokenSegment } from './popup.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -54,69 +60,6 @@ interface LiveState {
   readonly contributions: Map<string, CommandContribution>
   readonly decorations: Map<string, CommandDecoration>
   readonly popups: Map<SessionId, PopupSelectController<ClientSessionContext>>
-}
-
-/** One fuzzy match with its stable source position. */
-interface RankedCandidate {
-  readonly candidate: InputTriggerCandidate
-  readonly index: number
-  readonly prefix: boolean
-  readonly score: number
-}
-
-/** Extra weight for command-name starts and separator boundaries. */
-function boundaryBonus(name: string, index: number): number {
-  return index === 0 || name.charAt(index - 1) === '-' || name.charAt(index - 1) === '_' ? 8 : 0
-}
-
-/**
- * Score the strongest ordered-subsequence alignment in O(name × query).
- * Boundary and adjacent matches earn weight; skipped and leading characters
- * cost weight.
- */
-function fuzzyScore(name: string, query: string): number | undefined {
-  if (query === '') return 0
-  if (query.length > name.length) return undefined
-  const noMatch = Number.NEGATIVE_INFINITY
-  let previous = Array<number>(name.length).fill(noMatch)
-  for (let index = 0; index < name.length; index++) {
-    if (name.charAt(index) === query.charAt(0)) previous[index] = 1 + boundaryBonus(name, index) - index
-  }
-  for (let queryIndex = 1; queryIndex < query.length; queryIndex++) {
-    const current = Array<number>(name.length).fill(noMatch)
-    let bestGapped = noMatch
-    for (let index = 0; index < name.length; index++) {
-      const gappedIndex = index - 2
-      if (gappedIndex >= 0) {
-        const prior = previous[gappedIndex] ?? noMatch
-        if (prior !== noMatch) bestGapped = Math.max(bestGapped, prior + gappedIndex)
-      }
-      if (name.charAt(index) !== query.charAt(queryIndex)) continue
-      const bonus = 1 + boundaryBonus(name, index)
-      const adjacent = index > 0 ? previous[index - 1] ?? noMatch : noMatch
-      if (adjacent !== noMatch) current[index] = adjacent + bonus + 4
-      if (bestGapped !== noMatch) current[index] = Math.max(current[index] ?? noMatch, bestGapped + bonus + 1 - index)
-    }
-    previous = current
-  }
-  let best = noMatch
-  for (const score of previous) best = Math.max(best, score)
-  return best === noMatch ? undefined : best
-}
-
-/** Case-insensitive fuzzy filtering with stable ordering for equal matches. */
-function fuzzyCandidates(candidates: readonly InputTriggerCandidate[], rawQuery: string): readonly InputTriggerCandidate[] {
-  const query = rawQuery.toLowerCase()
-  if (query === '') return candidates
-  const ranked: RankedCandidate[] = []
-  candidates.forEach((candidate, index) => {
-    const name = candidate.name.toLowerCase()
-    const score = fuzzyScore(name, query)
-    if (score !== undefined) ranked.push({ candidate, index, prefix: name.startsWith(query), score })
-  })
-  ranked.sort((left, right) =>
-    Number(right.prefix) - Number(left.prefix) || right.score - left.score || left.index - right.index)
-  return ranked.map(match => match.candidate)
 }
 
 /** Command surface: session-keyed directory + '/' source + contribution registry + per-session popups. */
@@ -199,6 +142,17 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
   }
 
   /**
+   * Close every open popup for a command whose options have become stale.
+   * Pending loads and confirmations lose their binding; drafts stay intact.
+   * @param name - command name without the leading slash.
+   */
+  dismiss(name: string): void {
+    for (const popup of this.live.popups.values()) {
+      if (popup.state.getSnapshot().command === name) popup.dismiss()
+    }
+  }
+
+  /**
    * Resolve the per-session popup controller (lazy; dies with the session
    * scope). The controller's consume callback dispatches the scoped
    * consume-token event back to this session; focusComposer reaches the
@@ -246,47 +200,58 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     }
   }
 
-  /** Menu candidates: host catalog + contribution availability, then position filtering and fuzzy name ranking. */
+  /**
+   * Menu candidates: host catalog + contribution availability, built-in rows
+   * localized, then position filtering; sections for an empty query, the
+   * shared name-and-label ranking for a typed one.
+   */
   private async candidates(session: ClientSessionContext, req: CandidateRequest): Promise<readonly InputTriggerCandidate[]> {
     const list = await this.directory.ensureReady(session.sessionId, req.signal)
     const rows: InputTriggerCandidate[] = []
     const seen = new Set<string>()
     for (const c of list) {
       seen.add(c.name)
-      rows.push({ name: c.name, description: c.description, ...(c.input !== undefined ? { hint: c.input.hint } : {}) })
+      rows.push({
+        name: c.name,
+        ...(builtinRowFace(c, this.t) ?? { description: c.description }),
+        ...(c.input !== undefined ? { hint: c.input.hint } : {}),
+      })
     }
     for (const contribution of this.live.contributions.values()) {
       if (!contribution.available(session)) continue
       if (seen.has(contribution.name)) {
         throw new Error(`ui-commands: contribution /${contribution.name} collides with a host command`)
       }
-      rows.push({ name: contribution.name, description: contribution.description })
+      rows.push({
+        name: contribution.name,
+        ...(contribution.label === undefined ? {} : { label: contribution.label() }),
+        ...(contribution.description === undefined ? {} : { description: contribution.description() }),
+        ...(contribution.icon === undefined ? {} : { icon: contribution.icon }),
+      })
     }
-    return fuzzyCandidates(
-      rows.filter(c => req.position === 'leading' || c.hint === undefined),
-      req.query,
-    )
+    const visible = rows.filter(c => req.position === 'leading' || c.hint === undefined)
+    return req.query === '' ? sectionRows(visible, this.t) : rankByName(visible, req.query)
   }
 
-  /** Decision table, menu column: contribution/decorated-host → popup; host input → claim; host bare → detached execute. */
+  /** Decision table, menu column: contribution/decorated-host → popup or action; host input → claim; host bare → detached execute. */
   private dispatch(pick: InputTriggerPick): PickOutcome {
     const name = pick.candidate.name
     const contribution = this.live.contributions.get(name)
     if (contribution !== undefined && contribution.available(pick.session)) {
-      this.openPopup(name, contribution.ui, pick.session, { via: 'menu', span: pick.span })
+      this.invoke(name, contribution.ui, pick.session, { via: 'menu', span: pick.span })
       return 'handled'
     }
     const desc = this.directory.resolve(pick.session.sessionId, name)
     if (desc === undefined) return undefined // snapshot swapped between menu and pick → miss
-    // A decoration replaces the HOST row's bare invocation with its popup;
-    // it decorates only a resolvable host command (checked above), never
-    // manufactures one, and never touches the argument claim below.
+    // A decoration replaces the HOST row's bare invocation with its popup or
+    // action; it decorates only a resolvable host command (checked above),
+    // never manufactures one, and never touches the argument claim below.
     const decoration = this.live.decorations.get(name)
     if (decoration !== undefined && decoration.available(pick.session)) {
-      this.openPopup(name, decoration.ui, pick.session, { via: 'menu', span: pick.span })
+      this.invoke(name, decoration.ui, pick.session, { via: 'menu', span: pick.span })
       return 'handled'
     }
-    if (desc.input !== undefined) return { claim: this.leadingClaim(desc, pick.session) }
+    if (desc.input !== undefined) return { claim: this.leadingClaim(desc, pick.session, claimToken(desc, this.t)) }
     // Menu-pick execute consumes the trigger span before the detached run
     // (scoped event; the input owns the CAS guard).
     this.consumeVia(pick.session.sessionId, { via: 'menu', span: pick.span })
@@ -297,11 +262,10 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
   /** Decision table, space column: hot-key sync check; only host leadingInput claims. */
   private matchSpace(session: ClientSessionContext, token: string): PickOutcome {
     if (!token.startsWith('/')) return undefined
-    const name = token.slice(1)
-    if (this.live.contributions.has(name)) return undefined // popup kinds never claim on space
-    const desc = this.directory.resolve(session.sessionId, name)
+    if (this.live.contributions.has(token.slice(1))) return undefined // popup and action kinds never claim on space
+    const desc = this.directory.resolve(session.sessionId, token.slice(1))
     if (desc === undefined || desc.input === undefined) return undefined
-    return { claim: this.leadingClaim(desc, session) }
+    return { claim: this.leadingClaim(desc, session, token.slice(1)) }
   }
 
   /**
@@ -310,11 +274,15 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
    * bare host commands act on the bare token only; leadingInput claims
    * args-tolerant.
    *
-   * Envelope policy: an enter submission carrying images resolves only
-   * through a command declaring image acceptance. Every other command route —
-   * popup, non-accepting claim, bare detached execute — throws the refusal
-   * so the machine surfaces one composer notice and the draft and images
-   * stay in place; nothing executes and nothing is dropped.
+   * Envelope policy: an enter submission carrying attachments resolves only
+   * through a command declaring attachment acceptance. Every other submitting
+   * route — popup, non-accepting claim, bare detached execute — throws the
+   * refusal so the machine surfaces one composer notice and the draft and
+   * attachments stay in place; nothing executes and nothing is dropped. An
+   * action submits nothing and runs regardless.
+   *
+   * A typed token is resolved through the localized claim tokens, so a line
+   * written as `/计划` reaches the `plan` descriptor and executes as `/plan`.
    */
   private async matchEnter(
     session: ClientSessionContext,
@@ -327,62 +295,80 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     const ws = trimmed.search(/\s/)
     const token = ws === -1 ? trimmed : trimmed.slice(0, ws)
     const bare = ws === -1
-    const name = token.slice(1)
-    if (name === '') return undefined
-    const refuseImages = (): never => {
-      throw new Error(this.t('notice.imagesUnsupported', { command: name }))
+    const typedName = token.slice(1)
+    if (typedName === '') return undefined
+    const refuseAttachments = (): never => {
+      throw new Error(this.t('notice.attachmentsUnsupported', { command: typedName }))
     }
-    const contribution = this.live.contributions.get(name)
+    const contribution = this.live.contributions.get(typedName)
     if (contribution !== undefined && contribution.available(session)) {
       if (!bare) return undefined
-      if (envelope.images > 0) refuseImages()
-      this.openPopup(name, contribution.ui, session, { via: 'enter', token })
+      if (envelope.attachments > 0 && contribution.ui.kind !== 'action') refuseAttachments()
+      this.invoke(typedName, contribution.ui, session, { via: 'enter', token })
       return 'handled'
     }
     await this.directory.ensureReady(session.sessionId, signal)
-    const desc = this.directory.resolve(session.sessionId, name)
+    const desc = this.directory.resolve(session.sessionId, typedName)
     if (desc === undefined) return undefined
+    const name = desc.name
+    const canonical = `/${name}${trimmed.slice(token.length)}`
     // Bare enter on a decorated host command opens its popup; an argued line
     // never consults the decoration (the claim/detached paths below own it).
     if (bare) {
       const decoration = this.live.decorations.get(name)
       if (decoration !== undefined && decoration.available(session)) {
-        if (envelope.images > 0) refuseImages()
-        this.openPopup(name, decoration.ui, session, { via: 'enter', token })
+        if (envelope.attachments > 0 && decoration.ui.kind !== 'action') refuseAttachments()
+        this.invoke(name, decoration.ui, session, { via: 'enter', token })
         return 'handled'
       }
     }
     if (desc.input !== undefined) {
-      if (envelope.images > 0 && desc.input.images !== true) refuseImages()
-      return { claim: this.leadingClaim(desc, session) }
+      if (envelope.attachments > 0 && desc.input.attachments !== true) refuseAttachments()
+      return { claim: this.leadingClaim(desc, session, token.slice(1)) }
     }
     if (!bare) return undefined
-    if (envelope.images > 0) refuseImages()
+    if (envelope.attachments > 0) refuseAttachments()
     this.consumeVia(session.sessionId, { via: 'enter', token })
-    this.runDetached(desc, session, trimmed)
+    this.runDetached(desc, session, canonical)
     return 'handled'
   }
 
-  /** Open the session's popup for one contribution or decoration (menu pick / bare enter). */
-  private openPopup(
+  /**
+   * Invoke one contribution or decoration (menu pick / bare enter): open the
+   * session's popup, or consume the token and run the action.
+   */
+  private invoke(
     name: string,
     ui: CommandContribution['ui'],
     session: ClientSessionContext,
     segment: TokenSegment,
   ): void {
+    if (ui.kind === 'action') {
+      this.consumeVia(session.sessionId, segment)
+      ui.run(session)
+      return
+    }
     const actx = this.scopeFor(session.sessionId)
     if (actx === undefined) return
     this.popupFor(actx).open(name, ui, session, segment)
   }
 
-  /** Build the leadingInput claim: token `/name ` + the command.execute submit transaction. */
-  private leadingClaim(desc: CommandDescriptor, session: ClientSessionContext): CommandClaim {
-    const token = `/${desc.name} `
+  /**
+   * Build the leadingInput claim. The composer keeps the claimed token in
+   * the draft and reads the arguments after it, so the token is the spelling
+   * the draft will carry: the locale's token for a menu pick, the typed
+   * spelling for Space and Enter. The command.execute submit transaction
+   * always sends the catalog name.
+   */
+  private leadingClaim(desc: CommandDescriptor, session: ClientSessionContext, shown: string): CommandClaim {
+    const token = `/${shown} `
+    const line = `/${desc.name} `
     return {
+      name: desc.name,
       token,
       ...(desc.input !== undefined ? { hint: desc.input.hint } : {}),
-      ...(desc.input?.images === true ? { images: true } : {}),
-      submit: (args, _actx, images) => this.execute(session, token + args, images),
+      ...(desc.input?.attachments === true ? { attachments: true } : {}),
+      submit: (args, _actx, attachments) => this.execute(session, line + args, attachments),
     }
   }
 
@@ -394,21 +380,21 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
    * executor durably logged the lifecycle (`command/run`/`command/done`) and
    * the outcome renders as a persistent flow node — the composer never
    * echoes it. A handler error result reports an error outcome so the
-   * composer keeps the submission (draft and images) for correction.
+   * composer keeps the draft and attachments for correction.
    * A refused call throws.
    */
   private async execute(
     session: ClientSessionContext,
     line: string,
-    images: readonly SubmitImageAttachment[] = [],
+    attachments: readonly SubmitAttachment[] = [],
   ): Promise<SubmitOutcome> {
-    const result = await this.ctx.remote.commands.execute(session.sessionId, line, images)
+    const result = await this.ctx.remote.commands.execute(session.sessionId, line, attachments)
     if (!result.ok) throw new Error(`command.execute failed: ${result.error.code}: ${result.error.message}`)
     if (result.value === undefined) return { kind: 'error', text: `unknown or malformed command: ${line}` }
     this.notifyExecuted(session.sessionId, submittedCommandName(line), result.value.result)
-    // An image-carrying submission consumed its images only on handler
-    // success; an error outcome keeps draft and images in the composer.
-    if (images.length > 0 && result.value.result.kind === 'error') {
+    // A submission consumes its attachments only after handler success; an
+    // error outcome keeps the draft and attachments in the composer.
+    if (attachments.length > 0 && result.value.result.kind === 'error') {
       return { kind: 'error', text: result.value.result.text }
     }
     return { kind: 'success' }

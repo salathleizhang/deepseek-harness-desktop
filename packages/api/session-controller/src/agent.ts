@@ -9,7 +9,8 @@ import type {
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-typert-registry'
@@ -112,7 +113,7 @@ export async function inspectApiSession(
   ctx: Context,
   sessionId: SessionId,
   signal?: AbortSignal,
-): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+): Promise<SessionInspection> {
   try {
     using observation = await ctx.sessionQuery.observeSession(sessionId, {
       ...(signal === undefined ? {} : { signal }),
@@ -121,7 +122,11 @@ export async function inspectApiSession(
     if (observation.header.cwd === undefined) {
       throw new ApiSessionNotFound(`session "${sessionId}" not found`)
     }
-    return { meta: observation.header, events: [...observation.events] }
+    return {
+      meta: observation.header,
+      inheritedEventCount: observation.inheritedEventCount,
+      events: [...observation.events],
+    }
   } catch (error: unknown) {
     if (error instanceof SessionQueryError
       && error.code === 'SESSION_QUERY_SESSION_NOT_FOUND') {
@@ -371,12 +376,14 @@ export class ApiSessionAgentController {
     readonly setup: AgentSetup
   }> {
     const presets = this.ctx.get('agentPresets')
-    if (presets === undefined) return { setup: (agentCtx) => { this.installSelection(agentCtx) } }
+    if (presets === undefined) {
+      return { setup: (_agentCtx, agent) => { this.installSelection(agent) } }
+    }
     const resolvedId = (await presets.resolve(presetId)).id
     return {
       agentPreset: resolvedId,
-      setup: async (agentCtx) => {
-        this.installSelection(agentCtx)
+      setup: async (agentCtx, agent) => {
+        this.installSelection(agent)
         await presets.mount(agentCtx, resolvedId)
       },
     }
@@ -485,9 +492,7 @@ export class ApiSessionAgentController {
     return { provider, model }
   }
 
-  private installSelection(agentCtx: Context): void {
-    const agent = agentCtx.agent
-    if (agent === undefined) throw new Error('api-session: Agent setup has no scoped Agent')
+  private installSelection(agent: Agent): void {
     this.selectionFor(agent)
   }
 

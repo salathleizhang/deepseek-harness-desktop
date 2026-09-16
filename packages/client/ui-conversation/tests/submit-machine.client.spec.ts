@@ -13,6 +13,7 @@ import { scanTextRefs } from '../src/client/input/decorations.ts'
 
 function claimOf(name: string, hint?: string): CommandClaim {
   return {
+    name,
     token: `/${name} `,
     ...(hint !== undefined ? { hint } : {}),
     submit: async () => ({ kind: 'success' }),
@@ -170,9 +171,9 @@ describe('submit-machine: adjudication outcomes', () => {
 describe('submit-machine: claimed lifecycle', () => {
   it('the claim event enters claimed and snapshots hint and images bits', () => {
     const m = new SubmitMachine()
-    m.dispatch({ type: 'claim', claim: { ...claimOf('goal', 'set a goal'), images: true } })
+    m.dispatch({ type: 'claim', claim: { ...claimOf('goal', 'set a goal'), attachments: true } })
     expect(m.state.phase).toBe('claimed')
-    expect(m.state.claim).toMatchObject({ token: '/goal ', hint: 'set a goal', images: true })
+    expect(m.state.claim).toMatchObject({ token: '/goal ', hint: 'set a goal', attachments: true })
   })
 
   it('claimed overwrites in place — no stack', () => {
@@ -191,12 +192,39 @@ describe('submit-machine: claimed lifecycle', () => {
     expect(m.state.phase).toBe('submitting')
   })
 
-  it('breaking startsWith(token) auto-releases back to plain', () => {
+  it('editing the command name releases back to plain', () => {
     const m = new SubmitMachine()
     m.dispatch({ type: 'claim', claim: claimOf('goal') })
     m.dispatch({ type: 'draft-changed', draft: '/goal args fine' })
     expect(m.state.phase).toBe('claimed')
     m.dispatch({ type: 'draft-changed', draft: '/goa' })
+    expect(m.state.phase).toBe('plain')
+    expect(m.state.claim).toBeUndefined()
+  })
+
+  it.each([
+    ['goal', '/goal '], ['goal', '/目标 '], ['plan', '/plan '], ['plan', '/计划 '],
+    ['feedback', '/feedback '], ['feedback', '/反馈 '],
+  ])('retains %s as %s without its separator and submits an empty argument', (name, token) => {
+    const m = new SubmitMachine()
+    m.dispatch({ type: 'claim', claim: { ...claimOf(name), token } })
+    for (const draft of [token + '这是目标', token, token.trimEnd(), token, token.trimEnd()]) {
+      m.dispatch({ type: 'draft-changed', draft })
+      expect(m.state.phase).toBe('claimed')
+      expect(m.state.claim?.name).toBe(name)
+    }
+    const fx = m.dispatch({ type: 'enter', mode: 'queue', draft: token.trimEnd() })
+    const begin = effectAt(fx, 0, 'begin-submit')
+    expect(begin.args).toBe('')
+    m.dispatch({ type: 'submit-settled', attempt: begin.attempt, ok: false, draft: token.trimEnd() })
+    expect(m.state.phase).toBe('claimed')
+    expect(m.state.claim?.name).toBe(name)
+  })
+
+  it.each(['/目', '/目标x', '/目标/文件', '', '看看 /目标'])('releases a goal claim for %j', (draft) => {
+    const m = new SubmitMachine()
+    m.dispatch({ type: 'claim', claim: { ...claimOf('goal'), token: '/目标 ' } })
+    m.dispatch({ type: 'draft-changed', draft })
     expect(m.state.phase).toBe('plain')
     expect(m.state.claim).toBeUndefined()
   })
@@ -345,6 +373,14 @@ describe('decorations: scanTextRefs', () => {
 
   it('names off the lexicon do not match; triggers are routed per lexicon list', () => {
     expect(scanTextRefs('/research @goal', lexicon)).toEqual([])
+  })
+
+  it('a "/" token continued by a path never matches, even when the name is on the lexicon', () => {
+    expect(scanTextRefs('/goal/x /goal/ /goal.md', lexicon)).toEqual([])
+  })
+
+  it('a "/" token glued to punctuation is not a reference: the host gesture is whitespace-bounded', () => {
+    expect(scanTextRefs('/goal。 then /goal, now', lexicon)).toEqual([])
   })
 
   it('word boundary: a trigger glued to text never matches', () => {

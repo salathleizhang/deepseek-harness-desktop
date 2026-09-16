@@ -11,7 +11,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { decodeStorageRecord } from '@deepseek-ai/dsh-session/chunk-rows'
 import { describe, expect, it } from 'vitest'
 import WebSocket from 'ws'
 
@@ -60,21 +59,13 @@ interface WorkspaceBaseline {
 }
 
 interface HistoryPage {
-  records: Array<
-    | { type: 'event'; event: HistoryEvent }
-    | { type: 'chunks'; event: HistoryChunkEvent }
-  >
+  records: Array<{ type: 'event'; event: HistoryEvent }>
   hasMore: boolean
 }
 
 interface HistoryEvent {
   type: string
   data: unknown
-}
-
-interface HistoryChunkEvent extends HistoryEvent {
-  seq: number
-  time: number
 }
 
 interface ProcessObservation {
@@ -314,16 +305,9 @@ function assistantText(page: HistoryPage): string {
   return text.join('\n')
 }
 
-/** Expand lossless history records for assertions over the public event stream. */
+/** Read scalar v2 history records for assertions over the public event stream. */
 function historyEvents(page: HistoryPage): HistoryEvent[] {
-  return page.records.flatMap(record => record.type === 'event'
-    ? [record.event]
-    : decodeStorageRecord({
-      type: record.event.type.replace(/^chunkrow\//u, ''),
-      seq0: record.event.seq,
-      time0: record.event.time,
-      data: record.event.data,
-    }))
+  return page.records.map(record => record.event)
 }
 
 /** Stop the spawned CLI through its normal signal path, escalating only on a stuck teardown. */
@@ -343,10 +327,10 @@ async function sendGitHubDelivery(origin: string): Promise<Response> {
   const body = JSON.stringify({
     action: 'ready_for_review',
     number: 4242,
-    repository: { full_name: 'deepseek-harness/deepseek-harness' },
+    repository: { full_name: 'deepseek-ai/deepseek-harness' },
     pull_request: {
       title: 'Real CLI webhook e2e',
-      html_url: 'https://github.com/deepseek-harness/deepseek-harness/pull/4242',
+      html_url: 'https://github.com/deepseek-ai/deepseek-harness/pull/4242',
       draft: false,
       user: { login: 'octocat' },
       base: { ref: 'master', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
@@ -428,7 +412,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('GitHub webhook through the real 
       const admitted = await eventually(
         child,
         observation.text,
-        'webhook provenance, title, and permission events',
+        'webhook source, title, and permission events',
         async () => await history(baseUrl, sessionId),
         (page) => {
           const events = historyEvents(page)

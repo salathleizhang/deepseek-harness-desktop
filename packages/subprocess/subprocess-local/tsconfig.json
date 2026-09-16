@@ -18,10 +18,13 @@
       "path": "../subprocess"
     },
     {
+      "path": "../win32-process"
+    },
+    {
       "path": "../../util/timeout"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../util/lazy-require"
     }
   ]
 }

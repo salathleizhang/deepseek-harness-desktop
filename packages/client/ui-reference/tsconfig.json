@@ -24,9 +24,6 @@
       "path": "../../context/session-reference"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
-    },
-    {
       "path": "../../typert/protocol"
     },
     {
@@ -46,6 +43,9 @@
     },
     {
       "path": "../ui-slots"
+    },
+    {
+      "path": "../ui-sidebar-right"
     }
   ]
 }

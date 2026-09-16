@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Local submission echo over the BUILT client graph (keyless fixture Connection RPC
+// Local submission echo over the BUILT client graph (keyless RemoteMock
 // transport): a text-plus-image send paints its echo bubble synchronously on
 // the submit keystroke — before serialization, transport, or the fixture's
 // durable admission — with the composer already cleared and editable, and the
@@ -33,7 +33,7 @@ it('paints the submission echo on the send keystroke and swaps it for the durabl
     },
   })
   await waitFor(() => {
-    if (document.querySelector('[role="group"][aria-label="Pending images"] img') === null) {
+    if (document.querySelector('[role="group"][aria-label="Pending attachments"] img') === null) {
       throw new Error('attachment rail missing')
     }
   }, { timeout: 5_000 })
@@ -53,7 +53,7 @@ it('paints the submission echo on the send keystroke and swaps it for the durabl
   expect(echo.querySelector('img')?.getAttribute('src')?.split(':')[0]).toBe('blob')
   expect(composer.textContent).toBe('')
   expect(composer.getAttribute('contenteditable')).toBe('true')
-  expect(document.querySelector('[role="group"][aria-label="Pending images"]')).toBeNull()
+  expect(document.querySelector('[role="group"][aria-label="Pending attachments"]')).toBeNull()
 
   // The fixture's durable user/message (source.rpcId echoes the prompt
   // requestId) replaces the echo: one bubble, no marker left, and the image

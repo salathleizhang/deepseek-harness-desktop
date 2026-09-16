@@ -24,7 +24,7 @@ import {
 } from './support.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/question-composer', import.meta.url))
-const FIXTURE = join(SNAPSHOT_DIR, 'session.jsonl')
+const FIXTURE = join(SNAPSHOT_DIR, 'session.v3.jsonl')
 const UI_EXPECTED = join(SNAPSHOT_DIR, 'ui.expected.md')
 const SIDEBAR_EXPECTED = join(SNAPSHOT_DIR, 'sidebar.expected.md')
 const COMPOSED_EXPECTED = join(SNAPSHOT_DIR, 'composed.expected.md')
@@ -107,7 +107,6 @@ function cancelledFixture(fixture: string): string {
     message.content[0].isError = true
     data.error = {
       name: 'UserQuestionError',
-      message: 'the user cancelled ask_user_question',
       code: 'ASK_CANCELLED',
     }
     replaced = true
@@ -346,7 +345,7 @@ describe('web e2e: resident question composer round trip', () => {
     expect(await capMetrics(field)).toEqual({ textLines: CAP_LINES, scrolls: true })
 
     // Settle the wait so teardown is not racing a pending question.
-    await composer.getByRole('button', { name: 'Skip this question' }).click()
+    await composer.getByRole('button', { name: 'Skip' }).click()
     expect(await asked).toEqual({ answers: [{ id: 'free', selected: [] }] })
     await expect.poll(() => page.locator('[data-question-key]').count(), { timeout: 10_000 }).toBe(0)
   }, 60_000)
@@ -411,7 +410,7 @@ describe.skipIf(MODE === 'record')('web e2e: cancelled question transcript', () 
 
   it('keeps the fixture inventory closed', async () => {
     await assertFixtureInventory(SNAPSHOT_DIR, [
-      'session.jsonl',
+      'session.v3.jsonl',
       'ui.expected.md',
       'sidebar.expected.md',
       'composed.expected.md',

@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-本包提供附件的本地存储与图片处理后端：源图经过校验、方向修正、元数据与色彩配置移除，并规范化为 8-bit sRGB/sRGBA 后保存在 `DSH_HOME` 下；路由专用请求版本另行派生并缓存。随附的 `dsh` 组合使用的就是它，因此持久图片附件无需配置即可工作。相同规范化图片只存一份，同一请求变体的并发读取共享工作，即使后来收紧准入限制，已存图片仍然可读。存储仅限本机——其他主机无法读取这些图片——对象也永远不会自动删除。
+在运行 DSH 的机器上，把图片与通用文件附件持久存储到 `DSH_HOME` 下。图片经过校验、针对模型请求完成规范化并按路由缓存；通用文件不设准入限制，按字节原样保存。即使上传时使用不同显示名称，相同字节也只存储一次；读取会校验文件长度与内容，之后收紧限制也不会让已接纳的图片不可读。随附的 `dsh` 组合无需配置即可使用本包。对象仅限本机，并且永远不会自动删除。
 
 ## 目录
 
@@ -25,11 +25,11 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-在默认组合中，把图片附加到提示词或命令，它们会自动保存到本机。自行组合时，挂载这一个插件即可获得持久图片附件。
+在默认组合中，把图片或通用文件附加到提示词或命令，它们会自动保存到本机。自行组合时，挂载这个插件即可获得持久附件。
 
 ### 最小配置
 
-挂载插件，无需任何必填配置。下表默认值定义你可以附加什么；生成的配置目录是每个字段的穷尽式真源。
+挂载插件，无需任何必填配置。下列默认值规定了可以附加的内容；生成的配置目录完整列出了所有字段。
 
 ```yaml
 - name: '@deepseek-ai/dsh-attachment-local'
@@ -41,14 +41,14 @@ kind: "package-reference"
 | `maxImageBytes` | `20 MiB` | 单张图片接受的最大编码源字节数 |
 | `maxImagesPerMessage` | `20` | 单条提交消息接受的最大图片数量 |
 | `maxMessageImageBytes` | `200 MiB` | 单条提交消息接受的最大编码源图字节总数 |
-| `maxImagePixels` | `64,000,000` | 源图接受的最大宽度乘以高度 |
+| `maxImagePixels` | `64,000,000` | 源图宽度与高度乘积的最大值 |
 | `maxImageDimension` | `8192` | 源图接受的最大宽度或高度 |
 | `normalizedImageMaxPixels` | `2048 × 2048` | 已存规范化图片的总像素预算 |
 | `normalizedImageMaxDimension` | `8192` | 应用总像素预算后的最大长边 |
 | `normalizedImageMaxBytes` | `4 MiB` | 编码字节目标；没有候选满足时保留质量阶梯中的最小输出 |
 | `imageCompressionConcurrency` | `2` | 并发规范化与请求变换的 FIFO 上限 |
 
-生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-attachment-local)是每个受支持字段及其 JSDoc 的穷尽式真源。
+生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-attachment-local)完整列出了所有受支持的字段及其 JSDoc。
 
 ### 图片存储在哪里、会保留多久
 
@@ -81,11 +81,13 @@ kind: "package-reference"
 
 ### 写入与读取路径
 
-对象存放在 `<DSH_HOME>/attachments/v1/objects/<sha256-prefix>/<sha256>`；相同字节会去重为同一个对象和同一个 `sha256:` 标识符。首次写入前，进程会把 home 的每个祖先目录逐级同步到文件系统根目录，因此绝不会把另一个进程已创建但尚未同步的目录误认为安全边界。随后，写入过程把字节暂存到 `v1/tmp`、同步临时文件、以原子且排他的硬链接发布，并同步发布目录——在 Windows 上，文件系统元数据日志负责目录项持久性。保存成功后，已报告的引用即持久。
+对象存放在 `<DSH_HOME>/attachments/v1/objects/<sha256-prefix>/<sha256>`；相同字节会去重为同一个对象和同一个 `sha256:` 标识符。首次写入前，进程会把 home 的每个祖先目录逐级同步到文件系统根目录，因此绝不会把另一个进程已创建但尚未同步的目录误认为安全边界。随后，写入过程把字节暂存到 `v1/tmp`、同步临时文件、以原子且排他的硬链接发布，并同步发布目录——在 Windows 上，文件系统元数据日志负责目录项持久性。保存操作完成后，返回的引用已具备持久性。
 
-准入允许每条消息最多 20 张图片与 200 MiB 源字节；单个源图最多 20 MiB、6400 万像素与单边 8192 像素。系统应用方向、移除元数据与色彩配置，并把规范化结果限制在 2048×2048 总像素预算、8192 像素长边和 4 MiB 编码字节目标内，因此极端宽高比会保留短边分辨率。已经满足限制的干净、单帧、8-bit sRGB/sRGBA PNG、JPEG 或 WebP 会逐字节直通；GIF、动画、元数据、方向、16-bit PNG 与不兼容色彩空间会触发转换。
+准入允许每条消息最多 20 张图片与 200 MiB 源字节；单个源图最多 20 MiB、6400 万像素与单边 8192 像素。系统应用方向、移除元数据与色彩配置，并把规范化结果限制在 2048×2048 总像素预算、8192 像素长边和 4 MiB 编码字节目标内，因此，即使宽高比极端，图片也会保留短边分辨率。已经满足限制的干净、单帧、8-bit sRGB/sRGBA PNG、JPEG 或 WebP 会逐字节直通；GIF、动画、元数据、方向、16-bit PNG 与不兼容色彩空间会触发转换。
 
-请求版本位于 `<DSH_HOME>/attachments/v1/request-images/`。`readImageRequest` 在不放大的前提下缩放到路由像素预算，再通过相同的 alpha 路由与质量阶梯应用独立编码字节目标。缓存身份包含附件 id、变换版本、预算与固定编码参数；缓存字节会先探测格式、8-bit sRGB/sRGBA、尺寸与 alpha 信息，不匹配时重新生成。并发调用方共享一次变换与缓存写入，且只在没有等待方时由取消停止共享工作。`imageHostPath` 派生规范化对象的宿主路径，挂载的文件系统可以把该路径映射进执行世界，而不会写入持久历史。
+请求版本位于由 `dshCachePath` 解析的 `<DSH_HOME>/cache/attachments/request-images/`；显式 `dshHome` 设置同时适用于缓存与持久存储。在两次请求之间清空此缓存会保留持久附件，后续读取会重新生成请求版本。`readImageRequest` 在不放大的前提下缩放到路由选定的目标尺寸，缩放只按长边给定，短边由编码器按路由预测的方式推出，随后通过相同的 alpha 路由与质量阶梯应用独立编码字节目标。缓存身份包含附件 id、变换版本、目标尺寸、字节目标与固定编码参数；缓存字节会先通过文件头探测格式、8-bit sRGB/sRGBA、尺寸与 alpha 信息，不匹配时重新生成。并发调用方共享一次变换与缓存写入，且只在没有等待方时由取消停止共享工作。`imageHostPath` 派生规范化对象的宿主路径，挂载的文件系统可以把该路径映射进执行世界，而不会写入持久历史。
+
+通用文件字节的唯一规范对象位于 `<DSH_HOME>/attachments/v1/file-objects/<digest-prefix>/<digest>`。每条引用路径 `<DSH_HOME>/attachments/v1/files/<digest-prefix>/<digest>/<name>` 都是只读硬链接，所以名称不同但字节相同的文件不会重复占用磁盘。`readFileStream` 以有界分块读取引用路径，并在消费方成功结束前校验完整摘要与记录的字节数。对象缺失、被改写或截断时，消费方会失败，不会得到字节已经变化的完整导出。
 
 ### 源码地图
 
@@ -93,10 +95,11 @@ kind: "package-reference"
 |---|---|
 | [`src/index.ts`](src/index.ts) | 插件入口：`LocalAttachmentStore`、`Config` schema、默认值 |
 | [`src/store.ts`](src/store.ts) | 内容寻址写入与校验读取：暂存、硬链接发布、fsync 链、摘要校验 |
+| [`src/file-store.ts`](src/file-store.ts) | 原样文件的流式写入、校验式流式读取与安全存储文件名 |
 | [`src/normalization.ts`](src/normalization.ts) + [`src/encoding.ts`](src/encoding.ts) | 提供方无关的规范化与有界格式／质量候选 |
 | [`src/request-image.ts`](src/request-image.ts) | 路由专用请求变换、缓存身份与 singleflight |
 | [`src/image.ts`](src/image.ts) | 完整光栅解码与元数据校验 |
-| [`src/invariant.ts`](src/invariant.ts) | 不变式伴生插件（无运行时不变式；不可变写入与校验读取在后端边界直接强制） |
+| — | 不发布运行时不变式伴生入口；不可变写入与校验读取在后端边界直接强制。 |
 
 </details>
 
@@ -107,7 +110,7 @@ kind: "package-reference"
 
 完整的服务约定与载荷类型请看子系统参考；这份存储所支撑的能力请看 seam 包。
 
-- [附件子系统参考](../../../docs/subsystems/attachment.zh.md)——服务约定、载荷类型与 `ctx.attachments` 的 cordis 接口面。
+- [附件子系统参考](../../../docs/subsystems/attachment.zh.md)——服务约定、载荷类型与 `ctx.attachments` 的 Cordis 接口面。
 - [附件 seam 包](../attachment/README.zh.md)——本存储支撑的图片附件能力。
 - [生成配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-attachment-local)——每个受支持配置字段及其源声明。
 - [Home 路径解析](../../util/home-paths/README.zh.md)——`DSH_HOME` 如何从显式配置、环境变量与用户主目录解析。
@@ -117,7 +120,7 @@ kind: "package-reference"
 <a id="model-experience"></a>
 ## 模型体验
 
-本包通过请求描述符间接影响模型。执行文件系统可以映射宿主对象时，模型会随请求字节看到每张图片的身份、尺寸、媒体类型、只读进程路径、可写副本扩展名与规范化警告。
+本包通过请求描述符间接影响模型。执行文件系统可以映射宿主对象时，模型会随请求字节看到每张图片的身份、尺寸、媒体类型、只读进程路径、可写副本扩展名与规范化警告。通用文件会投影为指出文件身份与只读进程路径的文本句柄；无法映射时，句柄会说明当前执行环境不能读取该文件。
 
 #### KV Cache 影响
 
@@ -132,8 +135,8 @@ kind: "package-reference"
 
 - **图片会永久保留**——已存储的图片永远不会被自动删除，也没有任何机制回收未被引用的对象。
 - **仅限本机**——图片存放在运行 harness 的机器上；其他主机无法读取。
-- **动态 GIF 变为静态**——规范化只保留第一帧；动画不属于版本一图片约定。
-- **编码器输出带版本**——已安装的 Sharp/libvips 构建钉定规范化与请求字节；编码器或变换版本升级会让未来变体产生新地址，已有对象继续有效。
+- **动态 GIF 变为静态**——规范化只保留第一帧；动画不属于第一版图片约定。
+- **编码器输出带版本**——已安装的 Sharp/libvips 构建会固定规范化结果与请求字节；编码器或变换版本升级会让未来变体产生新地址，已有对象继续有效。
 
 <a id="dev-note"></a>
 ### 开发备注

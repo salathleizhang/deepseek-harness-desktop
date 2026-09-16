@@ -10,13 +10,14 @@ import { createUserMessage, BlockAssembler } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
+import type { SessionSeq } from '@deepseek-ai/dsh-session'
 import {
   normalizeSessionTitle,
   SessionTitleProviderId,
 } from '@deepseek-ai/dsh-session-title'
 import type {
   SessionTitleAutomaticMode,
-  SessionTitleModelProvenance,
+  SessionTitleModelIdentity,
   SessionTitleProviderRequest,
   SessionTitleProviderResult,
   SessionTitleUserMessage,
@@ -27,9 +28,9 @@ export interface SessionTitleLlmRequestEventData {
   /** Registered title-provider identity responsible for the request. */
   readonly titleProvider: SessionTitleProviderId
   /** Exact human `user/message` seqs represented in `messages`. */
-  readonly messageSeqs: number[]
+  readonly messageSeqs: SessionSeq[]
   /** Exact auxiliary LLM route. */
-  readonly route: SessionTitleModelProvenance
+  readonly route: SessionTitleModelIdentity
   /** Exact auxiliary system prompt. */
   readonly system: string
   /** Exact auxiliary message list. */
@@ -173,7 +174,7 @@ export function registerSessionTitleLlmProvider(
 function resolveRoute(
   config: ResolvedSessionTitleLlmConfig,
   request: SessionTitleProviderRequest,
-): SessionTitleModelProvenance {
+): SessionTitleModelIdentity {
   if (config.provider !== undefined && config.model !== undefined) {
     return { provider: config.provider, model: config.model }
   }

@@ -6,16 +6,17 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Group from '@deepseek-ai/cordis-plugin-group'
+import { PluginPackages } from '@deepseek-ai/dsh-app-boot'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import AgentRegistry, { assembleContextFor, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentPresets, {
-  COMPOSITION_FILE, leakedServices, livePresetMounts, mountPreset, serviceForAgent,
+  COMPOSITION_FILE, inactiveRows, leakedServices, livePresetMounts, mountPreset, serviceForAgent,
 } from '@deepseek-ai/dsh-agent-presets'
 import type { Config } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
@@ -44,6 +45,7 @@ async function harness(roster: Config = { default: 'standard', roots: ROOTS, inc
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(FIXTURES).href + '/'
   await ctx.plugin(Loader)
+  await ctx.plugin(PluginPackages)
   ctx.loader.builtins.include = Include
   // A preset outside this workspace cannot resolve `cordis-plugin-group` by
   // name, so the app registers it as a builtin; the fixtures compose the same
@@ -51,10 +53,10 @@ async function harness(roster: Config = { default: 'standard', roots: ROOTS, inc
   ctx.loader.builtins.group = Group
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SystemPrompt, { persona: '' })
+  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(AgentPresets, roster)
   return ctx
@@ -86,6 +88,13 @@ function rootResolves(ctx: Context, name: string): boolean {
 }
 
 let ctx: Context
+
+/** Every temp preset root created by this file, removed after each test. */
+const roots: string[] = []
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+})
+
 beforeEach(async () => {
   ctx = await harness()
 })
@@ -93,6 +102,7 @@ beforeEach(async () => {
 describe('composing an agent from a preset', () => {
   it('hands an absolute plugin path to Node as a file URL', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-preset-absolute-plugin-'))
+    roots.push(root)
     const presetDir = join(root, 'absolute')
     const plugin = join(FIXTURES, 'plugins', 'contribute.js')
     await mkdir(presetDir)
@@ -234,6 +244,27 @@ describe('composing a child agent from its parent', () => {
 })
 
 describe('rejecting a composition that cannot be used', () => {
+  it('reports import failures and arbitrary plugin rejections after eager settlement', async () => {
+    ctx.loader.builtins.stringFailure = () => { throw 'string rejection' }
+    ctx.loader.builtins.aggregateFailure = () => {
+      throw new AggregateError([
+        new Error('first member'),
+        new Error('wrapped member', { cause: new AggregateError(['nested member'], 'nested aggregate') }),
+      ], 'aggregate rejection')
+    }
+    await ctx.loader.root.update([
+      { id: 'missing', name: 'cordis:missingBuiltin' },
+      { id: 'disabled', name: 'cordis:missingBuiltin', disabled: true },
+      { id: 'string', name: 'cordis:stringFailure' },
+      { id: 'aggregate', name: 'cordis:aggregateFailure' },
+    ])
+    expect(await inactiveRows(ctx.loader)).toEqual([
+      'missing (cordis:missingBuiltin): never started',
+      'string (cordis:stringFailure): string rejection',
+      'aggregate (cordis:aggregateFailure): aggregate rejection\n- first member\n- wrapped member\n  - nested member',
+    ])
+  })
+
   it('refuses to mount into a context that carries no agent scope', async () => {
     await expect(ctx.agentPresets.mount(ctx, 'standard'))
       .rejects.toThrow(/unscoped context/)
@@ -247,20 +278,13 @@ describe('rejecting a composition that cannot be used', () => {
   })
 
   it('names every failed row, not just the count', async () => {
-    // The Loader folds several failed rows into one AggregateError whose own
-    // message names none of them; unflattened, the operator is told only that
-    // "loader entries failed to apply" and has nothing to act on.
     await expect(agentOn(ctx, 'sess-two-broken', 'two-broken'))
       .rejects.toThrow(/first-refuses[\s\S]*second-refuses/)
   })
 
   it('names the rows inside a failed group, not the group alone', async () => {
-    // The Loader's per-row wrapper keeps only `cause.message`, so a group's
-    // own AggregateError arrives with its `errors` reachable through `cause`
-    // alone. Reading the message stops at "loader entries failed to apply"
-    // and names neither row that actually refused.
     await expect(agentOn(ctx, 'sess-nested-broken', 'nested-broken'))
-      .rejects.toThrow(/outer[\s\S]*inner-first[\s\S]*inner-second/)
+      .rejects.toThrow(/inner-first[\s\S]*inner-second/)
   })
 
   it('names the unresolved service when a row never activates', async () => {
@@ -351,6 +375,59 @@ describe('the preset roster', () => {
     expect(listed.find(preset => preset.id === 'not-a-preset')?.broken).toMatch(/is missing/)
   })
 
+  it('uses the profile package service when checking bare package rows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-preset-profile-package-'))
+    roots.push(root)
+    const presetDir = join(root, 'profile-package')
+    await mkdir(presetDir)
+    await writeFile(join(presetDir, COMPOSITION_FILE), '- id: package\n  name: profile-package/plugin.js\n')
+    const scoped = await harness({
+      default: 'profile-package', roots: [{ path: root, trust: 'user' }],
+      includeShippedRoot: false, includeUserRoot: false,
+    })
+    const packageOf = vi.spyOn(scoped.pluginPackages, 'packageOf').mockReturnValue({
+      name: 'profile-package', version: '1.0.0', dir: presetDir,
+      manifestPath: join(presetDir, 'package.json'), manifest: {},
+    })
+
+    const [listed] = await scoped.agentPresets.list()
+    expect(listed).toMatchObject({ id: 'profile-package', trust: 'user' })
+    expect(listed?.broken).toBeUndefined()
+    expect(packageOf).toHaveBeenCalledWith('profile-package/plugin.js', pathToFileURL(FIXTURES).href + '/')
+  })
+
+  it('isolates a package lookup failure to the preset being checked', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-preset-package-failure-'))
+    roots.push(root)
+    await mkdir(join(root, 'healthy'))
+    await writeFile(join(root, 'healthy', COMPOSITION_FILE), '[]\n')
+    await mkdir(join(root, 'lookup-failure'))
+    await writeFile(
+      join(root, 'lookup-failure', COMPOSITION_FILE),
+      '- id: package\n  name: profile-package/plugin.js\n',
+    )
+    const scoped = await harness({
+      default: 'healthy', roots: [{ path: root, trust: 'user' }],
+      includeShippedRoot: false, includeUserRoot: false,
+    })
+    const packageOf = vi.spyOn(scoped.pluginPackages, 'packageOf').mockImplementation(() => {
+      throw new Error('profile package lookup failed')
+    })
+
+    const listed = await scoped.agentPresets.list()
+    expect(listed.find(preset => preset.id === 'lookup-failure')?.broken)
+      .toBe("the composition's plugins cannot be checked: profile package lookup failed")
+    expect(listed.find(preset => preset.id === 'healthy')?.broken).toBeUndefined()
+    await expect(agentOn(scoped, 'sess-after-package-failure')).resolves.toBeDefined()
+
+    packageOf.mockImplementation(() => {
+      throw 'raw profile package lookup failed'
+    })
+    const rawListed = await scoped.agentPresets.list()
+    expect(rawListed.find(preset => preset.id === 'lookup-failure')?.broken)
+      .toBe("the composition's plugins cannot be checked: raw profile package lookup failed")
+  })
+
   it('exposes the configured default id', () => {
     expect(ctx.agentPresets.defaultId).toBe('standard')
   })
@@ -360,6 +437,7 @@ describe('composing from a broken preset', () => {
   /** A roster whose only user preset carries `composition`. */
   async function rosterWith(composition: string): Promise<Context> {
     const root = await mkdtemp(join(tmpdir(), 'dsh-preset-broken-'))
+    roots.push(root)
     await mkdir(join(root, 'damaged'))
     await writeFile(join(root, 'damaged', COMPOSITION_FILE), composition)
     return await harness({ default: 'damaged', roots: [{ path: root, trust: 'user' as const }], includeShippedRoot: false, includeUserRoot: false })
@@ -428,6 +506,7 @@ describe('the preset file is an input, never a persistence target', () => {
     // committed fixture would be mutated by the very run that proves the bug
     // and every later run would compare against the damaged file and pass.
     const root = await mkdtemp(join(tmpdir(), 'dsh-preset-write-'))
+    roots.push(root)
     const dir = join(root, 'self-disposing')
     await mkdir(dir)
     const path = join(dir, COMPOSITION_FILE)
@@ -449,10 +528,10 @@ describe('the preset file is an input, never a persistence target', () => {
     scoped.loader.builtins.group = Group
     await scoped.plugin(LlmRuntime)
     await scoped.plugin(SessionStore)
-    await scoped.plugin(SystemPrompt, { persona: '' })
+    await scoped.plugin(SessionProjectionRegistry)
+    await scoped.plugin(SystemPrompt, { personaPrefix: '' })
     await scoped.plugin(ToolRuntime)
     await scoped.plugin(AgentRegistry)
-    await scoped.plugin(SessionProjectionRegistry)
     await scoped.plugin(AgentLoop, { agents: [] })
     await scoped.plugin(AgentPresets, { default: 'self-disposing', roots: [{ path: root, trust: 'user' as const }], includeShippedRoot: false, includeUserRoot: false })
 
@@ -625,6 +704,7 @@ describe('replacing a composition', () => {
     // A preset root this test owns, so removing the composition mid-flight
     // cannot disturb the shipped fixtures.
     const root = await mkdtemp(join(tmpdir(), 'dsh-preset-restore-'))
+    roots.push(root)
     const seeded: [string, string][] = [['first', `- id: only\n  name: ${join(FIXTURES, 'plugins', 'contribute.js')}\n  config:\n    tool: only\n`], ['broken', `- id: nope\n  name: ${join(FIXTURES, 'plugins', 'throws.js')}\n  config:\n    message: refuses\n`]]
     for (const [id, body] of seeded) {
       await mkdir(join(root, id))
@@ -637,10 +717,10 @@ describe('replacing a composition', () => {
     scoped.loader.builtins.group = Group
     await scoped.plugin(LlmRuntime)
     await scoped.plugin(SessionStore)
-    await scoped.plugin(SystemPrompt, { persona: '' })
+    await scoped.plugin(SessionProjectionRegistry)
+    await scoped.plugin(SystemPrompt, { personaPrefix: '' })
     await scoped.plugin(ToolRuntime)
     await scoped.plugin(AgentRegistry)
-    await scoped.plugin(SessionProjectionRegistry)
     await scoped.plugin(AgentLoop, { agents: [] })
     await scoped.plugin(AgentPresets, { default: 'first', roots: [{ path: root, trust: 'user' as const }], includeShippedRoot: false, includeUserRoot: false })
     const handle = await scoped.agents.create({
@@ -679,6 +759,7 @@ describe('editing a composition file', () => {
    */
   async function editable(id: string): Promise<{ scoped: Context; path: string }> {
     const root = await mkdtemp(join(tmpdir(), 'dsh-preset-edit-'))
+    roots.push(root)
     await mkdir(join(root, id))
     const path = join(root, id, COMPOSITION_FILE)
     await writeFile(path, rowFor('before'))

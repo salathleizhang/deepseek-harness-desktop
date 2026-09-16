@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GoalView } from '@deepseek-ai/dsh-goal'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-session-projection'
 
@@ -12,7 +12,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 export interface GoalToolExecution {
   readonly agent: Agent
   readonly events: readonly SessionEvent[]
-  readonly openTurnStartSeq: number
+  readonly openTurnStartSeq: SessionSeq
 }
 
 /** Hard authority granted to one state-changing call. */
@@ -30,7 +30,8 @@ function openTurnEvents(
   ctx: Context,
   agent: Agent,
 ): Pick<GoalToolExecution, 'events' | 'openTurnStartSeq'> {
-  const events = agent.session.events
+  // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+  const events = agent.session.snapshotEvents()
   const boundary = ctx.sessionProjections.stateOf(agent.session, 'turnBoundary')
   if (boundary === undefined || boundary.openTurnStartSeq === null) {
     reject('goal tools require an open model turn', 'GOAL_TOOL_DRIVER_REQUIRED')

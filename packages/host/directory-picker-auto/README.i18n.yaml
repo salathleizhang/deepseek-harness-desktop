@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/host/directory-picker-auto/README.md
-README.md: b42c4c159206cbd4583326dfbeaac4b459c6c230
-README.zh.md: 56928d29658b4cd312a3f0d144a6a0ad39fc7c30
+README.md: a36d7e115f78089b85c79ae8036d7199df74b821
+README.zh.md: 283f8c5bcbfabfa4fdeafc73283ff140ac1697fe

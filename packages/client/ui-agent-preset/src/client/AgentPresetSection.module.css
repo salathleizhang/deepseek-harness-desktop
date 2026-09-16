@@ -18,6 +18,43 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.pickerPreference {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.pickerPreferenceCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pickerPreferenceTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pickerPreferenceTitle {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.pickerPreferenceDescription {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* Cards, not rows: a preset is a thing you pick, and the description is the
    part that tells them apart — a row would bury it beside the actions. */
 .group {
@@ -54,23 +91,35 @@
 }
 
 .card {
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 20px;
   display: flex;
   flex-direction: column;
-  background: var(--dsw-alias-bg-layer-3);
+  background: transparent;
   transition: border-color .16s, background .16s;
 }
 
 
-.card:hover:not(.cardActive) {
-  border-color: var(--dsw-alias-label-dimmed);
+.card:hover:not(.cardActive):not(.cardSelectionDisabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
-/* The default preset reads as selected, not merely badged. */
+/* The default preset reads as selected exactly like the Appearance cubes:
+   platform fill + the bluish-400 border (static token — the bluish-400 step
+   has no alias-layer name). */
 .cardActive {
-  background: var(--dsw-alias-bg-layer-2);
-  border-color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-module-platform);
+  border-color: var(--dsw-static-neutral-bluish-400);
+}
+
+/* Mode selection is off, not the preset itself: mute only the selectable
+   body while the independent view/copy/location actions stay fully usable. */
+.cardSelectionDisabled {
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.cardSelectionDisabled .cardMain {
+  opacity: 0.48;
 }
 
 /* A broken preset reads as damaged before anything else: the card cannot be
@@ -85,6 +134,7 @@
 
 .brokenBadge {
   border-radius: 999px;
+  corner-shape: round;
   padding: 1px 8px;
   font-size: 11px;
   line-height: 17px;
@@ -195,25 +245,9 @@
   line-height: 1.4;
 }
 
-.badge,
-.inUse {
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 17px;
-  white-space: nowrap;
-  font-weight: 500;
-}
-
-.badge {
-  border: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-tertiary);
-}
-
+/* Placement only: the capsule geometry and palette come from `Tag`. */
 .inUse {
   margin-left: auto;
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-layer-3);
 }
 
 /* Bounded to four lines. A preset publishes its own description, so one long
@@ -240,7 +274,7 @@
   margin-top: auto;
   font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
-  color: var(--dsw-alias-label-dimmed);
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .cardFoot {
@@ -248,7 +282,7 @@
   justify-content: flex-end;
   gap: 2px;
   padding: 6px 10px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
 /* Icon-only actions: the label rides `title` so the row stays quiet until
@@ -368,7 +402,7 @@
 .input {
   box-sizing: border-box;
   padding: 9px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   border-radius: 10px;
   font: inherit;
   font-size: 13px;
@@ -401,7 +435,7 @@
   padding: 12px;
   max-height: min(52vh, 480px);
   overflow: auto;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   border-radius: 10px;
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-secondary);
@@ -445,7 +479,7 @@
   gap: 6px;
   height: 44px;
   border: 1px dashed var(--dsw-alias-border-l3);
-  border-radius: 12px;
+  border-radius: 20px;
   font: inherit;
   font-size: 14px;
   line-height: 22px;

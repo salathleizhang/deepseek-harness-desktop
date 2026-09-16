@@ -4,13 +4,13 @@ Status: implemented
 
 [English](2026-06-21-bounded-llm-request-recovery.md) | 中文
 
-[按提供方配置的请求重试策略](../feature/2026-07-24-provider-retry-policies.zh.md)在此基础上增加了确切提供方配置与显式无界 mode。本说明继续负责结构化失败事实、失败尝试的恢复边界、normal mode 的暂时性默认值、可见的单次尝试和持久重试状态。[LLM（大语言模型）流的终止失败](2026-07-29-terminal-llm-stream-failures.zh.md)取代了其中关于抛出错误身份和流 sidecar 的机制。
+[按提供方配置的请求重试策略](../../archived/feature/2026-07-24-provider-retry-policies.md)在此基础上增加了确切提供方配置与显式无界 mode。本说明继续负责结构化失败事实、失败尝试的恢复边界、normal mode 的暂时性默认值、可见的单次尝试和持久重试状态。[LLM（大语言模型）流的终止失败](2026-07-29-terminal-llm-stream-failures.zh.md)取代了其中关于抛出错误身份和流 sidecar 的机制。
 
 ## 问题
 
 提供方适配器可能在分发或迭代时抛出异常，也可能以 `finish { kind: 'error' | 'aborted' }` 结束。最终适配器边界会在 `dsh-agent-loop` 接收前把抛出值规范化为该终止 finish 协议；middleware 与结果处理缺陷仍会抛出。loop 会将终止模型请求失败交给 `agent/request-error`。未被处理的失败是终态；处理失败的监听器修复策略自有状态，返回 `{ kind: 'retry' }`，并停止 waterfall（瀑布式事件）委托。[重试动作决策](../simplification/2026-07-27-request-error-retry-action.zh.md)规定这一返回约定。
 
-该边界已能安全地再次发起请求。原始 `assistant/chunk` 事件携带失败的 `turn` 和 `step`；除非某条成功的 `assistant/message` 引用这些事件，否则消息派生会忽略它们。只有终止性 finish 成功且组装完成后，系统才会分发工具调用；重试则会从持久日志重建下一次尝试。因此，harness 无需引入第二套响应生命周期或暂定输出协议，即可分隔两次尝试。
+该边界已能安全地再次发起请求。每个失败 stream 会提交一个包含精确紧凑 stream 的仅日志 `assistant/attempt`，message derivation 会忽略它；系统只会在 terminal finish 成功并组装 `assistant/message` 后分派工具调用，重试则从持久 surface 重建下一次 attempt。因此，harness 无需引入第二套响应生命周期或暂定输出协议，即可分隔两次 attempt。
 
 此前的边界还留有三个较窄的缺口。
 
@@ -38,7 +38,7 @@ interface LlmFailure {
 }
 ```
 
-`code` 仍是 `HarnessError` 建立的提供方无关机器路由分类体系；新字段是在提供方边界观测到的事实。`ProviderRequestId` 由 `dsh-llm` 拥有并构造，序列化后为提供方发放的字符串。该载荷有意不包含 `retryable`、`failover`、`partialOutput`、提供方、模型、阶段或路由 id 字段。是否可重试属于策略，提供方／模型已位于持久请求头中，部分输出则从失败步骤的 `assistant/chunk` 事件派生。
+`code` 仍是 `HarnessError` 建立的 provider-neutral 机器路由分类；新字段是在 provider 边界观测到的事实。`ProviderRequestId` 由 `dsh-llm` 拥有并构造，序列化后是 provider 发放的字符串。该 payload 有意不包含 `retryable`、`failover`、`partialOutput`、provider、model、phase 或 route id。是否可重试属于 policy，provider/model 已位于持久 request header 中，部分输出由失败 attempt 的嵌入式 stream 保留。
 
 `LlmError` 携带 `failure: LlmFailure`，并保持 `failure.code === error.code`。`FinishReasonMap.error` 和 `FinishReasonMap.aborted` 携带同一载荷，而不是并行的失败形状。最终适配器边界会从适配器抛出值中分离这些事实，并发出相应的终止 finish；未知 SDK 异常会获得 `UNKNOWN` 载荷。精确的抛出对象身份不会跨越 LLM 流 seam。
 
@@ -46,7 +46,7 @@ agent loop（智能体循环）会将终止 finish 的 `LlmFailure` 传给 `agen
 
 适配器会先提取结构化事实，再回退到消息检查。它们会验证 HTTP 状态，将 `Retry-After` 的秒数或日期解析为正的有限毫秒延迟，在提供方公开请求 id 时将其品牌化，并区分自身超时与调用方中止。提供方专用 code 和消息可以细化映射，但恢复监听器不会解析它们。
 
-共享的暂时性 code 集有意保持很小：适配器针对 `RATE_LIMIT` 和 `SERVER` 的映射，远程失败使用的显式 `TIMEOUT` 和 `TRANSPORT` code，以及提供方响应已完成却没有内容块时使用的 `EMPTY_RESPONSE`。两个适配器都会把最后一种情况归类为错误 finish；详见[空模型响应可重试](../bug-fix/2026-07-24-empty-model-response-is-retryable.zh.md)。身份验证、配额、无效请求、上下文溢出、协议、中止和未知失败都保留不同的稳定 code，且默认不属于暂时性失败。新增 code 需要适配器 fixture（测试前置数据）和已记录的策略决策；无需扩展第二个失败类枚举。
+共享的暂时性 code 集有意保持很小：适配器针对 `RATE_LIMIT` 和 `SERVER` 的映射，远程失败使用的显式 `TIMEOUT` 和 `TRANSPORT` code，以及提供方响应已完成却没有内容块时使用的 `EMPTY_RESPONSE`。两个适配器都会把最后一种情况归类为错误 finish；详见[空模型响应可重试](../../archived/bug-fix/2026-07-24-empty-model-response-is-retryable.md)。身份验证、配额、无效请求、上下文溢出、协议、中止和未知失败都保留不同的稳定 code，且默认不属于暂时性失败。新增 code 需要适配器 fixture（测试前置数据）和已记录的策略决策；无需扩展第二个失败类枚举。
 
 ### 将重试策略放在现有失败步骤扩展点上
 
@@ -54,7 +54,7 @@ agent loop（智能体循环）会将终止 finish 的 `LlmFailure` 传给 `agen
 
 `agent/request-error` waterfall 携带当前 `LlmFailure`、在连续恢复序列中授权重试的不可变先前失败列表，以及提供服务的注册项所携带的不可变重试策略。循环只传递而不解释该策略；它拥有连续失败历史，并在模型请求成功后清除。`dsh-llm-retry` 的 normal 策略统计由同一项确切提供方策略安排的持久重试记录，`dsh-compaction-basic` 则维护自己的上下文溢出预算。因此，暂时性失败与上下文溢出交替出现时，会各自独立消耗其有限预算；最大请求数等于 1 加上所有已加载有限预算之和。
 
-当前配置形状由[提供方策略决策](../feature/2026-07-24-provider-retry-policies.zh.md)规定。提供方适配器会注册嵌套的 `retryPolicy`；省略时使用 normal 默认值：两次暂时性重试、500 毫秒初始延迟、10 秒延迟上限、10% 抖动，以及上述五个暂时性 code。计数与延迟边界参考了所调查实现中较保守的一端：[OpenCode 使用两次请求重试，延迟边界为 500 毫秒／10 秒](https://github.com/anomalyco/opencode/blob/9976269ab1accfc9f9dc98a4a688c516934de422/%70ackages/llm/src/route/executor.ts#L36-L39)；[Pi 将三次 agent 级重试与提供方重试分开，且提供方重试默认为零](https://github.com/earendil-works/pi/blob/3da591ab74ab9ab407e72ed882600b2c851fae21/%70ackages/coding-agent/docs/settings.md#L139-L147)；[Codex 使用有限请求／流预算以及五分钟空闲超时](https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/model-provider-info/src/lib.rs#L25-L33)。10% 抖动参考 [Codex 的有界抖动](https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/codex-client/src/retry.rs#L40-L47)。
+当前配置形状见 [llm-retry README](../../../../packages/llm/llm-retry/README.zh.md)。提供方适配器会注册嵌套的 `retryPolicy`；省略时使用 normal 默认值：两次暂时性重试、500 毫秒初始延迟、10 秒延迟上限、10% 抖动，以及上述五个暂时性 code。计数与延迟边界参考了所调查实现中较保守的一端：[OpenCode 使用两次请求重试，延迟边界为 500 毫秒／10 秒](https://github.com/anomalyco/opencode/blob/9976269ab1accfc9f9dc98a4a688c516934de422/%70ackages/llm/src/route/executor.ts#L36-L39)；[Pi 将三次 agent 级重试与提供方重试分开，且提供方重试默认为零](https://github.com/earendil-works/pi/blob/3da591ab74ab9ab407e72ed882600b2c851fae21/%70ackages/coding-agent/docs/settings.md#L139-L147)；[Codex 使用有限请求／流预算以及五分钟空闲超时](https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/model-provider-info/src/lib.rs#L25-L33)。10% 抖动参考 [Codex 的有界抖动](https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/codex-client/src/retry.rs#L40-L47)。
 
 对于预算未耗尽的合格失败，从 1 开始的暂时性重试计数使用有界指数退避。有效的 `providerRetryAfterMs` 只有在不超过 `maxDelayMs` 时才会取代指数退避；提供方延迟更长时，系统会委托给下一监听器，而不会违反提供方指令提前重试。本地退避乘以 `[1 - jitterRatio, 1 + jitterRatio]` 内的注入随机因子，并将最终值限制到 `maxDelayMs`；提供方延迟不加抖动。
 
@@ -82,7 +82,7 @@ agent loop（智能体循环）会将终止 finish 的 `LlmFailure` 传给 `agen
 
 ### 在现有日志中分隔尝试
 
-一次失败尝试可以在其步骤中留下 `assistant/chunk` 事件，但绝不会追加 `assistant/message`，也不会分发工具。重试在失败的轮次与步骤内继续，从持久表层重建请求，并生成自己的分片；只有最终结果才会关闭该轮次。步骤仍处于打开状态时，UI 可以渲染实时分片；当 `llm/retry` 标识失败尝试，或 `turn/end` 记录失败时，UI 再标记或清除这份暂时视图。Web 会验证完整的重试载荷约定，在 `llm/retry` 到达时清除失败的部分输出，将每条生产方关联的 `retryId` 重试链投影为稳定的一行，并用最新一次尝试更新该行，再从 `llm/retry-started` 与所属轮次、步骤边界的关闭派生 scheduled、started 或 cancelled 状态。倒计时以浏览器收到事件的时刻为计划延迟的起点，而不是使用 Host 事件时钟；它按向上取整且不低于 1 秒的秒数显示，仅在重试尚未结束时显示动画，并把最近一次失败的准确详情折叠在该行之后。即使失败尝试没有 assistant 节点，重试节点也会锚定自身的轨迹轮次。消息派生仍会忽略失败分片；Web 在重建历史时也会应用同一投影，因此刷新页面不会让已丢弃的部分输出重新出现，也不会生成重复的重试行。
+失败 attempt 会追加带嵌入式 stream 的 `assistant/attempt`，但绝不追加 surface `assistant/message` 或分派工具。重试在失败 turn 与 step 内继续，从持久 surface 重建请求，并产生自己的 settlement；只有最终结果才会关闭 turn。step 打开时，UI 可以渲染瞬态 `assistant/live-chunk` update；当 `llm/retry` 标识失败 attempt 或 `turn/end` 记录失败时，UI 再结算它。Web 会校验完整 retry payload contract，把每条 producer-correlated `retryId` chain 投影为稳定一行并更新到最新 attempt，再从 `llm/retry-started` 与所属 turn、step boundary 的关闭派生 scheduled、started 或 cancelled 状态。倒计时以浏览器收到 event 的时刻为计划延迟起点，而不是 Host event clock；它按向上取整且不低于 1 秒的秒数显示，只在未结算时动画，并把最新失败详情折叠在该行后。即使失败 attempt 没有 surface Assistant node，retry node 也会锚定自己的 trajectory turn。Message derivation 会忽略 `assistant/attempt`，Web 在历史重建时应用同一投影，因此刷新不会把失败 partial 提升进模型历史，也不会生成重复 retry row。
 
 如果恢复预算耗尽，最终失败会连同结构化事实在 `turn/end.reason` 中存储一次。Web 会在该序列位置派生一个 `turn-error` 节点，并内联渲染适合展示的消息与可选错误码；AUTH 投影会把可能回显凭据片段的提供方文案替换为 `API key is invalid`，原始诊断仍保留在会话日志中。实时事件和历史回放使用同一套折叠逻辑。暂时性恢复继续期间，`llm/retry` 是每次中间失败与延迟的持久归属位置；终态错误行只在 `turn/end` 记录错误后才存在，而由于耗尽的恢复与失败共享同一轮次，该轮次的重试历史绝不会抑制这一行——定格的重试链与终态错误并列渲染。本决策不增加独立的最终错误事件或响应 id 词汇。
 
@@ -100,7 +100,7 @@ agent loop（智能体循环）会将终止 finish 的 `LlmFailure` 传给 `agen
 - **向 `dsh-llm` 增加响应开始、中断、丢弃、失败和提交事件**：拒绝采用，因为 agent 日志已经分隔原始分片、成功消息和编号尝试。第二套状态机会重复归属关系，又不能支持有界的同路由重试。
 - **增加逻辑路由、能力矩阵和故障转移选择**：拒绝采用，因为当前请求已经显式指定提供方和模型，每个提供方由一个适配器负责，而且没有当前消费方要求自动回退或能够证明语义兼容性。
 - **把 `retryable` 或 `failover` 放在 `LlmFailure` 上**：拒绝采用，因为适配器报告事实，部署策略决定动作。同一个 429 可以在交互式组合包中重试，也可以在成本受限的批处理中被拒绝。
-- **只要调用方仍处于活跃状态就无限重试**：[按提供方配置的策略](../feature/2026-07-24-provider-retry-policies.zh.md)对显式 `always` 配置项推翻了这项拒绝，同时保留有界的 normal mode 作为默认值。
+- **只要调用方仍处于活跃状态就无限重试**：[按提供方配置的策略](../../archived/feature/2026-07-24-provider-retry-policies.md)对显式 `always` 配置项推翻了这项拒绝，同时保留有界的 normal mode 作为默认值。
 - **只通过进程 logger 记录重试状态**：拒绝采用，因为进程日志无法重建会话行为，也不能驱动回放后的 UI 状态。
 - **只保留扁平 code**：拒绝采用，因为重试延迟和提供方请求 id 是结构化的提供方事实，而当不同协议失败共用一个稳定 code 时，诊断还需要 HTTP 状态。
 
@@ -131,9 +131,9 @@ agent loop（智能体循环）会将终止 finish 的 `LlmFailure` 传给 `agen
 
 ## 相关资料
 
-- [结构化错误分类体系](../../implemented/architecture/2026-06-11-structured-error-taxonomy.zh.md)负责稳定、可供机器路由的 code 与 cause chaining。
+- [结构化错误分类体系](../../archived/architecture/2026-06-11-structured-error-taxonomy.md)负责稳定、可供机器路由的 code 与 cause chaining。
 - [可重建请求](../../implemented/architecture/2026-07-05-reconstructable-requests.zh.md)使提供方／模型和完整请求输入在分发前持久化。
 - [超时 deadline 库](../../implemented/architecture/2026-07-06-timeout-deadline-library.zh.md)将共享的 deadline 分类与能力自身拥有的终止操作分开。
 - [调用后压缩压力与上下文溢出恢复](../../implemented/architecture/2026-07-10-after-call-compaction-pressure-and-overflow-recovery.zh.md)负责当前已关闭步骤的请求恢复扩展点与有界溢出重试。
 - [提供方路由的 LLM 适配器](../../implemented/architecture/2026-07-14-provider-routed-llm-adapters.zh.md)负责显式提供方／模型路由与每个提供方仅有一个适配器的不变量。
-- [Terminal turn errors survive same-turn retry history](../bug-fix/2026-08-20-turn-error-survives-same-turn-retry-history.zh.md)负责移除曾藏掉耗尽恢复终态错误行的 Web 重试历史抑制。
+- [Terminal turn errors survive same-turn retry history](../../archived/bug-fix/2026-08-20-turn-error-survives-same-turn-retry-history.md)负责移除曾藏掉耗尽恢复终态错误行的 Web 重试历史抑制。

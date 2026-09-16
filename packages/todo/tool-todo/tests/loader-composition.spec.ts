@@ -11,12 +11,13 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
+import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 
 let root: string | undefined
 let context: Context | undefined
@@ -28,18 +29,18 @@ afterEach(async () => {
   root = undefined
 })
 
-function agent(ctx: Context): Agent {
+async function agent(ctx: Context): Promise<Agent> {
   const scope = ctx.plugin(() => {})
   const id = SessionId('todo-loader-agent')
   const session = Session.create(id)
   const value: Agent = {
-    id, options: {}, session, inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    id, options: {}, session, inbox: unsupportedInbox(),
     status: 'idle', ctx: scope.ctx,
     followup: () => {}, steer: () => {}, inject: () => {}, send: () => {}, cancel() {},
     runMaintenance: task => task(new AbortController().signal),
     whenIdle: () => Promise.resolve(),
   }
-  ctx.agents.register(value)
+  await ctx.agents.register(value)
   return value
 }
 
@@ -86,6 +87,7 @@ async function boot(configLines: readonly string[]): Promise<Context> {
   } as unknown as NonNullable<typeof ctx.loader.internal>
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await ctx.loader.await()
+  for (const entry of ctx.loader.entries()) await entry.fiber?.await()
   return ctx
 }
 
@@ -101,7 +103,7 @@ describe('tool-todo real Loader composition through cordis.yml', () => {
     expect(description).toContain('Keep AT MOST ONE todo `in_progress`')
     expect(description).not.toContain('several at once')
 
-    const owner = agent(ctx)
+    const owner = await agent(ctx)
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
       callId: ToolCallId('parallel'),
@@ -111,7 +113,7 @@ describe('tool-todo real Loader composition through cordis.yml', () => {
     })
     expect(result.isError).toBe(true)
     expect(resultText(result)).toContain('at most one task may be in_progress')
-    expect(owner.session.events.some(e => e.type === 'todo/write')).toBe(false)
+    expect(owner.session.snapshotEvents().some(e => e.type === 'todo/write')).toBe(false)
   }, 30_000)
 
   it('allowParallelInProgress: true permits a parallel write end to end', async () => {
@@ -119,7 +121,7 @@ describe('tool-todo real Loader composition through cordis.yml', () => {
     const description = ctx.tools.schemas().find(s => s.name === 'todo_write')?.description ?? ''
     expect(description).toContain('several at once when work genuinely runs in parallel')
 
-    const owner = agent(ctx)
+    const owner = await agent(ctx)
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
       callId: ToolCallId('parallel-enabled'),
@@ -128,7 +130,7 @@ describe('tool-todo real Loader composition through cordis.yml', () => {
       agent: owner,
     })
     expect(result.isError).toBe(false)
-    expect(owner.session.events.findLast(e => e.type === 'todo/write')?.data.todos).toEqual(PARALLEL_TODOS)
+    expect(owner.session.snapshotEvents().findLast(e => e.type === 'todo/write')?.data.todos).toEqual(PARALLEL_TODOS)
   }, 30_000)
 
   it.each([

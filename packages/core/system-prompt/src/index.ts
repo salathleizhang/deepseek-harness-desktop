@@ -61,9 +61,11 @@ export interface PromptSection {
   /**
    * Static text or a provider evaluated at each assembly with that assembly's
    * {@link AssembleContext}. The text may reference `{{variable}}`s — they are
-   * interpolated later, by {@link renderPrompt}.
+   * interpolated later, by {@link renderPrompt}, unless `interpolate` is false.
    */
   readonly text: string | ((context: AssembleContext) => string)
+  /** Whether to interpolate prompt variables. Defaults to true; false preserves literal text. */
+  readonly interpolate?: boolean
   /**
    * Treat this contribution as the complete system prompt. Assembly still
    * runs the cooperative waterfall so tools, contexts, and variables can be
@@ -89,6 +91,8 @@ export interface AssembledSection {
   name: string
   /** The resolved (but not yet interpolated) section text. */
   text: string
+  /** Whether to interpolate prompt variables. Defaults to true; false preserves literal text. */
+  interpolate?: boolean
 }
 
 /** One resolved dynamic context contribution. */
@@ -120,9 +124,7 @@ export interface PromptAssembly {
 
 const SECTION_ORDERS = {
   HARNESS_IDENTITY: -1000,
-  HARNESS_SOURCE: -900,
-  WEB_SURFACE: -800,
-  DEPLOYMENT_PERSONA: 0,
+  DEPLOYMENT_PERSONA_PREFIX: 0,
   PLAN_POLICY: 500,
   TEAM_POLICY: 600,
   PTC_ONLY: 800,
@@ -146,9 +148,15 @@ const SECTION_ORDERS = {
   TOOL_RALPH: 2700,
   TOOL_SUBAGENT: 2800,
   TOOL_REPORT: 2900,
+  TOOL_COMPUTER_USE: 3000,
+  MCP_SERVERS: 3100,
   TOOLS_SDK: 5000,
   DELIVERABLE_FILE_REFERENCES: 9000,
   STRUCTURED_OUTPUT: 9900,
+  // Local paths and endpoints follow reusable instructions.
+  HARNESS_SOURCE: 10000,
+  WEB_SURFACE: 10100,
+  DEPLOYMENT_PERSONA_SUFFIX: 10200,
 } as const
 
 /** Name of a centrally allocated prompt-section position. */
@@ -164,12 +172,15 @@ const CONTEXT_ORDERS = {
 export type PromptContextOrderName = keyof typeof CONTEXT_ORDERS
 
 /**
- * The deployment persona's section name. Exported because a
+ * The deployment persona prefix's section name. Exported because a
  * composition can replace this slot — an agent preset shadows the
  * deployment's persona with its own — and both sides naming the same section
  * is what makes the replacement work rather than duplicate.
  */
-export const PERSONA_SECTION = 'deployment:persona'
+export const PERSONA_PREFIX_SECTION = 'deployment:persona-prefix'
+
+/** Deployment persona suffix section name shared by global and scoped contributions. */
+export const PERSONA_SUFFIX_SECTION = 'deployment:persona-suffix'
 
 /** Valid variable names: how they are written between the braces. */
 const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/
@@ -233,17 +244,22 @@ function compareToolNames(a: ToolSchema, b: ToolSchema): number {
   return compareNames(a.name, b.name)
 }
 
-/** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
+/** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.personaPrefix} for its contract). */
 export interface Config {
   /** Include the fixed DeepSeek Harness identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean
   /**
-   * Deployment-wide order-0 persona template. A scoped section named
-   * `deployment:persona` shadows it; `{{variable}}` references are strict.
+   * Deployment-wide persona prefix template before first-party guidance. A scoped section named
+   * `deployment:persona-prefix` shadows it; `{{variable}}` references are strict.
    */
-  persona?: string
+  personaPrefix?: string
+  /**
+   * Persona suffix template after first-party guidance. A scoped `deployment:persona-suffix`
+   * section shadows it; `{{variable}}` references are strict. Defaults to empty.
+   */
+  personaSuffix?: string
   /**
    * Model-facing tool names in order, with {@link TOOL_ORDER_REST} exactly once.
    * Invalid fields fail at load and unknown names fail at assembly; known names
@@ -254,7 +270,8 @@ export interface Config {
 
 /**
  * Interpolate strict `{{variable}}` references, drop empty sections, and join
- * the rest with blank lines. Malformed, unknown, or undefined references throw;
+ * the rest with blank lines. Sections with `interpolate: false` retain literal
+ * text. Malformed, unknown, or undefined references in other sections throw;
  * a lone `{{` without any later `}}` is literal prose, and substituted values
  * are not scanned again.
  * @param assembly - the assembly whose sections and variables to render.
@@ -262,7 +279,7 @@ export interface Config {
  */
 export function renderPrompt(assembly: PromptAssembly): string {
   return assembly.sections
-    .map(section => interpolate(section, assembly.variables, 'section'))
+    .map(section => section.interpolate === false ? section.text : interpolate(section, assembly.variables, 'section'))
     .filter(text => text.length > 0)
     .join('\n\n')
 }
@@ -390,7 +407,8 @@ export class SystemPrompt extends Service {
   static Config: z<Config> = z.object({
     includeHarnessIdentity: z.boolean().default(true),
     includeRuntimeContext: z.boolean().default(true),
-    persona: z.string().default(''),
+    personaPrefix: z.string().default(''),
+    personaSuffix: z.string().default(''),
     // Preserve omission because an explicit empty order lacks the rest marker.
     toolOrder: z.array(z.string()).default(undefined as unknown as string[]),
   })
@@ -413,10 +431,15 @@ export class SystemPrompt extends Service {
       })
     }
     this.section({
-      name: PERSONA_SECTION,
-      order: this.getSectionOrder('DEPLOYMENT_PERSONA'),
+      name: PERSONA_PREFIX_SECTION,
+      order: this.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
       // The fallback narrows the optional input type; the schema already defaults it.
-      text: config.persona ?? '',
+      text: config.personaPrefix ?? '',
+    })
+    this.section({
+      name: PERSONA_SUFFIX_SECTION,
+      order: this.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
+      text: config.personaSuffix ?? '',
     })
     if (!(config.includeRuntimeContext ?? true)) this.suppressRuntimeContext()
   }
@@ -581,6 +604,7 @@ export class SystemPrompt extends Service {
         const assembled = {
           name: section.name,
           text: typeof section.text === 'function' ? section.text(context) : section.text,
+          ...section.interpolate !== undefined ? { interpolate: section.interpolate } : {},
         }
         if (section.complete === true) completeSection = { ...assembled }
         return assembled

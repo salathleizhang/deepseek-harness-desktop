@@ -6,15 +6,17 @@ Status: implemented
 
 ## 问题
 
-会话事件信封包含 `ignorable?: true`，读取器因此可以接受不认识的信息性事件，而不必把每次词汇增加都视为新的会话格式。[PR #3087](https://github.com/deepseek-harness/deepseek-harness/pull/3087) 在没有发现第一方生产方后删除了该字段，并把每个未知事件都改为读取必需项。
+会话事件信封包含 `ignorable?: true`，读取器因此可以接受不认识的信息性事件，而不必把每次词汇增加都视为新的会话格式。PR #3087 在没有发现第一方生产方后删除了该字段，并把每个未知事件都改为读取必需项。
 
 该生产方清单没有覆盖当前依赖此字段的一个第三方插件。没有 `ignorable` 时，第一方读取器会拒绝包含该插件信息性事件的已存会话，因为该事件不在仓库生成的 `KNOWN_SESSION_EVENT_TYPES` 中。插件没有可替代的注册或版本机制，因此在替代机制存在前删除该字段会破坏当前外部消费方。
 
 ## 决定
 
-标准 `SessionEvent` 信封保留 `ignorable?: true`，每种表示都保留它：seed 校验、JSONL、API 传输、生成目录与测试 fixture。`PersistenceCoordinator` 继续拒绝未知事件，除非已存信封显式带有 `ignorable: true`；字段不存在时仍表示读取必需。
+标准 `SessionEvent` 信封保留 `ignorable?: true`，每种表示都保留它：seed 校验、JSONL、API 传输、生成目录与测试 fixture。持久化 seam 的已存事件校验（`validateStoredEvents`）继续拒绝未知事件，除非已存信封显式带有 `ignorable: true`；字段不存在时仍表示读取必需。
 
 只有替代机制在事件生产、持久化、重新加载与传输中都支持当前第三方插件，并为已包含该标记的会话提供显式切换方案后，才能删除此字段。[Session log 版本决策](2026-08-10-session-log-version-mechanism.zh.md)继续定义默认读取必需的安全规则与格式版本策略。
+
+Alpha 实现中的历史格式迁移有意更严格。v0-to-v1 迁移边会拒绝每个未知 v0 类型，包括 ignorable 类型，因为不透明 payload 可能包含格式迁移边无法校验的引用。[Alpha 历史事件决策](2026-08-31-alpha-historical-unknown-event-refusal.zh.md)定义该有限例外；同版本 append 与 reload 继续遵循本记录。
 
 ## 曾考虑的替代方案
 

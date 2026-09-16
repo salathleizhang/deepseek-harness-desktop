@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-skill'
 import { describe, expect, it, vi } from 'vitest'
@@ -15,12 +15,14 @@ function observation(
   const lease = (): SessionObservation => ({
     source: 'live',
     header: {
-      version: 0,
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
+      isSeeded: false,
       ...options.cwd === undefined ? {} : { cwd: options.cwd },
     },
     events,
+    inheritedEventCount: SessionLogOffset(0),
     cursor: -1,
     projections: {
       asOfSeq: -1,
@@ -55,6 +57,7 @@ describe('SessionSkillCatalog', () => {
         name: 'review',
         description: 'Review the current change.',
         whenToUse: 'Before publishing.',
+        path: '/cold/project/.agents/skills/review/SKILL.md',
         invocation: { modelInvocable: true, userInvocable: true },
       },
       {
@@ -71,6 +74,7 @@ describe('SessionSkillCatalog', () => {
         name: 'review',
         description: 'Review the current change.',
         whenToUse: 'Before publishing.',
+        path: '/cold/project/.agents/skills/review/SKILL.md',
         modelInvocable: true,
       }],
     })
@@ -86,7 +90,7 @@ describe('SessionSkillCatalog', () => {
     const sessionId = SessionId('live-skills')
     const session = ctx.sessions.create(sessionId, { meta: { cwd: '/live/project' } })
     const agent = { id: sessionId, session, status: 'idle', ctx } as Agent
-    ctx.agents.register(agent)
+    await ctx.agents.register(agent)
     ctx.provide('sessionQuery', {
       observeSession: () => Promise.resolve(observation(sessionId, { cwd: '/live/project' })),
     } as never)

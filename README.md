@@ -147,6 +147,18 @@ The child's stdout/stderr go to `harness.log`; the readiness line (`dsh web: htt
 - Deep-link forwarding is wired end to end.
 - The macOS installer is signed and notarized; the Windows installer is unsigned, so a Windows auto-update may surface a SmartScreen prompt until an Authenticode certificate is added.
 
+## Citation
+
+```bibtex
+@misc{deepseek-harness2026,
+  title={DeepSeek Harness: Everything is a Plugin},
+  author={DeepSeek-AI},
+  year={2026},
+  publisher={GitHub},
+  howpublished={\url{https://github.com/deepseek-ai/deepseek-harness}},
+}
+```
+
 ## License
 
 [MIT](LICENSE)

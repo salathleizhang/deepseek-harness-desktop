@@ -18,6 +18,7 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
+  corner-shape: round;
   background: currentColor;
   opacity: 0.1;
 }
@@ -27,6 +28,7 @@
   position: absolute;
   inset: 20%;
   border-radius: 50%;
+  corner-shape: round;
   background: currentColor;
 }
 
@@ -40,6 +42,12 @@
 
 .dot[data-state='error'] {
   color: var(--dsw-alias-state-error-primary);
+}
+
+/* Idle is the absence of activity, not a fourth outcome: it stays on the
+ * tertiary label color so it recedes beside the three outcome colors. */
+.dot[data-state='idle'] {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* Pixel chase: each outer cell holds a discrete brightness step (flat keyframe

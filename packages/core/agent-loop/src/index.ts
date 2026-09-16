@@ -10,7 +10,6 @@ import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { emitAgentEvent } from '@deepseek-ai/dsh-agent'
 import type {
   Agent,
   AgentFactory,
@@ -24,13 +23,14 @@ import type {
 } from '@deepseek-ai/dsh-agent'
 import { errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
-import { SessionPreparation } from '@deepseek-ai/dsh-session'
+import { interruptedTurnClosers, SessionLogOffset, SessionPreparation, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
-import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { ReactLoopAgent } from './agent.ts'
 import { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from './constants.ts'
 
@@ -42,11 +42,11 @@ const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([
 ])
 
 const turnBoundaryProjectionSchema: zod.ZodType<TurnBoundaryProjection> = zod.object({
-  openTurnStartSeq: zod.number().int().nonnegative().nullable(),
-  lastStepStartSeq: zod.number().int().nonnegative().nullable(),
+  openTurnStartSeq: zod.number().int().nonnegative().transform(SessionSeq).nullable(),
+  lastStepStartSeq: zod.number().int().nonnegative().transform(SessionSeq).nullable(),
   lastStepBoundary: zod.object({
     kind: zod.union([zod.literal('start'), zod.literal('end')]),
-    seq: zod.number().int().nonnegative(),
+    seq: zod.number().int().nonnegative().transform(SessionSeq),
   }).nullable(),
   lastTurn: zod.number().int().nonnegative(),
 })
@@ -202,13 +202,19 @@ function assertAgentOptions(options: AgentOptions): void {
   }
 }
 
+/** One session's owned write handle plus the count of events already stored through it. */
+interface StoredSession {
+  readonly handle: SessionHandle
+  storedCount: number
+}
+
 /** Prepared-but-unpublished agent resources sharing one memoized teardown. */
 interface PreparedAgent {
   agent: ReactLoopAgent
   /** Aborts when the factory unloads, the caller cancels, or teardown begins — ends any setup await. */
   signal: AbortSignal
-  /** Enter registries, announce, notify session-start, and start the machine. */
-  publish(source: SessionStartSource): AgentHandle
+  /** Enter both registries and await creation listeners. */
+  publish(source: SessionStartSource): Promise<AgentHandle>
   /** Reverse teardown: stop the machine, unregister, unwind the scope. Memoized. */
   dispose(): Promise<void>
 }
@@ -421,7 +427,10 @@ export class AgentLoop extends Service implements AgentFactory {
         const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
         const persistence = sessionId === undefined ? undefined : ctx.get('sessionPersistence')
         if (persistence === undefined) {
-          this.create(configuredId, options, meta)
+          const startup = this.create(configuredId, options, meta).then(() => undefined, (error: unknown) => {
+            this.reportConfiguredStartupFailure(id, 'restore', configuredId, error)
+          })
+          this.ownership.trackStartup(startup)
         } else {
           const startup = this.restoreOrCreateConfigured(ctx, persistence, configuredId, options, meta).catch((error: unknown) => {
             this.reportConfiguredStartupFailure(id, 'restore', configuredId, error)
@@ -481,13 +490,11 @@ export class AgentLoop extends Service implements AgentFactory {
       return
     } catch (error: unknown) {
       if (!this.ownership.isActive()) return
-      // A load is the per-id serialization barrier for eager write-behind and
-      // lifecycle retirement. Only a genuinely absent artifact falls back to
-      // first creation; corruption and backend failures stay loud.
-      const exists = (await persistence.list()).some(header => header.id === sessionId)
-      if (exists) throw error
+      // Only a genuinely absent stored session falls back to first creation;
+      // corruption, ownership conflicts, and backend failures stay loud.
+      if (!(error instanceof SessionPersistenceNotFoundError)) throw error
     }
-    this.create(sessionId, agentOptions, meta)
+    await this.create(sessionId, agentOptions, meta)
   }
 
   /** Wait for a draining same-id lifecycle to finish registry teardown. */
@@ -519,7 +526,15 @@ export class AgentLoop extends Service implements AgentFactory {
    * BEFORE publication, so a mid-setup unload rolls everything back; `signal`
    * fuses caller cancellation with lifecycle teardown for setup awaits.
    */
-  private prepare(ownerCtx: Context, id: SessionId, options: AgentOptions, session: Session, callerSignal?: AbortSignal): PreparedAgent {
+  private prepare(
+    ownerCtx: Context,
+    id: SessionId,
+    options: AgentOptions,
+    session: Session,
+    callerSignal?: AbortSignal,
+    handle?: SessionHandle,
+    parentAgent?: Agent,
+  ): PreparedAgent {
     assertAgentOptions(options)
     ownerCtx.fiber.assertActive()
     // Every caller reaches prepare() synchronously from a service method
@@ -553,46 +568,75 @@ export class AgentLoop extends Service implements AgentFactory {
     let detachSession: (() => void) | undefined
     let detachAgent: (() => void) | undefined
     let disposing: Promise<void> | undefined
+    let publication: ReturnType<typeof Promise.withResolvers<void>> | undefined
     const machineReady = Promise.withResolvers<void>()
     // Reverse teardown, memoized so every racing owner awaits one quiescence:
-    // stop the machine, leave the registries, unwind the scope, release
-    // bookkeeping.
+    // stop the machine, drain and close the session's write path, leave the
+    // registries, unwind the scope, release bookkeeping.
     const dispose = (ownerTriggered = false): Promise<void> => (disposing ??= (async () => {
       abort.abort(new Error(`agent "${id}" lifecycle disposed`))
       callerSignal?.removeEventListener('abort', onCallerAbort)
       this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
+      // Teardown failures are collected, never swallowed: registry, scope,
+      // and ownership cleanup always run to quiescence, then the memoized
+      // disposal rejects with what failed so every racing owner observes it.
+      const failures: unknown[] = []
       try {
+        // Creation listeners retain the session and scope through their awaits.
+        if (publication !== undefined) await publication.promise
         // Disposal IS a disposed-cause cancel followed by quiescence. New work
         // sent after this point is the sender's bug — the registries are about
         // to drop the agent, so nothing should still hold it.
+        /* v8 ignore next -- Cordis effect teardown waits for synchronous setup before observing the machine slot. */
         if (machine === undefined) await machineReady.promise
+        /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
         if (machine !== undefined) {
           machine.cancel({ kind: 'disposed' })
           await machine.whenIdle()
           await machine.scope.dispose()
         }
+      } catch (error: unknown) {
+        failures.push(error)
+      }
+      // The loop above committed its closing events synchronously into the
+      // session; handle close drains them durably before releasing the write
+      // path. The close drain can be the first operation that surfaces a
+      // durability failure, so its error is retained, not logged away.
+      try {
+        await handle?.close()
+      } catch (error: unknown) {
+        failures.push(error)
+      }
+      try {
+        detachAgent?.()
+        detachSession?.()
       } finally {
-        try {
-          detachAgent?.()
-          detachSession?.()
-        } finally {
-          untrack()
-          if (!ownerTriggered) await unfollowOwner()
-        }
+        untrack()
+        if (!ownerTriggered) await unfollowOwner()
+      }
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) {
+        throw new AggregateError(failures, `agent "${id}" disposal failed`)
       }
     })())
     const untrack = this.ownership.track(dispose)
     let unfollowOwner: () => Promise<void> | void
     try {
-      unfollowOwner = ownerCtx.effect(() => () => {
-        // Owner disposal owns the same quiescence boundary. Its teardown skips
-        // unregistering this already-running owner effect from inside itself.
-        if (disposing !== undefined) return
-        abort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
-        return dispose(true)
+      unfollowOwner = ownerCtx.effect(function* () {
+        machine = new ReactLoopAgent(loopCtx, id, options, session)
+        machineReady.resolve()
+        yield machine.scope.rawDispose
+        yield () => {
+          // Owner disposal owns the same quiescence boundary. Its teardown skips
+          // unregistering this already-running owner effect from inside itself.
+          if (disposing !== undefined) return
+          abort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
+          return dispose(true)
+        }
       }, `agentLoop.lifecycle(${id})`)
       /* v8 ignore start -- ctx.effect throws only on an inactive fiber, which assertActive() above already rejected */
     } catch (error: unknown) {
+      machineReady.resolve()
       untrack()
       callerSignal?.removeEventListener('abort', onCallerAbort)
       this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
@@ -609,33 +653,38 @@ export class AgentLoop extends Service implements AgentFactory {
       throw abort.signal.reason instanceof Error ? abort.signal.reason : new Error(String(abort.signal.reason))
     }
     try {
-      const agent = machine = new ReactLoopAgent(loopCtx, id, options, session)
-      machineReady.resolve()
+      /* v8 ignore next -- a synchronous effect exhausts the generator before returning */
+      if (machine === undefined) throw new Error(`agent "${id}" lifecycle did not construct its driver`)
+      const agent = machine
       assertLive()
 
       return {
         agent,
         signal: abort.signal,
-        publish: (source) => {
-          assertLive()
-          detachSession = agent.ctx.sessions.enter(session)
-          detachAgent = loopCtx.agents.enter(agent, ownerCtx.agent)
-          agent.ctx.sessions.announce(session)
-          assertLive()
-          loopCtx.agents.announce(agent)
-          assertLive()
-          // A synchronous announce/session-start listener may have started
-          // teardown; the machine is already live (delivery works from the
-          // session-start extension point), so only the liveness recheck is owed.
-          emitAgentEvent(loopCtx, agent, 'agent/session-start', { source })
-          assertLive()
-          return { agent, dispose }
+        publish: async (source) => {
+          publication = Promise.withResolvers<void>()
+          try {
+            assertLive()
+            detachSession = agent.ctx.sessions.enter(session)
+            // The mounted backend routes announced live events into the active
+            // write handle by session id; the loop only owns the handle itself.
+            detachAgent = loopCtx.agents.enter(agent, parentAgent)
+            agent.ctx.sessions.announce(session)
+            assertLive()
+            await loopCtx.agents.announce(agent, source, abort.signal)
+            assertLive()
+            return { agent, dispose }
+          } finally {
+            publication.resolve()
+            publication = undefined
+          }
         },
         dispose,
       }
     } catch (error: unknown) {
       machineReady.resolve()
-      void dispose()
+      // Rollback swallows a disposal rejection: the setup failure is primary.
+      void dispose().catch(() => {})
       throw error
     }
   }
@@ -643,43 +692,110 @@ export class AgentLoop extends Service implements AgentFactory {
   /**
    * Create an agent and session under one caller-supplied identity, owned by
    * the accessing fiber. Constructor-driven config calls mint a fresh combined
-   * id before entering this boundary.
+   * id before entering this boundary. When a persistence backend is mounted,
+   * the session's durable identity and any seed are stored before publication.
    * @param id - shared agent/session identity.
    * @param options - concrete loop options.
    * @param meta - optional fresh-session workspace metadata.
    * @returns the published running agent.
    */
-  create(id: SessionId, options: AgentOptions = {}, meta: Pick<SessionHeader, 'cwd'> = {}): Agent {
+  async create(id: SessionId, options: AgentOptions = {}, meta: Pick<SessionHeader, 'cwd'> = {}): Promise<Agent> {
     using preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { meta }))
-    const prepared = this.prepare(this.ctx, id, options, preparation.session)
+    const stored = await this.createStoredSession(preparation.session)
+    let prepared: PreparedAgent
     try {
-      return prepared.publish('startup').agent
+      prepared = this.prepare(this.ctx, id, options, preparation.session, undefined, stored?.handle)
     } catch (error: unknown) {
-      void prepared.dispose()
+      await stored?.handle.close().catch(() => {})
       throw error
     }
+    return (await this.initializeAgent(prepared, async () => {
+      await this.appendUnstoredSuffix(stored, preparation.session)
+      return await prepared.publish('startup')
+    })).agent
+  }
+
+  /**
+   * Take a fresh session's write ownership when persistence is mounted.
+   * Nothing is appended here: the constructor seed (which never re-emits
+   * through `session/event`) is stored by `appendUnstoredSuffix` at the
+   * publication commit point, so a failed or cancelled validation or setup
+   * closes an unmaterialized handle and leaves no stored residue — the same
+   * id can be created again.
+   * @param session - the unpublished session to store.
+   * @param signal - optional cancellation forwarded to the backend create.
+   * @returns the owned handle and stored cursor, or `undefined` without a backend.
+   */
+  private async createStoredSession(session: Session, signal?: AbortSignal): Promise<StoredSession | undefined> {
+    const persistence = this.runtime.ctx.get('sessionPersistence')
+    if (persistence === undefined) return undefined
+    const handle = await persistence.create(session.header, {
+      inheritedEventCount: session.inheritedEventCount,
+      ...signal === undefined ? {} : { signal },
+    })
+    return { handle, storedCount: 0 }
+  }
+
+  /**
+   * Durably store the session events appended since the last stored cursor.
+   * Pre-publication appends (constructor seed markers, setup-window events
+   * such as delegation policy records) never re-emit through `session/event`,
+   * so publication must flush them through the handle before live events
+   * start routing into it.
+   * @param stored - the session's owned handle and stored cursor, if any.
+   * @param session - the unpublished session whose suffix is stored.
+   */
+  private async appendUnstoredSuffix(stored: StoredSession | undefined, session: Session): Promise<void> {
+    if (stored === undefined) return
+    // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+    const suffix = session.snapshotEvents(SessionLogOffset(stored.storedCount))
+    if (suffix.length > 0) await stored.handle.append(suffix)
+    // Advance by what was stored, not to `session.seq`: an event appended
+    // during the await must stay unstored for the next flush.
+    stored.storedCount += suffix.length
   }
 
   /**
    * Create an owned agent on a caller-supplied session id.
    * @param ownerCtx - caller context that structurally owns the lifecycle.
-   * @param options - identities, session seed/metadata, loop options, setup, and cancellation.
+   * @param options - identities, optional live parent, session seed/metadata, loop options, setup, and cancellation.
    * @returns the published handle.
    */
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
       ...options.seed === undefined ? {} : { seed: options.seed },
       ...options.meta === undefined ? {} : { meta: options.meta },
+      ...options.inheritedEventCount === undefined ? {} : { inheritedEventCount: options.inheritedEventCount },
     }))
-    const published = this.setupAndPublish(
-      ownerCtx,
-      options.sessionId,
-      preparation,
-      options.agentOptions ?? {},
-      options.setup,
-      options.signal,
-      'startup',
-    )
+    const published = (async () => {
+      let stored: StoredSession | undefined
+      try {
+        // raceAbortCall normalizes a pre-aborted or mid-create abort and
+        // closes a handle that finishes creating after abandonment.
+        stored = options.signal === undefined
+          ? await this.createStoredSession(preparation.session)
+          : await raceAbortCall(
+            () => this.createStoredSession(preparation.session, options.signal),
+            options.signal,
+            options.sessionId,
+            (abandoned) => { void abandoned?.handle.close().catch(() => {}) },
+          )
+      } catch (error: unknown) {
+        preparation[Symbol.dispose]()
+        throw error
+      }
+      return this.setupAndPublish(
+        ownerCtx,
+        options.sessionId,
+        preparation,
+        options.agentOptions ?? {},
+        options.setup,
+        options.signal,
+        'startup',
+        stored,
+        options.parentAgent,
+      )
+    })()
     this.ownership.trackWrapper(published)
     return published
   }
@@ -693,16 +809,41 @@ export class AgentLoop extends Service implements AgentFactory {
     setup: AgentSetup | undefined,
     signal: AbortSignal | undefined,
     source: SessionStartSource,
+    stored?: StoredSession,
+    parentAgent?: Agent,
   ): Promise<AgentHandle> {
     using ownedPreparation = preparation
     const session = ownedPreparation.session
-    const prepared = this.prepare(ownerCtx, id, agentOptions, session, signal)
+    let prepared: PreparedAgent
     try {
-      const setupCommit = await raceAbort(setup?.(prepared.agent.ctx), prepared.signal, id)
-      setupCommit?.commit()
-      return prepared.publish(source)
+      prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent)
     } catch (error: unknown) {
-      await prepared.dispose()
+      await stored?.handle.close().catch(() => {})
+      throw error
+    }
+    return await this.initializeAgent(prepared, async () => {
+      const setupCommit = await raceAbort(setup?.(prepared.agent.ctx, prepared.agent), prepared.signal, id)
+      setupCommit?.commit()
+      await this.appendUnstoredSuffix(stored, session)
+      return await prepared.publish(source)
+    })
+  }
+
+  private async initializeAgent(prepared: PreparedAgent, initialize: () => Promise<AgentHandle>): Promise<AgentHandle> {
+    try {
+      return await prepared.agent.runMaintenance(async () => {
+        try {
+          return await initialize()
+        } catch (error: unknown) {
+          // Teardown owns inbox cleanup and may already have removed its projection.
+          prepared.agent.cancel({ kind: 'disposed' }, { keepInbox: true })
+          throw error
+        }
+      })
+    } catch (error: unknown) {
+      // Rollback swallows a disposal rejection (a failing final handle close):
+      // the setup failure is the primary error the caller must see.
+      await prepared.dispose().catch(() => {})
       throw error
     }
   }
@@ -710,7 +851,7 @@ export class AgentLoop extends Service implements AgentFactory {
   /**
    * Resume an owned agent from the configured persistence service.
    * @param ownerCtx - caller context that owns load, setup, and the live lifecycle.
-   * @param options - persisted identity, loop options, setup, and cancellation.
+   * @param options - persisted identity, optional live parent, loop options, setup, and cancellation.
    * @returns the published handle.
    */
   async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
@@ -729,9 +870,9 @@ export class AgentLoop extends Service implements AgentFactory {
   ): Promise<AgentHandle> {
     const id = options.resumeSessionId
     const published = (async () => {
-      // The load may outlive its owner: race it against caller cancellation,
-      // owner-fiber unload, and factory teardown so a never-settling backend
-      // cannot pin the identity.
+      // The open and read may outlive their owner: race them against caller
+      // cancellation, owner-fiber unload, and factory teardown so a
+      // never-settling backend cannot pin the identity.
       const ownerAbort = new AbortController()
       const unfollowOwner = ownerCtx.effect(() => () => {
         ownerAbort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
@@ -741,20 +882,43 @@ export class AgentLoop extends Service implements AgentFactory {
         ownerAbort.signal,
         this.ownership.signal,
       ])
+      let handle: SessionHandle | undefined
+      let stored: StoredSession | undefined
       let preparation: SessionPreparation | undefined
       try {
         try {
-          preparation = await raceAbortCall(
-            () => persistence.prepare(id, fused),
+          // Taking write ownership FIRST excludes a concurrent resume of the
+          // same id (in this process, a live agent's handle holds the claim).
+          handle = await raceAbortCall(
+            () => persistence.open(id, 'write', { signal: fused }),
             fused,
             id,
-            (abandoned) => { abandoned[Symbol.dispose]() },
+            (abandoned) => { void abandoned.close() },
           )
+          // Semantic crash repair is the agent layer's job: persistence hands
+          // back the physically valid log; an interrupted final turn receives
+          // synthetic closers (missing tool errors, step/end, turn/end) that
+          // are appended through the same handle as an ordinary batch.
+          const coldRead = await handle.read(0, undefined, { signal: fused })
+          fused.throwIfAborted()
+          const persisted = coldRead.events
+          const closers = interruptedTurnClosers(persisted)
+          if (closers.length > 0) await handle.append(closers)
+          preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, {
+            seed: [...persisted, ...closers],
+            meta: structuredClone(handle.header),
+            inheritedEventCount: handle.inheritedEventCount,
+            eventState: coldRead.eventState,
+          }))
+          stored = { handle, storedCount: persisted.length + closers.length }
+          await this.appendUnstoredSuffix(stored, preparation.session)
         } finally {
           await unfollowOwner()
         }
         ownerCtx.fiber.assertActive()
         if (!this.ownership.isActive()) throw new Error('agent loop is not active')
+        const owned = stored
+        handle = undefined // ownership passes to setupAndPublish/prepare
         return await this.setupAndPublish(
           ownerCtx,
           id,
@@ -763,9 +927,12 @@ export class AgentLoop extends Service implements AgentFactory {
           options.setup,
           options.signal,
           'resume',
+          owned,
+          options.parentAgent,
         )
       } finally {
         preparation?.[Symbol.dispose]()
+        await handle?.close().catch(() => {})
       }
     })()
     this.ownership.trackWrapper(published)

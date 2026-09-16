@@ -10,7 +10,7 @@
       "path": "../../../vendor/cordis"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../util/lazy-require"
     }
   ]
 }

@@ -4,16 +4,21 @@
  * message (bubble regression), and wire session forms fold to their label
  * (queue-row readability).
  */
-import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render } from '@testing-library/react'
 import { projectUserText } from '../src/user-text.tsx'
 
-const project = (text: string, labels: readonly string[] = []) =>
-  render(<div data-host>{projectUserText(text, labels)}</div>).container.querySelector('[data-host]')!
+const project = (
+  text: string,
+  labels: readonly string[] = [],
+  slashNames: readonly string[] = [],
+  slashKind: 'skill' | 'command' = 'skill',
+) =>
+  render(<div data-host>{projectUserText(text, labels, slashNames, slashKind)}</div>).container.querySelector('[data-host]')!
 
 describe('projectUserText', () => {
   it('keeps a decorated single-line message on one line: every part is inline', () => {
-    const host = project('反反复复 /dsh-acp-test @执行几个命令测试', ['执行几个命令测试'])
+    const host = project('反反复复 /dsh-acp-test @执行几个命令测试', ['执行几个命令测试'], ['dsh-acp-test'])
     expect(host.querySelectorAll('div').length).toBe(0)
     expect(host.textContent).toBe('反反复复 /dsh-acp-test 执行几个命令测试')
     const chips = host.querySelectorAll('[data-ref-chip]')
@@ -55,11 +60,37 @@ describe('projectUserText', () => {
     expect(host.querySelectorAll('[data-ref-chip="session"]').length).toBe(2)
   })
 
-  it('strips trailing punctuation and skips degenerate tokens', () => {
-    const host = project('用 /plan。 试试 @。')
-    const chips = [...host.querySelectorAll('[data-ref-chip]')]
-    expect(chips.map(c => c.textContent)).toEqual(['/plan'])
+  it('keeps a punctuation-glued slash token plain and skips degenerate tokens', () => {
+    // The host skill gesture ends at whitespace or the text end, so `/plan。`
+    // never loads a skill; the bubble must not suggest otherwise.
+    const host = project('用 /plan。 试试 @。', [], ['plan'])
+    expect(host.querySelectorAll('[data-ref-chip]').length).toBe(0)
     expect(host.textContent).toBe('用 /plan。 试试 @。')
+  })
+
+  it('decorates a slash token only when the host resolved it as a skill in that step', () => {
+    const bare = project('/123')
+    expect(bare.querySelectorAll('[data-ref-chip]').length).toBe(0)
+    expect(bare.textContent).toBe('/123')
+    const unresolved = project('用 /plan 看看')
+    expect(unresolved.querySelectorAll('[data-ref-chip]').length).toBe(0)
+    const resolved = project('用 /plan 看看', [], ['plan'])
+    expect([...resolved.querySelectorAll('[data-ref-chip]')].map(c => [c.getAttribute('data-ref-chip'), c.textContent]))
+      .toEqual([['skill', '/plan']])
+  })
+
+  it('marks a resolved slash token as a command chip when the caller says so', () => {
+    const host = project('/goal ship it\nsecond line', [], ['goal'], 'command')
+    const chips = [...host.querySelectorAll('[data-ref-chip]')]
+    expect(chips.map(c => [c.getAttribute('data-ref-chip'), c.textContent])).toEqual([['command', '/goal']])
+    expect(host.textContent).toBe('/goal ship it\nsecond line')
+  })
+
+  it('leaves slash paths undecorated even for a resolved name: a /name token ends at whitespace', () => {
+    const text = '测试一下ui，不用管我：\n/nfs-hg/xxx/yyy 与 /root-dir/ 和 /plan.md'
+    const host = project(text, [], ['nfs-hg', 'root-dir', 'plan'])
+    expect(host.querySelectorAll('[data-ref-chip]').length).toBe(0)
+    expect(host.textContent).toBe(text)
   })
 
   it('prefers the longer recall label when one nests inside another', () => {
@@ -71,8 +102,43 @@ describe('projectUserText', () => {
 
   it('falls back to the raw quoted label when the path has no basename', () => {
     const host = project('看 @"/" 下面')
-    const chip = host.querySelector('[data-ref-chip="file"]')!
+    const chip = host.querySelector('[data-ref-chip="folder"]')!
     expect(chip.textContent).toBe('"/"')
+  })
+
+  it('opens decoded files and loaded skills without activating session, folder, or command references', () => {
+    const openFile = vi.fn()
+    const openSkill = vi.fn()
+    const view = render(<div>{projectUserText(
+      '@src/a.ts @"notes a.md" /review @history @dir/ @"dir a/"', ['history'], ['review'], 'skill',
+      { openFile, openSkill },
+    )}</div>)
+    fireEvent.click(view.getByRole('button', { name: 'a.ts' }))
+    fireEvent.click(view.getByRole('button', { name: 'notes a.md' }))
+    fireEvent.click(view.getByRole('button', { name: '/review' }))
+    expect(openFile.mock.calls).toEqual([['src/a.ts'], ['notes a.md']])
+    expect(openSkill).toHaveBeenCalledWith('review')
+    expect(view.container.querySelectorAll('button')).toHaveLength(3)
+    const command = render(<div>{projectUserText('/help', [], ['help'], 'command', { openFile, openSkill })}</div>)
+    expect(command.container.querySelector('button')).toBeNull()
+  })
+
+  it('preserves text-selection gestures and keyboard activation', () => {
+    const openFile = vi.fn()
+    const view = render(<div>{projectUserText('@notes.md', [], [], 'skill', { openFile, openSkill: vi.fn() })}</div>)
+    const button = view.getByRole('button', { name: 'notes.md' })
+    const selection = document.getSelection()!
+    const range = document.createRange()
+    range.selectNodeContents(button)
+    selection.addRange(range)
+    fireEvent.click(button, { detail: 1 })
+    expect(openFile).not.toHaveBeenCalled()
+    fireEvent.click(button, { detail: 0 })
+    expect(openFile).toHaveBeenCalledWith('notes.md')
+    selection.removeAllRanges()
+    openFile.mockClear()
+    fireEvent.click(button, { detail: 2 })
+    expect(openFile).not.toHaveBeenCalled()
   })
 
   it('renders undecorated text as one inline run', () => {

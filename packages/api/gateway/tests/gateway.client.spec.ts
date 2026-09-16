@@ -3,8 +3,10 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { z } from 'zod'
+import { RemoteMock } from '@deepseek-ai/dsh-remote-mock'
 import {
   apply as applyConnection,
+  type ClientTransportHooks,
   type ConnectionGeneration,
   type ConnectionGenerationSource,
   type ConnectionHandle,
@@ -150,15 +152,15 @@ function directDescriptor(): InvocationDescriptor {
       wire: 'agentId',
       source: 'lookup',
       lookup: 'fixture',
-      codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', schema: idSchema },
+      codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', create: () => idSchema },
     }, {
       name: 'request',
       wire: 'request',
       source: 'json',
-      codec: { mode: 'strict', typeSymbol: '@fixture#CreateRequest', schema: requestSchema },
+      codec: { mode: 'strict', typeSymbol: '@fixture#CreateRequest', create: () => requestSchema },
     }],
     cancellation: { parameter: 'signal' },
-    result: { mode: 'strict', typeSymbol: '@fixture#CreateResult', schema: createResultSchema },
+    result: { mode: 'strict', typeSymbol: '@fixture#CreateResult', create: () => createResultSchema },
   }
 }
 
@@ -172,15 +174,15 @@ function contextDescriptor(): InvocationDescriptor {
       kind: 'context',
       context: 'fixture',
       wire: 'agentId',
-      codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', schema: idSchema },
+      codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', create: () => idSchema },
     },
     parameters: [{
       name: 'request',
       wire: 'request',
       source: 'json',
-      codec: { mode: 'strict', typeSymbol: '@fixture#RenameRequest', schema: requestSchema },
+      codec: { mode: 'strict', typeSymbol: '@fixture#RenameRequest', create: () => requestSchema },
     }],
-    result: { mode: 'strict', typeSymbol: '@fixture#RenameResult', schema: renameResultSchema },
+    result: { mode: 'strict', typeSymbol: '@fixture#RenameResult', create: () => renameResultSchema },
   }
 }
 
@@ -197,9 +199,9 @@ function maybeDescriptor(): InvocationDescriptor {
       wire: 'value',
       source: 'json',
       acceptsUndefined: true,
-      codec: { mode: 'strict', typeSymbol: '@fixture#MaybeValue', schema },
+      codec: { mode: 'strict', typeSymbol: '@fixture#MaybeValue', create: () => schema },
     }],
-    result: { mode: 'strict', typeSymbol: '@fixture#MaybeValue', schema },
+    result: { mode: 'strict', typeSymbol: '@fixture#MaybeValue', create: () => schema },
   }
 }
 
@@ -215,10 +217,10 @@ function streamDescriptor(): InvocationDescriptor {
       name: 'topic',
       wire: 'topic',
       source: 'json',
-      codec: { mode: 'strict', typeSymbol: '@fixture#Topic', schema: z.string().min(1) },
+      codec: { mode: 'strict', typeSymbol: '@fixture#Topic', create: () => z.string().min(1) },
     }],
     cancellation: { parameter: 'signal' },
-    result: { mode: 'strict', typeSymbol: '@fixture#WatchItem', schema: z.string().min(1) },
+    result: { mode: 'strict', typeSymbol: '@fixture#WatchItem', create: () => z.string().min(1) },
   }
 }
 
@@ -600,6 +602,54 @@ describe('Client Remote transport readiness', () => {
         await vi.waitFor(() => { expect(FakeWebSocket.sockets).toHaveLength(2) })
       } finally {
         await client.dispose()
+      }
+    })
+  })
+
+  it.each([false, true])('replaces a stalled carrier and restores events (socket opened: %s)', async (autoOpen) => {
+    await withFakeWebSocket('https://harness.example', async () => {
+      vi.useFakeTimers()
+      vi.stubGlobal('__DSH_CONNECTION_RECOVERY__', {
+        backoffBaseMs: 10, backoffMaxMs: 10, generationReadyTimeoutMs: 100,
+      })
+      Object.assign(globalThis.location, { hostname: 'harness.example', search: '' })
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      FakeWebSocket.autoOpen = autoOpen
+      const ctx = new Context()
+      const reset = vi.fn()
+      ctx.on('connection/reset', reset)
+      try {
+        await ctx.plugin(TypertRegistry)
+        await ctx.plugin({ inject: [], apply: applyConnection })
+        await ctx.plugin({ inject, apply })
+        await vi.advanceTimersByTimeAsync(0)
+        const connection = ctx.get('connection') as ConnectionHandle
+        expect(FakeWebSocket.sockets).toHaveLength(1)
+        expect(connection.generation.getSnapshot()).toBeUndefined()
+        await vi.advanceTimersByTimeAsync(110)
+        expect(FakeWebSocket.sockets).toHaveLength(2)
+        expect(FakeWebSocket.sockets[0]?.readyState).toBe(FakeWebSocket.CLOSED)
+        expect(FakeWebSocket.sockets[0]?.closedWith).toHaveLength(1)
+        expect(reset).not.toHaveBeenCalled()
+        const replacement = FakeWebSocket.sockets[1]!
+        replacement.open()
+        await vi.advanceTimersByTimeAsync(0)
+        const opening = JSON.parse(replacement.sent[0]!) as { streamId: string }
+        replacement.receive({
+          type: 'item', streamId: opening.streamId,
+          value: { type: 'ready', clientId: 'recovered-client', host: { home: '/recovered' } },
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(connection.state.getSnapshot()).toBe('connected')
+        expect(connection.generation.getSnapshot()?.host.home).toBe('/recovered')
+        expect(reset).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        await ctx.fiber.dispose()
+        await vi.advanceTimersByTimeAsync(0)
+        warnSpy.mockRestore()
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
       }
     })
   })
@@ -1105,7 +1155,7 @@ describe('Client Typert API', () => {
         ...direct,
         parameters: [...direct.parameters, {
           name: 'other', wire: 'otherId', source: 'lookup', lookup: 'fixture',
-          codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', schema: idSchema },
+          codec: { mode: 'strict', typeSymbol: '@fixture#AgentId', create: () => idSchema },
         }],
       }],
     })).rejects.toThrow('scope must select its only lookup parameter')
@@ -1221,7 +1271,7 @@ describe('Client Typert API', () => {
         name: 'value',
         wire: '__proto__',
         source: 'json',
-        codec: { mode: 'strict', typeSymbol: '@fixture#PrototypeValue', schema: z.string() },
+        codec: { mode: 'strict', typeSymbol: '@fixture#PrototypeValue', create: () => z.string() },
       }],
     }
     const dispose = await ctx.remote.$mount({ package: '@fixture/prototype', descriptors: [descriptor] })
@@ -1927,11 +1977,17 @@ describe('Client Typert API', () => {
     })
   })
 
-  it('publishes the Fixture Host facts after Remote events report ready', async () => {
+  it('publishes injected Host facts after Remote events report ready', async () => {
     const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location')
+    const transportDescriptor = Object.getOwnPropertyDescriptor(globalThis, '__DSH_TRANSPORT__')
+    const mock = RemoteMock.create({ host: { home: '/home/mock' } })
     Object.defineProperty(globalThis, 'location', {
       configurable: true,
-      value: { hostname: '127.0.0.1', search: '?fixture' },
+      value: { hostname: '127.0.0.1', search: '' },
+    })
+    Object.defineProperty(globalThis, '__DSH_TRANSPORT__', {
+      configurable: true,
+      value: { rpc: mock.rpc } satisfies ClientTransportHooks,
     })
     const ctx = new Context()
     try {
@@ -1939,15 +1995,17 @@ describe('Client Typert API', () => {
       await ctx.plugin({ inject: [], apply: applyConnection })
       await ctx.plugin({ inject, apply })
       const connection = ctx.get('connection') as ConnectionHandle | undefined
-      if (connection === undefined) throw new Error('fixture Connection service is unavailable')
+      if (connection === undefined) throw new Error('injected Connection service is unavailable')
 
       await vi.waitFor(() => {
-        expect(connection.generation.getSnapshot()?.host.home).toBe('/home/fixture')
+        expect(connection.generation.getSnapshot()?.host.home).toBe('/home/mock')
       })
     } finally {
       await ctx.fiber.dispose()
       if (locationDescriptor === undefined) Reflect.deleteProperty(globalThis, 'location')
       else Object.defineProperty(globalThis, 'location', locationDescriptor)
+      if (transportDescriptor === undefined) Reflect.deleteProperty(globalThis, '__DSH_TRANSPORT__')
+      else Object.defineProperty(globalThis, '__DSH_TRANSPORT__', transportDescriptor)
     }
   })
 

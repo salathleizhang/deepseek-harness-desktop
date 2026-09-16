@@ -10,6 +10,8 @@ import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ReplayEntry } from '@deepseek-ai/dsh-llm-replay'
+import { sessionFixtureName } from '@deepseek-ai/dsh-session-snapshot'
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { createChatScrollFixture } from './chat-scroll-fixture.ts'
 import {
   captureStableAria,
@@ -153,10 +155,15 @@ async function rowTop(page: Page, key: string): Promise<number | null> {
 
 async function loadToFirstTurn(page: Page): Promise<void> {
   const marker = FIXTURE.markers.user(1)
+  const loadMore = page.locator('[data-history-load] button')
   for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await page.getByText(marker, { exact: false }).count() > 0) return
+    await expect.poll(() => loadMore.evaluateAll(buttons =>
+      buttons.length === 0 || !(buttons[0] as HTMLButtonElement).disabled,
+    ), { timeout: 15_000 }).toBe(true)
+    const before = await logicalRows(page)
     await scrollToRatio(page, 0)
     if (await page.getByText(marker, { exact: false }).count() > 0) return
-    const before = await logicalRows(page)
     const anchor = await firstVisibleRow(page)
     await expect.poll(async () => ({
       marker: await page.getByText(marker, { exact: false }).count() > 0,
@@ -180,7 +187,7 @@ describe('web e2e: Trajectory virtualization over tail-paged history', () => {
 
   beforeAll(async () => {
     replayDir = await mkdtemp(join(tmpdir(), 'dsh-trajectory-virtualization-'))
-    const replayFixture = join(replayDir, 'session.jsonl')
+    const replayFixture = join(replayDir, sessionFixtureName(0, SESSION_FORMAT_VERSION))
     const replayOverride = join(replayDir, 'replay.override.json')
     await writeFile(replayFixture, FIXTURE.log)
     await writeFile(replayOverride, JSON.stringify([{
@@ -255,6 +262,11 @@ describe('web e2e: Trajectory virtualization over tail-paged history', () => {
       await compareOrRefreshGolden(LOAD_MORE_EXPECTED, loadMoreSnapshot, MODE)
       // Avoid Playwright scrolling the offscreen first row into the automatic-load threshold.
       await loadMore.evaluate((button: HTMLButtonElement) => { button.click() })
+      await expect.poll(() => logicalRows(page), { timeout: 15_000 }).toBeGreaterThan(initialRows)
+      const residentRows = await logicalRows(page)
+      expect(held).toBe(false)
+      await expect.poll(() => loadMore.isDisabled(), { timeout: 15_000 }).toBe(false)
+      await loadMore.evaluate((button: HTMLButtonElement) => { button.click() })
       await expect.poll(() => held, { timeout: 15_000 }).toBe(true)
       await expect.poll(async () => ({
         disabled: await loadMore.isDisabled(),
@@ -274,7 +286,7 @@ describe('web e2e: Trajectory virtualization over tail-paged history', () => {
         .toBe('true')
 
       releaseHistory()
-      await expect.poll(() => logicalRows(page), { timeout: 60_000 }).toBeGreaterThan(initialRows)
+      await expect.poll(() => logicalRows(page), { timeout: 60_000 }).toBeGreaterThan(residentRows)
       await nextPaint(page)
       await expect.poll(async () => {
         const top = await rowTop(page, anchor.key)

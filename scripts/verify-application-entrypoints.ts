@@ -23,18 +23,18 @@ interface DemoPolicy {
   readonly wrapper?: string
 }
 
-/** Public product launcher plus the private build-only WebWorker packer. */
+/** Public product launcher plus the build-only WebWorker packer. */
 const MANIFEST_BIN_ALLOWLIST = new Map<string, ManifestBin>([
   ['apps/cli/package.json', { dsh: 'lib/bin.js' }],
   ['packages/experimental/webworker-packer/package.json', { 'dsh-pack-vfs-image': './bin.js' }],
 ])
 
-/** Every executable in a Node application workspace has one explicit role. */
+/** Every JavaScript executable in an application or packaging workspace has one explicit role. */
 const EXECUTABLE_SOURCE_ALLOWLIST = new Map<string, string>([
   ['apps/cli/src/bin.ts', 'supported dsh application launcher'],
   ['packages/context/time-context/tests/fixtures/driver.ts', 'test-only subprocess driver'],
-  ['packages/experimental/webworker-packer/bin.js', 'private build-only wrapper'],
-  ['packages/experimental/webworker-packer/src/bin.ts', 'private build-only implementation'],
+  ['packages/experimental/webworker-packer/bin.js', 'build-only wrapper'],
+  ['packages/experimental/webworker-packer/src/bin.ts', 'build-only implementation'],
   ['packages/sdk/client/tests/fake-runtime.ts', 'test-only SDK runtime peer'],
   ['packages/session/session-telemetry-otel/tests/fixtures/driver.ts', 'test-only subprocess driver'],
   ['packages/shell/tool-pwsh/tests/fixtures/loader/driver.ts', 'test-only subprocess driver'],
@@ -44,6 +44,7 @@ const EXECUTABLE_SOURCE_ALLOWLIST = new Map<string, string>([
   ['packages/subagent/subagent-dsh-sdk/tests/fixtures/loader/driver.ts', 'test-only subprocess driver'],
   ['packages/test-support/loader-smoke/tests/fixtures/headless-driver.ts', 'test-only subprocess driver'],
   ['packages/test-support/llm-mock-server/src/bin.ts', 'test-only model server'],
+  ['python/sdk-runtime/runtime-bootstrap.mjs', 'private packaging-only runtime dispatcher'],
 ])
 
 /** Root demos are application wrappers and therefore must visibly select dsh. */
@@ -65,6 +66,7 @@ const SOURCE_PATTERNS = [
   'packages/**/*.js',
   'packages/**/*.mjs',
   'packages/**/*.cjs',
+  'python/sdk-runtime/*.mjs',
 ]
 
 const SOURCE_EXCLUDES = [

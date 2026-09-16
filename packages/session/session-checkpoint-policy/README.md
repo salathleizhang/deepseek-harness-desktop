@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-checkpoint-policy` is a zero-config plugin that makes a persisted session durable at the moments that matter: before a model request reaches the adapter, before a top-level tool body can produce an external side effect, and at each step boundary so the preceding response and tool results are stored before the next request. Load it beside one persistence backend, and a crash after any checkpoint resumes with the recorded work — a request, a tool call, or a completed step — instead of losing it. The policy adds no prompt, tool schema, or configuration; checkpoint failures are fail-closed, so neither the adapter nor a top-level tool body runs when the durable write cannot be confirmed. Streaming `assistant/chunk` events get no per-chunk checkpoint, and a persisted call without a result records an unknown outcome rather than retrying automatically.
+Use this package with a session persistence backend to make work durable before a model request, before a top-level tool can cause external effects, and before the next agent step begins. After each checkpoint, work can resume after a crash from stored requests, tool calls, responses, and results without loss. Checkpoint failures are fail-closed: a model adapter or top-level tool body does not run until the durable write succeeds. The package has no configuration and adds no prompt or tool schema; unfinished Assistant streams remain transient, and interrupted tool calls recover with an unknown outcome instead of an automatic retry.
 
 ## Table of Contents
 
@@ -70,7 +70,7 @@ The plugin is a listener-only composition over three seams, with no state of its
 | File | Role |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: `apply` installs the three checkpoint listeners |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; ordering is enforced at the intercepted seams) |
+| — | No runtime invariant companion is published; checkpoint ordering is enforced at the intercepted waterfall and persistence seams; this stateless policy owns no independent mutable relation. |
 
 </details>
 
@@ -113,7 +113,7 @@ The repair result is appended after the reusable prefix, so it does not invalida
 These limits define where the policy's durability guarantee stops. They are current package constraints, not a task backlog.
 
 - **Durable execution intent, not exactly-once effects** — the policy records that a call was dispatched, not that its external effect completed. Side-effecting tools should forward `exec.callId` as an idempotency key when their provider supports one.
-- **No per-chunk checkpoint for streaming** — `assistant/chunk` events rely on bounded background batches; a hard crash may lose the current in-memory batch or outstanding write.
+- **No checkpoint inside an active model attempt** — a hard crash may lose transient Assistant frames that have not reached their durable `assistant/message` or `assistant/attempt` settlement.
 - **Unknown outcome, not automatic retry** — a persisted call without a result cannot prove whether its external effect completed, so recovery records an unknown outcome instead of retrying.
 
 <a id="dev-note"></a>

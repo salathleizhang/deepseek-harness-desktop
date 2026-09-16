@@ -10,11 +10,13 @@ import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import type { ReplayEntry, ReplayOverrideDoc } from '@deepseek-ai/dsh-llm-replay'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { createChatScrollFixture, type ChatScrollFixture } from './chat-scroll-fixture.ts'
 import {
   launchWebScaffold,
+  parseSeedFixture,
   seedSession,
   watchConsole,
   webSnapshotMode,
@@ -81,6 +83,7 @@ interface FlowAnchor {
 }
 
 interface ScrollWorld {
+  readonly assistantFrames: AssistantStreamFrame[]
   readonly events: SessionEvent[]
   readonly page: Page
   readonly replayDir?: string
@@ -164,7 +167,9 @@ async function launchScrollWorld(options: ScrollWorldOptions): Promise<ScrollWor
     }
     for (const seed of options.seeds) await seedSession(scaffold, seed.fixture.log, seed.id)
     const events: SessionEvent[] = []
+    const assistantFrames: AssistantStreamFrame[] = []
     scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { events.push(event) })
+    scaffold.ctx.on('agent/assistant-stream', ({ frame }) => { assistantFrames.push(frame) })
     page = await newEnglishPage(browser, 900)
     const tripwire = watchConsole(page)
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
@@ -175,6 +180,7 @@ async function launchScrollWorld(options: ScrollWorldOptions): Promise<ScrollWor
     // row is the barrier).
     await page.getByText('Ungrouped', { exact: true }).waitFor({ timeout: 30_000 })
     return {
+      assistantFrames,
       events,
       page,
       scaffold,
@@ -466,6 +472,29 @@ function assertClean(world: ScrollWorld): void {
   expect(world.tripwire.warnings).toEqual([])
 }
 
+it('generates a native V3 scroll seed with a protected system head and intact references', () => {
+  const { header, events } = parseSeedFixture(HISTORY_FIXTURE.log)
+  expect(header.version).toBe(3)
+  expect(events.slice(0, 5).map(event => event.type)).toEqual([
+    'turn/start', 'step/start', 'system/message', 'user/message', 'session/title',
+  ])
+  expect(events.filter(event => event.type === 'system/message')).toHaveLength(1)
+  const firstUser = events.find(event => event.type === 'user/message')!
+  const title = events.find(event => event.type === 'session/title')!
+  expect(title.data.messageSeqs).toEqual([firstUser.seq])
+  const calls = events.filter(event => event.type === 'tool/call')
+  const results = events.filter(event => event.type === 'tool/result')
+  expect(calls).toHaveLength(22)
+  expect(results).toHaveLength(calls.length)
+  for (const result of results) {
+    const call = calls.find(event => event.data.callId === result.data.message.source.callId)!
+    expect(result.sourceEventSeqs).toEqual([call.seq])
+    expect(call.seq).toBeLessThan(result.seq)
+  }
+  expect(events.filter(event => event.type === 'turn/end')).toHaveLength(HISTORY_FIXTURE.turns)
+  expect(events.at(-1)?.type).toBe('turn/end')
+})
+
 let browser: Browser
 
 describe('web e2e: long Chat scroll contract', () => {
@@ -521,9 +550,9 @@ describe('web e2e: long Chat scroll contract', () => {
 
         await wheelTranscript(world.page, 420)
         const readerAnchor = await visibleFlowAnchor(world.page)
-        const chunksAfterAnchor = world.events.filter(event => event.type === 'assistant/chunk').length
+        const chunksAfterAnchor = world.assistantFrames.filter(frame => frame.type === 'chunk').length
         await expect.poll(
-          () => world.events.filter(event => event.type === 'assistant/chunk').length,
+          () => world.assistantFrames.filter(frame => frame.type === 'chunk').length,
           { timeout: 10_000 },
         ).toBeGreaterThan(chunksAfterAnchor + 5)
 
@@ -591,6 +620,18 @@ describe('web e2e: long Chat scroll contract', () => {
       await expect.poll(() => tooltip.count(), { timeout: 15_000 }).toBe(1)
       expect(await tooltip.textContent()).toContain(HISTORY_FIXTURE.markers.user(1))
       expect(await tooltip.textContent()).toContain(HISTORY_FIXTURE.markers.assistant(1))
+      const transcriptLayers = await tooltip.evaluate((preview) => {
+        const railSlot = preview.closest('nav')?.parentElement
+        const codeBanner = document.querySelector<HTMLElement>('.md-code-block > :first-child')
+        if (!(railSlot instanceof HTMLElement) || codeBanner === null) {
+          throw new Error('turn preview or code-block banner stacking context is unavailable')
+        }
+        return {
+          codeBanner: Number(getComputedStyle(codeBanner).zIndex),
+          rail: Number(getComputedStyle(railSlot).zIndex),
+        }
+      })
+      expect(transcriptLayers.rail).toBeGreaterThan(transcriptLayers.codeBanner)
       await world.page.keyboard.press('Enter')
 
       // The jump pages history in and lands on turn 1: its mark flips to the
@@ -643,40 +684,39 @@ describe('web e2e: long Chat scroll contract', () => {
         await liveRow.waitFor({ timeout: 15_000 })
         expect(await liveRow.getAttribute('data-state')).toBe('running')
         await expectBottom(world.page)
+        expect(await world.page.getByRole('button', { name: 'Back to bottom', exact: true }).count()).toBe(0)
 
         await wheelTranscript(world.page, -1_200)
         await world.page.getByRole('button', { name: 'Back to bottom', exact: true }).waitFor({ timeout: 10_000 })
         const awayAnchor = await visibleFlowAnchor(world.page)
-        const chunksBeforeRelease = world.events.filter(event => event.type === 'assistant/chunk').length
+        const chunksBeforeRelease = world.assistantFrames.filter(frame => frame.type === 'chunk').length
         await writeFile(releasePath, 'release\n')
         released = true
         await expect.poll(
-          () => world.events.some(event => event.type === 'tool/result'),
-          { timeout: 15_000 },
-        ).toBe(true)
-        await expect.poll(
-          () => world.events.some(event => eventCarries(event, LIVE_TOOL_FIRST)),
-          { timeout: 15_000 },
-        ).toBe(true)
-        await expect.poll(
-          () => world.events.filter(event => event.type === 'assistant/chunk').length,
+          () => world.assistantFrames.filter(frame => frame.type === 'chunk').length,
           { timeout: 15_000 },
         ).toBeGreaterThan(chunksBeforeRelease + 5)
-        await expectSameFlowTop(world.page, awayAnchor)
+        await nextPaint(world.page)
+        // The loop appends tool/result before starting the next model request;
+        // these synchronous Host listeners therefore observe it before later chunks.
+        expect(world.events.some(event => event.type === 'tool/result')).toBe(true)
+        expect(Math.abs((await flowTop(world.page, awayAnchor.key)) - awayAnchor.top))
+          .toBeLessThanOrEqual(GEOMETRY_TOLERANCE)
 
-        const chunksAtRepin = world.events.filter(event => event.type === 'assistant/chunk').length
+        const chunksAtRepin = world.assistantFrames.filter(frame => frame.type === 'chunk').length
         await world.page.getByRole('button', { name: 'Back to bottom', exact: true }).click()
-        await expectBottom(world.page)
         await expect.poll(
-          () => world.events.filter(event => event.type === 'assistant/chunk').length,
+          () => world.assistantFrames.filter(frame => frame.type === 'chunk').length,
           { timeout: 15_000 },
         ).toBeGreaterThan(chunksAtRepin + 5)
-        await expectBottom(world.page)
+        await nextPaint(world.page)
+        expect(Math.abs((await scrollGeometry(world.page)).distanceFromBottom)).toBeLessThanOrEqual(1)
       } finally {
         if (!released) await writeFile(releasePath, 'release\n').catch(() => {})
       }
 
       await settled
+      expect(world.events.some(event => eventCarries(event, LIVE_TOOL_FIRST))).toBe(true)
       await expect.poll(() => world.page.locator('[data-streaming="true"]').count(), { timeout: 15_000 }).toBe(0)
       await world.page.getByText(LIVE_TOOL_DONE, { exact: false }).last().waitFor({ timeout: 15_000 })
       await expectBottom(world.page)
@@ -880,7 +920,7 @@ describe('web e2e: long Chat scroll contract', () => {
         await flingTranscript(world.page, -900)
         await backToBottom.waitFor({ timeout: 10_000 })
         const awayAnchor = await visibleFlowAnchor(world.page)
-        const chunksBeforeRelease = world.events.filter(event => event.type === 'assistant/chunk').length
+        const chunksBeforeRelease = world.assistantFrames.filter(frame => frame.type === 'chunk').length
         await writeFile(releasePath, 'release\n')
         released = true
         await expect.poll(
@@ -888,7 +928,7 @@ describe('web e2e: long Chat scroll contract', () => {
           { timeout: 15_000 },
         ).toBe(true)
         await expect.poll(
-          () => world.events.filter(event => event.type === 'assistant/chunk').length,
+          () => world.assistantFrames.filter(frame => frame.type === 'chunk').length,
           { timeout: 15_000 },
         ).toBeGreaterThan(chunksBeforeRelease + 5)
         await expectSameFlowTop(world.page, awayAnchor)
@@ -902,9 +942,9 @@ describe('web e2e: long Chat scroll contract', () => {
         }
         await expectBottom(world.page)
         await expect.poll(() => backToBottom.count(), { timeout: 10_000 }).toBe(0)
-        const chunksAtRepin = world.events.filter(event => event.type === 'assistant/chunk').length
+        const chunksAtRepin = world.assistantFrames.filter(frame => frame.type === 'chunk').length
         await expect.poll(
-          () => world.events.filter(event => event.type === 'assistant/chunk').length,
+          () => world.assistantFrames.filter(frame => frame.type === 'chunk').length,
           { timeout: 15_000 },
         ).toBeGreaterThan(chunksAtRepin + 5)
         await expectBottom(world.page)

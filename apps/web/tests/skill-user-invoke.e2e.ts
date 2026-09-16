@@ -30,7 +30,7 @@ const UI_EXPANDED_EXPECTED = join(SNAPSHOT_DIR, 'ui-expanded.expected.md')
 const MODE = webSnapshotMode()
 
 const SKILL_NAME = 'user-invoke-demo'
-const ARGS_TEXT = 'and confirm the fixture wiring'
+const ARGS_TEXT = '@"meeting notes.md" and confirm the fixture wiring'
 const REPLY = 'USER_INVOKE_REPLY acknowledged; following the injected skill.'
 
 async function seedUserOnlySkill(workspaceCwd: string): Promise<void> {
@@ -78,6 +78,7 @@ describe.skipIf(MODE === 'record')('web e2e: user-explicit skill invocation thro
       paceMs: 10,
     })
     await seedUserOnlySkill(scaffold.workspaceCwd)
+    await writeFile(join(scaffold.workspaceCwd, 'workspace', 'meeting notes.md'), '# Meeting notes\n\nSent reference preview.\n')
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
     tripwire = watchConsole(page)
@@ -130,6 +131,10 @@ describe.skipIf(MODE === 'record')('web e2e: user-explicit skill invocation thro
     await settled
     const process = page.getByRole('button', { name: 'Thought for a while', exact: true })
     await process.waitFor({ state: 'visible', timeout: 10_000 })
+    // The chip derives from the step's logged injection, so it must survive
+    // every later Node rebuild of the Turn (process publication, turn close).
+    expect(await bubble.count()).toBe(1)
+    expect(await bubble.textContent()).toBe(`/${SKILL_NAME}`)
     await expandOwningTurnProcess(page, injectionFlow)
     const injectionRow = page.getByRole('button', { name: `Context injection ${SKILL_NAME}` })
     await injectionRow.click()
@@ -154,6 +159,28 @@ describe.skipIf(MODE === 'record')('web e2e: user-explicit skill invocation thro
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])
   }, 60_000)
+
+  it('previews sent skill and quoted file references with prose-link hover styling after reloading history', async () => {
+    onTestFailed(() => saveFailureShot(page, 'web-e2e-sent-reference-preview'))
+    await page.reload({ waitUntil: 'load' })
+    const skill = page.locator('[data-chat-flow-kind="user"] [data-ref-chip="skill"]').first()
+    await skill.waitFor({ timeout: 15_000 })
+    const preview = page.locator('[data-document-markdown]')
+    await skill.hover()
+    await expect.poll(() => skill.evaluate(el => getComputedStyle(el).textDecorationStyle)).toBe('dotted')
+    await skill.click()
+    await expect.poll(() => preview.textContent(), { timeout: 10_000 }).toContain('Reply with the fixture acknowledgement line.')
+    const file = page.locator('[data-chat-flow-kind="user"] [data-ref-chip="file"]').first()
+    await file.hover()
+    expect(await file.evaluate(el => getComputedStyle(el).textDecorationStyle)).toBe('dotted')
+    await file.click()
+    await expect.poll(() => preview.textContent()).toContain('Sent reference preview.')
+    await skill.click()
+    await expect.poll(() => preview.textContent()).toContain('Reply with the fixture acknowledgement line.')
+    expect(await page.locator('[data-chat-flow-kind="user"]').first().textContent()).toContain('and confirm the fixture wiring')
+    expect(tripwire.pageErrors).toEqual([])
+    expect(tripwire.warnings).toEqual([])
+  })
 
   it('keeps its snapshot inventory closed', async () => {
     await assertFixtureInventory(SNAPSHOT_DIR, ['ui.expected.md', 'ui-expanded.expected.md'])

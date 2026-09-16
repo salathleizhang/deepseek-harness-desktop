@@ -9,7 +9,7 @@ kind: "package-group"
 
 ## 概述
 
-boot 组提供每个 dsh app bin 启动所需的全部能力：`app-boot` 把 `cordis.yml` 连同你的环境与 patch 层变成运行中的应用，并给出清晰的失败信息；`cmdline` 让应用持有自己的命令行 flag 与 `--help`。借助这些包，你可以运行 `dsh`，也可以编写以同样方式启动的新应用或测试 fixture。两者都是 `apps/cli` 与测试专用 Loader fixture 导入的库，绝不是组合加载的插件。本页是组的映射；各包 README 负责各自的包级约定。
+boot 组提供每个 dsh app bin 启动所需的全部能力：`app-boot` 把 `cordis.yml` 连同你的环境与 patch 层变成运行中的应用，并给出清晰的失败信息；`cmdline` 让应用持有自己的命令行 flag 与 `--help`。借助这些包，你可以运行 `dsh`，也可以编写以同样方式启动的新应用或测试用 fixture（测试前置数据）。两者都是 `apps/cli` 与测试专用 Loader fixture 导入的库，绝不是组合加载的插件。本页列出该包组的构成；各包 README 负责各自的包级约定。
 
 ## 目录
 
@@ -31,7 +31,7 @@ boot 组提供每个 dsh app bin 启动所需的全部能力：`app-boot` 把 `c
 - [dsh 应用](../../apps/cli/README.zh.md)——在其启动序列中使用这些 helper 的 `dsh` bin。
 - [Profile 组合包](../bundle/README.zh.md)——可由 `dsh --profile` 组合挂载的可安装 patch 层。
 - [dsh-home-paths](../util/home-paths/README.zh.md)——两个包都依赖的 harness home 解析器。
-- [应用持有命令行决策](../../.agents/notes/implemented/architecture/2026-08-06-app-owned-command-line.zh.md)——为什么 flag 家族由应用持有而非启动器。
+- [dsh-cmdline](cmdline/README.zh.md)——flag 家族如何由应用持有而非启动器。
 
 <a id="dev-note"></a>
 ## 开发备注

@@ -26,8 +26,8 @@ afterEach(async () => {
 describe.skipIf(!process.env.DEEPSEEK_API_KEY)('todo_write: real model records a plan', () => {
   it('appends a todo/write event with the model-produced task list', async () => {
     workdir = await mkdtemp(join(tmpdir(), 'dsh-todo-write-e2e-'))
-    ctx = await codingHarness(workdir, { persona: TODO_SYSTEM_PROMPT })
-    const agent = ctx.agentLoop.create(SessionId('e2e-todo'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    ctx = await codingHarness(workdir, { personaPrefix: TODO_SYSTEM_PROMPT })
+    const agent = await ctx.agentLoop.create(SessionId('e2e-todo'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
 
     agent.followup(createUserMessage({
       content: [{ type: 'text', text:
@@ -37,7 +37,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('todo_write: real model records a
       + 'Send all three in one todo_write call, then reply with the single word DONE.' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
-    const events = [...agent.session.events]
+    const events = agent.session.snapshotEvents()
 
     // The model actually called the tool.
     const calls = events.filter(event => event.type === 'tool/call')

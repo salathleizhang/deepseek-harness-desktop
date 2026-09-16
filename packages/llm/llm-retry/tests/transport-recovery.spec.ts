@@ -1,4 +1,4 @@
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, expandAssistantStream } from '@deepseek-ai/dsh-llm'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,7 +10,7 @@ import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import type { MockLlmBehavior, MockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import * as Retry from '../src/index.ts'
 
 let context: Context | undefined
@@ -38,8 +38,8 @@ async function harness(
   vi.stubEnv('DEEPSEEK_API_KEY', 'mock-key')
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(LlmDeepSeek, {
+    protocol: 'chat-completions',
     baseURL,
     streamIdleTimeoutMs: options.streamIdleTimeoutMs ?? 1_000,
     retryPolicy: {
@@ -88,7 +88,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
   it('recovers from a true refused connection after the endpoint starts during backoff', async () => {
     const port = await unusedPort()
     context = await harness(`http://127.0.0.1:${port}`, { initialDelayMs: 100 })
-    const agent = context.agentLoop.create(SessionId('wire-refused'), {
+    const agent = await context.agentLoop.create(SessionId('wire-refused'), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -103,10 +103,10 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
 
     expect(server).toBeDefined()
     expect(server?.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'step/start')
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'step/start')
       .map(event => [event.data.turn, event.data.step]))
       .toEqual([[1, 1]])
-    expect(agent.session.events.filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
       .toEqual(['TRANSPORT'])
     expect(finalAssistantText(agent)).toBe('connected after retry')
   })
@@ -123,7 +123,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
       successText: 'recovered response',
     })
     context = await harness(server.baseURL)
-    const agent = context.agentLoop.create(SessionId(`wire-${behavior}`), {
+    const agent = await context.agentLoop.create(SessionId(`wire-${behavior}`), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -132,16 +132,18 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
 
     expect(server.requests).toHaveLength(2)
     expect(server.requests[0]?.body).toEqual(server.requests[1]?.body)
-    const retryEvent = agent.session.events.find(event => event.type === 'llm/retry')
-    expect(agent.session.events.filter(event =>
-      event.type === 'assistant/chunk'
+    const retryEvent = agent.session.snapshotEvents().find(event => event.type === 'llm/retry')
+    const failedAttempts = agent.session.snapshotEvents().filter((event): event is SessionEvent<'assistant/attempt'> =>
+      event.type === 'assistant/attempt'
       && retryEvent !== undefined
       && event.seq < retryEvent.seq,
-    )).toHaveLength(failedChunkCount)
-    expect(agent.session.events.filter(event => event.type === 'assistant/message')
+    )
+    expect(failedAttempts).toHaveLength(1)
+    expect(expandAssistantStream(failedAttempts[0]!.data.stream)).toHaveLength(failedChunkCount)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')
       .map(event => [event.data.turn, event.data.step]))
       .toEqual([[1, 1]])
-    expect(agent.session.events.filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
       .toEqual(['TRANSPORT'])
     expect(finalAssistantText(agent)).toBe('recovered response')
   })
@@ -152,7 +154,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
       successText: 'recovered from empty',
     })
     context = await harness(server.baseURL)
-    const agent = context.agentLoop.create(SessionId('wire-empty'), {
+    const agent = await context.agentLoop.create(SessionId('wire-empty'), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -161,12 +163,12 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
 
     expect(server.requests).toHaveLength(2)
     expect(server.requests[0]?.body).toEqual(server.requests[1]?.body)
-    expect(agent.session.events.filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
       .toEqual(['EMPTY_RESPONSE'])
-    expect(agent.session.events.filter(event => event.type === 'assistant/message')
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')
       .map(event => [event.data.turn, event.data.step]))
       .toEqual([[1, 1]])
-    expect(agent.session.events.at(-1)).toMatchObject({
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({
       type: 'turn/end',
       data: { reason: { kind: 'completed' } },
     })
@@ -180,7 +182,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
       chunkSize: 100,
     })
     context = await harness(server.baseURL)
-    const agent = context.agentLoop.create(SessionId('wire-partial-eof'), {
+    const agent = await context.agentLoop.create(SessionId('wire-partial-eof'), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -188,12 +190,11 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
     await sendAndWait(context, agent)
 
     expect(server.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event =>
-      event.type === 'assistant/chunk' && event.data.turn === 1,
-    )).toHaveLength(3)
-    expect(agent.session.events.some(event => event.type === 'assistant/message')).toBe(false)
-    expect(agent.session.events.some(event => event.type === 'llm/retry')).toBe(false)
-    expect(agent.session.events.at(-1)).toMatchObject({
+    const attempt = agent.session.snapshotEvents().find(event => event.type === 'assistant/attempt' && event.data.turn === 1)
+    expect(attempt?.type === 'assistant/attempt' ? expandAssistantStream(attempt.data.stream) : []).toHaveLength(3)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'assistant/message')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'llm/retry')).toBe(false)
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'SSE stream ended without [DONE]', code: 'STREAM_CLOSED' } } },
     })
@@ -207,7 +208,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
     // This crosses the real HTTP idle timer, so leave scheduler slack between
     // the stalled attempt and the mock server's immediate successful response.
     context = await harness(server.baseURL, { streamIdleTimeoutMs: 1_000 })
-    const agent = context.agentLoop.create(SessionId('wire-stall'), {
+    const agent = await context.agentLoop.create(SessionId('wire-stall'), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -215,7 +216,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
     await sendAndWait(context, agent)
 
     expect(server.requests.map(record => record.behavior)).toEqual(['stall', 'success'])
-    expect(agent.session.events.filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/retry').map(event => event.data.failure.code))
       .toEqual(['TIMEOUT'])
     expect(finalAssistantText(agent)).toBe('recovered after timeout')
   }, 10_000)
@@ -225,7 +226,7 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
       apiKey: 'mock-key',
     })
     context = await harness(server.baseURL)
-    const agent = context.agentLoop.create(SessionId('wire-exhausted'), {
+    const agent = await context.agentLoop.create(SessionId('wire-exhausted'), {
       provider: 'deepseek-official',
       model: 'mock-model',
     })
@@ -233,9 +234,9 @@ describe('bounded retry through the real DeepSeek HTTP/SSE adapter', () => {
     await sendAndWait(context, agent)
 
     expect(server.requests).toHaveLength(3)
-    expect(agent.session.events.filter(event => event.type === 'step/start')).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'llm/retry')).toHaveLength(2)
-    const end = agent.session.events.at(-1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'step/start')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/retry')).toHaveLength(2)
+    const end = agent.session.snapshotEvents().at(-1)
     expect(end).toMatchObject({
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { code: 'TRANSPORT' } } },

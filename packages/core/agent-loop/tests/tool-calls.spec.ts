@@ -14,15 +14,15 @@ import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop, { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
-import { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
-import type { CodeRunRequest, CodeRunResult } from '@deepseek-ai/dsh-code-runtime'
+import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
+import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 
 async function harness(adapter: MockAdapter, maxParallelToolCalls?: number) {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(SystemPrompt, { persona: '' })
+  await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, {
@@ -41,8 +41,8 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
   })
 }
 
-function events(agent: Agent): SessionEvent[] {
-  return [...agent.session.events]
+function events(agent: Agent): readonly SessionEvent[] {
+  return agent.session.snapshotEvents()
 }
 
 /** Build one assistant response containing the supplied tool calls. */
@@ -107,7 +107,7 @@ describe('tool-call scheduler: grouping and barriers', () => {
     const ctx = await harness(adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 3)
@@ -136,7 +136,7 @@ describe('tool-call scheduler: grouping and barriers', () => {
       name: 'w', description: 'write', parameters: { id: { type: 'string', required: true } },
       async execute(args) { order.push(`w-${args.id}`); return [{ type: 'text', text: 'w' }] },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
@@ -171,7 +171,7 @@ describe('tool-call scheduler: grouping and barriers', () => {
         return [{ type: 'text', text: 'replaced' }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => replacement.started.length === 1)
@@ -202,7 +202,7 @@ describe('tool-call scheduler: grouping and barriers', () => {
       disposeInitial()
       ctx.tools.register(replacement.tool)
     })
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => initial.started.length === 2)
@@ -228,7 +228,7 @@ describe('tool-call scheduler: model-order results despite out-of-order settleme
     const ctx = await harness(adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
@@ -251,7 +251,7 @@ describe('tool-call scheduler: model-order results despite out-of-order settleme
     const ctx = await harness(adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
     gated.release('2'); gated.release('1')
@@ -283,7 +283,7 @@ describe('tool-call scheduler: rolling pool honors maxParallelToolCalls', () => 
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt, { persona: '' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: '' })
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
 
@@ -300,7 +300,7 @@ describe('tool-call scheduler: rolling pool honors maxParallelToolCalls', () => 
     const ctx = await harness(adapter, 2)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
@@ -332,7 +332,7 @@ describe('tool-call scheduler: rolling pool honors maxParallelToolCalls', () => 
     const ctx = await harness(adapter, 1)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 1)
     await new Promise(r => setTimeout(r, 5))
@@ -352,14 +352,14 @@ describe('tool-call scheduler: rolling pool honors maxParallelToolCalls', () => 
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt, { persona: '' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: '' })
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 })
     ctx.llm.registerAdapter(['mock'], adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 1)
     await new Promise(r => setTimeout(r, 5))
@@ -385,7 +385,7 @@ describe('tool-call scheduler: ordered middleware and additional contexts', () =
     const post: string[] = []
     ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => { pre.push(String(exec.callId)); return next() })
     ctx.on('tools/post-execute', async (exec, _result, next): Promise<PostToolDecision> => { post.push(String(exec.callId)); return next() })
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 3)
@@ -408,7 +408,7 @@ describe('tool-call scheduler: ordered middleware and additional contexts', () =
       ({ kind: 'accept', additionalContexts: [createUserMessage({
         content: [{ type: 'text', text: `ctx-${exec.callId}` }], source: { kind: 'plugin', plugin: 'p' },
       })] }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
@@ -438,7 +438,13 @@ describe('tool-call scheduler: ordered middleware and additional contexts', () =
     ctx.tools.register(gated.tool)
     const post: string[] = []
     ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      if (exec.callId === ToolCallId('c2')) return { kind: 'deny', reason: 'blocked by policy' }
+      if (exec.callId === ToolCallId('c2')) {
+        return {
+          kind: 'deny',
+          reason: 'blocked by policy',
+          info: { name: 'AutoReviewDeniedError', code: 'AUTO_REVIEW_DENIED', reason: 'exact scope was not authorized' },
+        }
+      }
       if (exec.callId === ToolCallId('c3')) throw new Error('pre exploded')
       return next()
     })
@@ -446,7 +452,7 @@ describe('tool-call scheduler: ordered middleware and additional contexts', () =
       post.push(String(exec.callId))
       return next()
     })
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 1)
@@ -458,6 +464,9 @@ describe('tool-call scheduler: ordered middleware and additional contexts', () =
     const results = events(agent).filter(e => e.type === 'tool/result')
     expect(results.map(e => e.data.message.source.callId)).toEqual([ToolCallId('c1'), ToolCallId('c2'), ToolCallId('c3')])
     expect((results[1]!.data.message.content[0].content[0] as { text: string }).text).toContain('blocked by policy')
+    expect(results[1]!.data.error).toEqual({
+      name: 'AutoReviewDeniedError', code: 'AUTO_REVIEW_DENIED', reason: 'exact scope was not authorized',
+    })
     expect((results[2]!.data.message.content[0].content[0] as { text: string }).text).toContain('pre exploded')
   })
 })
@@ -471,7 +480,7 @@ describe('tool-call scheduler: abort handling', () => {
     const ctx = await harness(adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     ctx.on('session/event', (session, event) => {
       if (session === agent.session && event.type === 'assistant/message') {
         agent.cancel({ kind: 'user' })
@@ -502,7 +511,7 @@ describe('tool-call scheduler: abort handling', () => {
     const ctx = await harness(adapter)
     const gated = gatedParallelTool('p')
     ctx.tools.register(gated.tool)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
       if (exec.callId === ToolCallId('c1')) {
         agent.cancel({ kind: 'user' })
@@ -540,7 +549,7 @@ describe('tool-call scheduler: abort handling', () => {
         content: [{ type: 'text', text: `ctx-${exec.callId}` }], source: { kind: 'plugin', plugin: 'p' },
       })],
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
@@ -613,7 +622,7 @@ describe('tool-call scheduler: abort handling', () => {
       parameters: { id: { type: 'string', required: true } },
       async execute(args) { exclusive.push(args.id); return [{ type: 'text', text: 'x' }] },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await until(() => gated.started.length === 2)
@@ -669,7 +678,7 @@ describe('tool-call scheduler: failure quiescence', () => {
     scheduler.dispatch = exec => exec.callId === ToolCallId('c1')
       ? new Promise((_resolve, reject) => { rejectFirst = reject })
       : dispatch(exec).then(() => { throw drainedError })
-    const agent = ctx.agentLoop.create(SessionId('scheduler-failure'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('scheduler-failure'), { provider: 'mock', model: 'mock' })
     let idle = false
     const idlePromise = waitForIdle(ctx, agent).then(() => { idle = true })
 
@@ -697,11 +706,13 @@ describe('tool-call scheduler: failure quiescence', () => {
 })
 
 describe('PTC mode native-tool denial through the agent loop', () => {
-  /** A minimal in-process code runtime for test purposes — never actually runs. */
-  class FakeCodeRuntime extends CodeRuntime {
+  /** A minimal in-process PTC runtime for test purposes — never actually runs. */
+  class FakePtcRuntime extends PtcRuntime {
+    resolve(request: import('@deepseek-ai/dsh-ptc-runtime').PtcRunRequest): import('@deepseek-ai/dsh-ptc-runtime').PtcRunSpec { return { ...request, cwd: request.cwd ?? process.cwd(), timeoutMs: request.timeoutMs ?? 120_000 } }
+
     readonly language = 'typescript'
     readonly isolation = 'fake' as const
-    async run(_request: CodeRunRequest): Promise<CodeRunResult> {
+    async run(_request: PtcRunRequest): Promise<PtcRunResult> {
       return { logs: [] }
     }
   }
@@ -711,10 +722,10 @@ describe('PTC mode native-tool denial through the agent loop', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt, { persona: '' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: '' })
     await ctx.plugin(ToolRuntime, { mode: 'ptc' })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FakeCodeRuntime is an internal test helper with an opaque type shape
-    await ctx.plugin(FakeCodeRuntime as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FakePtcRuntime is an internal test helper with an opaque type shape
+    await ctx.plugin(FakePtcRuntime as any)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     ctx.llm.registerAdapter(['mock'], adapter)
@@ -748,7 +759,7 @@ describe('PTC mode native-tool denial through the agent loop', () => {
     const ctx = await ptcModeHarness(adapter)
     ctx.tools.register(tool)
 
-    const agent = ctx.agentLoop.create(SessionId('code-native'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('code-native'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'write a file' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 

@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-挂载 `dsh-typert-loader` 后，Loader 组合中每个挂载的包都会自动把其生成的 Typert 反射与 schema 贡献给运行时注册表——并在包或本插件卸载时自动撤销。没有该导出的包会被跳过，因此在任何 Loader 组合中挂载它都是安全的。显式 `packages` 用于覆盖嵌套在另一 Loader 配置项之下的插件，这些插件的 fiber 不携带可解析的包说明符。它是仅支持 Node 的插件，需要配置树解析锚点才能解析包。
+挂载 `dsh-typert-loader` 后，Loader 组合中每个挂载的包都会自动把其生成的 Typert 反射与 schema factory 贡献给运行时注册表——并在包或本插件卸载时自动撤销。没有该导出的包会被跳过，因此在任何 Loader 组合中挂载它都是安全的。显式 `packages` 用于覆盖嵌套在另一 Loader 配置项之下的插件，这些插件的 fiber 不携带可解析的包说明符。它是仅支持 Node 的插件，需要配置树解析锚点才能解析包。
 
 ## 目录
 
@@ -40,15 +40,15 @@ kind: "package-reference"
 |---|---|---|
 | `packages` | `[]` | 为嵌套在另一 Loader 配置项下的插件额外注册的包产物；每个包都必须能从配置树解析，并导出 `./typert` |
 
-生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-typert-loader)是每个受支持字段的穷尽式真源。
+生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-typert-loader)是所有受支持字段的完整真源。
 
 ### 注册什么
 
-每个符合条件的 Loader 配置项都会把其生成的宿主侧反射与 schema 贡献给运行时注册表。注册跟随配置项生命周期：配置项或本插件卸载时撤销；在两者都已消失后才结束的注册会被丢弃。
+每个符合条件的 Loader 配置项都会把其生成的宿主侧反射与 schema factory 贡献给运行时注册表。注册跟随配置项生命周期：配置项或本插件卸载时撤销；在配置项或本插件任一方卸载后才结束的导入操作会被丢弃。
 
 ### 可观察行为与失败
 
-没有该导出的包会被静默跳过。解析结论与已导入的 manifest 会在整个进程生命周期内缓存，因此新增 `./typert` 导出后必须重启。已挂载配置项对应的产物格式错误时，激活会大声失败；之后才发生的失败按包记录日志，不会阻止无关包完成注册。无法从配置树解析、或缺少该导出的显式 `packages` 条目会大声失败并指名该包。
+没有该导出的包会被静默跳过。解析结论与已导入的 manifest（元数据清单）会在整个进程生命周期内缓存，因此新增 `./typert` 导出后必须重启。已挂载配置项对应的产物格式错误时，激活会明确报错；之后才发生的失败按包记录日志，不会阻止无关包完成注册。无法从配置树解析、或缺少该导出的显式 `packages` 条目会明确报错并指名该包。
 
 -----
 
@@ -62,11 +62,11 @@ kind: "package-reference"
 
 ### 设计理念
 
-本插件是一个增量扫描器，与 client-modules 的 Node 半实现对称：每次 Cordis `internal/plugin` 事件都会把该 fiber 的配置项名称标记为脏，微任务 flush 会针对实时 Loader 配置项逐一调和每个脏名称；激活阶段用所有当前配置项填充同一脏集合。
+本插件是一个增量扫描器，与 client-modules 的 Node 侧实现对称：每次 Cordis `internal/plugin` 事件都会把该 fiber 的配置项名称标记为脏，微任务 flush 会针对实时 Loader 配置项逐一调和每个脏名称；激活阶段用所有当前配置项填充同一脏集合。
 
 ### Manifest 校验
 
-`validateTypertManifest()` 是模块／文件边界：manifest 从构建产物进入类型化注册表，因此每个字段都会被检查。manifest 必须指名导出它的包、携带 `host` face、持有 zod v4 schema 实例，并保持服务、事件、对象、成员、类型与文档记录格式正确；调用描述符必须使用严格编解码器。每次失败都会指名包与缺陷。
+`validateTypertManifest()` 是模块／文件边界：manifest 从构建产物进入类型化注册表，因此每个字段都会被检查。manifest 必须指名导出它的包、携带 `host` face、持有 schema factory，并保持服务、事件、对象、成员、类型与文档记录格式正确；调用描述符必须使用带 factory 的严格编解码器。每次失败都会指名包与缺陷。
 
 ### 缓存与归属
 
@@ -76,8 +76,8 @@ kind: "package-reference"
 
 | 文件 | 职责 |
 |---|---|
-| [`src/index.ts`](src/index.ts) | 插件入口：`Config`、扫描器、manifest 校验、注册接线 |
-| [`src/invariant.ts`](src/invariant.ts) | 不变式伴生插件 |
+| [`src/index.ts`](src/index.ts) | 插件入口：`Config`、扫描器、manifest 校验、注册装配逻辑 |
+| — | 不发布运行时不变式伴生入口；Loader 配置项的生命周期直接持有每个对应的注册表资源释放函数，集成测试会观察注册与移除。 |
 
 </details>
 
@@ -86,7 +86,7 @@ kind: "package-reference"
 <a id="further-exploration"></a>
 ## 进一步探索
 
-当包级约定不够用时阅读以下页面；它们从 loader 逐步进入它注册什么以及什么产生这些内容。
+当包级约定不够用时阅读以下页面；这些页面从 loader 开始，依次介绍它注册的内容及其生成方。
 
 - [Typert 注册表](../registry/README.zh.md)——本插件所供给的服务。
 - [Typert 生成器](../generator/README.zh.md)——产生 loader 所导入产物的包。
@@ -102,7 +102,7 @@ kind: "package-reference"
 
 #### KV Cache 影响
 
-无直接影响；注册变化只有在消费方读取注册表时才会触及请求。
+无直接影响；注册变更只有通过读取注册表的消费方才会影响请求。
 
 ## 已知限制与延期工作
 

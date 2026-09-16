@@ -3,15 +3,18 @@
 // and projects each pick as a complete inline range without issuing a model call.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Browser, Page } from 'playwright'
+import type { Browser, Locator, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
 import {
   SESSION_FORMAT_VERSION,
   Session,
   SessionId,
+  SessionSeq,
 } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-reference/types'
 import type {} from '@deepseek-ai/dsh-session-title'
@@ -33,6 +36,16 @@ const ORDER_EXPECTED = join(SNAPSHOT_DIR, 'order.expected.md')
 const MODE = webSnapshotMode()
 const SOURCE_SESSION_ID = 'reference-source-session'
 const TARGET_SESSION_ID = 'reference-order-target-session'
+
+async function settledSourceOption(menu: Locator): Promise<Locator> {
+  await expect.poll(
+    () => menu.getByRole('option', { name: new RegExp(TARGET_SESSION_ID) }).count(),
+    { timeout: 15_000 },
+  ).toBe(0)
+  const source = menu.getByRole('option', { name: new RegExp(SOURCE_SESSION_ID) })
+  await expect.poll(() => source.count(), { timeout: 15_000 }).toBe(1)
+  return source
+}
 
 /** Build one closed source session with a stable title for reference discovery. */
 function sourceSessionFixture(): string {
@@ -57,8 +70,10 @@ function sourceSessionFixture(): string {
       id: '{{sessionId}}',
       createdAt: 0,
       cwd: '{{cwd}}',
+      isSeeded: false,
+      delegationDepth: 0,
     }),
-    ...session.events.map(event => JSON.stringify(event)),
+    ...session.snapshotEvents().map(event => JSON.stringify(event)),
     '',
   ].join('\n')
 }
@@ -80,7 +95,7 @@ function targetSessionFixture(): string {
       references: [{
         sessionId: SOURCE_SESSION_ID,
         label: 'Research notes',
-        capturedThroughSeq: 4,
+        capturedThroughSeq: SessionSeq(4),
         compacted: false,
         originalMessages: 2,
         retainedMessages: 2,
@@ -104,8 +119,10 @@ function targetSessionFixture(): string {
       id: '{{sessionId}}',
       createdAt: 0,
       cwd: '{{cwd}}',
+      isSeeded: false,
+      delegationDepth: 0,
     }),
-    ...session.events.map(event => JSON.stringify(event)),
+    ...session.snapshotEvents().map(event => JSON.stringify(event)),
     '',
   ].join('\n')
 }
@@ -118,8 +135,9 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({})
-    await seedSession(scaffold, sourceSessionFixture(), SOURCE_SESSION_ID)
-    await seedSession(scaffold, targetSessionFixture(), TARGET_SESSION_ID)
+    const targetCreatedAt = Date.now() - 60_000
+    await seedSession(scaffold, sourceSessionFixture(), SOURCE_SESSION_ID, undefined, { createdAt: targetCreatedAt - 1 })
+    await seedSession(scaffold, targetSessionFixture(), TARGET_SESSION_ID, undefined, { createdAt: targetCreatedAt })
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
     tripwire = watchConsole(page)
@@ -150,12 +168,15 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     const input = page.locator('[data-composer-input]').first()
     const menu = page.getByRole('listbox', { name: 'Trigger suggestions' })
 
-    await input.fill('@')
+    await writeComposerDraft(page, input, '@')
     await expect.poll(() => menu.getByRole('option').count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(2)
     // Session rows are dated from the live Host list, so their age bucket
     // advances while the suite runs.
     const snapshot = await captureStableAria(
-      page, '[role="listbox"]', scaffold.workspaceCwd, { normalizeAge: true },
+      page, '[role="listbox"]', scaffold.workspaceCwd, {
+        normalizeAge: true,
+        replacements: [[abbreviateHomePath(scaffold.workspaceCwd, homedir()), '{{cwd}}']],
+      },
     )
     await compareOrRefreshGolden(MENU_EXPECTED, snapshot, MODE)
     expect(snapshot).toContain('Files & folders')
@@ -170,7 +191,7 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     expect(snapshot).not.toContain('Research notes')
     expect(snapshot).not.toContain('text: Subagents')
 
-    await input.fill('@reference')
+    await writeComposerDraft(page, input, '@reference')
     // The open menu keeps the previous query's rows while the new one loads
     // (stale-while-revalidate), and rows are keyed by index, so a click
     // resolved against a stale row lands on whatever settles into that slot.
@@ -186,8 +207,8 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     await expect.poll(() => fileReference.locator('svg').count()).toBe(1)
     await expect.poll(() => input.textContent()).toBe('reference.txt ')
 
-    await input.fill('@reference-source')
-    await menu.getByRole('option', { name: new RegExp(SOURCE_SESSION_ID) }).click()
+    await writeComposerDraft(page, input, '@reference-source')
+    await (await settledSourceOption(menu)).click()
     const sessionReference = page.locator('[data-composer-chip]').last()
     await expect.poll(() => sessionReference.textContent()).toBe(SOURCE_SESSION_ID)
     await expect.poll(() => sessionReference.locator('svg').count()).toBe(1)
@@ -202,8 +223,10 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     const input = page.locator('[data-composer-input]').first()
     const menu = page.getByRole('listbox', { name: 'Trigger suggestions' })
 
-    await input.fill('@reference')
-    await menu.getByRole('option', { name: /reference\.txt/ }).click()
+    await writeComposerDraft(page, input, '@reference.txt')
+    await expect.poll(() => input.locator('[data-composer-chip]').count()).toBe(0)
+    await expect.poll(() => menu.getByRole('option').allTextContents()).toEqual(['reference.txt'])
+    await menu.getByRole('option', { name: 'reference.txt', exact: true }).click()
     await expect.poll(() => input.locator('[data-composer-chip]').count()).toBe(1)
 
     // The #2813 gesture: collapse the caret to the document start, directly
@@ -212,7 +235,7 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     await page.keyboard.press('ControlOrMeta+A')
     await page.keyboard.press('ArrowLeft')
     await page.keyboard.type('@reference-source')
-    await menu.getByRole('option', { name: new RegExp(SOURCE_SESSION_ID) }).click()
+    await (await settledSourceOption(menu)).click()
 
     // Both chips survive the boundary insert: the session chip lands ahead of
     // the intact file chip.
@@ -231,8 +254,10 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     const input = page.locator('[data-composer-input]').first()
     const menu = page.getByRole('listbox', { name: 'Trigger suggestions' })
 
-    await input.fill('@reference')
-    await menu.getByRole('option', { name: /reference\.txt/ }).click()
+    await writeComposerDraft(page, input, '@reference.txt')
+    await expect.poll(() => input.locator('[data-composer-chip]').count()).toBe(0)
+    await expect.poll(() => menu.getByRole('option').allTextContents()).toEqual(['reference.txt'])
+    await menu.getByRole('option', { name: 'reference.txt', exact: true }).click()
     await expect.poll(() => input.locator('[data-composer-chip]').count()).toBe(1)
 
     // First ArrowLeft crosses the trailing space; the second steps across the
@@ -333,6 +358,7 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     // A crumb above the current step re-lists that directory and keeps the
     // header, which now names the step it returned to.
     await writeComposerDraft(page, input, '@folderx/nested')
+    await expect.poll(() => menu.getByRole('option', { name: /child\.txt/ }).count()).toBe(0)
     const nested = menu.getByRole('option', { name: /^nested\// })
     await nested.waitFor()
     await nested.getByRole('button', { name: 'Browse folder' }).click()
@@ -360,7 +386,11 @@ describe.skipIf(MODE === 'record')('web e2e: file and session references through
     const group = page.getByRole('treeitem', { name: /Ungrouped/ })
     await group.waitFor({ timeout: 15_000 })
     if (await group.getAttribute('aria-expanded') !== 'true') await group.click()
-    const target = page.getByRole('treeitem', { name: /Reference order target/ })
+    // Both logs were written behind the running Host and have no cache rows, so
+    // cold listing uses their shared Workspace fallback. Explicit creation
+    // times keep the target first without opening either body for a title.
+    const groupSection = group.locator('xpath=ancestor::*[contains(@class, "groupSection")][1]')
+    const target = groupSection.locator('[role="treeitem"]').nth(1)
     await target.waitFor({ timeout: 15_000 })
     await target.click()
     await page.getByRole('button', { name: /^Session recall\s*Research notes$/ }).waitFor({ timeout: 15_000 })

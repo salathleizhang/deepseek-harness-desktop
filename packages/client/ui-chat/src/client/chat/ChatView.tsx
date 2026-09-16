@@ -1,12 +1,13 @@
 // An enclosing `[data-conversation-scroll]` owns scrolling when present;
 // otherwise this view owns it. Each row subscribes to one stable node key.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import type {
   ConversationTimelineSnapshot, RenderMessageImages,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { Button, IconChevronDownOutline14, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ChatViewSlotProps } from '../contract/slots.ts'
+import type { ChatViewSlotProps, OpenFileOptions } from '../contract/slots.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
 import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
@@ -16,10 +17,16 @@ import { formatRunDuration } from './message-chrome.ts'
 import css from './ChatView.module.css'
 
 const FOLLOW_THRESHOLD = 24
+const SCROLL_SAMPLE_INTERVAL_MS = 500
 
 /** Active column host when present; otherwise the view-local scroller. */
 function scrollerOf(from: HTMLElement): HTMLElement {
   return (from.closest('[data-conversation-scroll]')) ?? from
+}
+
+/** Browser shrink clamps and recorded writes do not transfer scroll ownership. */
+function readerMovedScroll(top: number, floor: number, observedTop: number): boolean {
+  return Math.abs(top - Math.min(observedTop, floor)) > 0.5
 }
 
 interface PagingAnchor {
@@ -122,11 +129,6 @@ function openFailureMessage(error: unknown, fallback: string): string {
   return message === '' ? fallback : message
 }
 
-/** ProducedFiles opens the session workspace as `.`. */
-function isFolderOpenPath(path: string): boolean {
-  return path === '.'
-}
-
 /**
  * Prompt-RPC identities already rendered by durable material: user/steering
  * node sources plus queue occurrences. A submission echo whose identity
@@ -198,13 +200,24 @@ function TurnStatus({ startTime, t }: {
   )
 }
 
+type ChatNodeListProps = Omit<ComponentProps<typeof ChatNodeSeat>, 'nodeKey'> & {
+  readonly order: readonly string[]
+}
+
+const ChatNodeList = memo(function ChatNodeList({ order, ...seatProps }: ChatNodeListProps) {
+  return order.map(nodeKey => (
+    <ChatNodeSeat key={nodeKey} nodeKey={nodeKey} {...seatProps} />
+  ))
+})
+
 /**
  * The chat view slot entry: pure component over the composed props; each
  * ordered business Node crosses the keyed renderer seat.
  */
 export function ChatView({
-  useSession, useChat, useSessions, useStore, actions, renderSlot, sessionId, openFile, loadOlder, loadThrough,
-  loadImage, openView, chatScroll, forkAt, fileMentions, useTranscriptView, useProjection, t,
+  useSession, useChat, useChatNode, useChatNodeProcess, useSessions, useStore, actions, renderSlot,
+  sessionId, openFile, openSkill, loadOlder, loadThrough, loadImage, openView, chatScroll, forkAt, fileMentions,
+  useTranscriptView, useProjection, t,
 }: ChatViewSlotProps) {
   const order = useChat(s => s.order)
   const nodeStore = useChat(s => s.nodes)
@@ -228,7 +241,6 @@ export function ChatView({
   const openError = useSession(s => s.openError)
   const hasMore = useSession(s => s.hasMore)
   const loadingOlder = useSession(s => s.loadingOlder)
-  const selectedCallId = useStore(s => s.selection?.callId)
   const compactTranscript = useTranscriptView(mode => mode === 'compact')
   const inspectCall = useCallback((callId: string) => {
     openView('trajectory', callId)
@@ -239,10 +251,10 @@ export function ChatView({
   // gesture; otherwise a cancelled in-flight refusal reopens the dialog.
   const fileOpenRequest = useRef(0)
 
-  const requestOpenFile = useCallback((path: string) => {
+  const requestOpenFile = useCallback((path: string, options?: OpenFileOptions) => {
     const id = ++fileOpenRequest.current
     setFileOpenBusy(true)
-    void openFile(path).then(
+    void (options === undefined ? openFile(path) : openFile(path, options)).then(
       () => {
         if (id !== fileOpenRequest.current) return
         setFileOpenError(null)
@@ -254,7 +266,7 @@ export function ChatView({
           path,
           message: openFailureMessage(
             error,
-            t(isFolderOpenPath(path) ? 'fileOpen.folderUnknown' : 'fileOpen.unknown'),
+            t('fileOpen.unknown'),
           ),
         })
         setFileOpenBusy(false)
@@ -295,6 +307,8 @@ export function ChatView({
   // restores it and normalizes a floor-clamped position back to following.
   const [atBottom, setAtBottom] = useState(() => chatScroll.read() === null)
   const atBottomRef = useRef(atBottom)
+  const scrollSamplePendingRef = useRef(false)
+  const [, setScrollSampleTick] = useState(0)
   const [activeTurn, setActiveTurn] = useState<number | null>(
     () => turnNavigationItems.at(-1)?.turn ?? null,
   )
@@ -304,7 +318,7 @@ export function ChatView({
    * while the request is pending and restored after the prepend lands. */
   const anchorRef = useRef<PagingAnchor | null>(null)
   /** Unloaded-turn jump in flight: target turn plus its load-through seq. */
-  const pendingJumpRef = useRef<{ turn: number; seq: number } | null>(null)
+  const pendingJumpRef = useRef<{ turn: number; seq: SessionSeq } | null>(null)
   /** Whether the in-flight jump already landed mid-paging (settle then only corrects an untouched landing). */
   const jumpLandedRef = useRef(false)
   const [busyJumpTurn, setBusyJumpTurn] = useState<number | null>(null)
@@ -331,6 +345,7 @@ export function ChatView({
   const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ''}:${lastSubmissionId ?? ''}`
 
   const syncActiveTurn = useCallback((): void => {
+    if (scrollSamplePendingRef.current) return
     const local = listRef.current
     const first = turnNavigationItems[0]
     if (local === null || first === undefined) {
@@ -449,6 +464,7 @@ export function ChatView({
   }
 
   useLayoutEffect(() => {
+    if (scrollSamplePendingRef.current) return
     const local = listRef.current
     /* v8 ignore next -- ref-null guard: React attaches the ref before layout effects run. */
     if (local === null) return
@@ -538,7 +554,7 @@ export function ChatView({
     // programmatic deliveries land on the ledger itself, so both preserve
     // the current ownership state.
     const floor = Math.max(0, el.scrollHeight - el.clientHeight)
-    const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > 0.5
+    const movedByReader = readerMovedScroll(el.scrollTop, floor, observedTopRef.current)
     const isAtBottom = movedByReader
       ? floor - el.scrollTop <= FOLLOW_THRESHOLD + 1
       : atBottomRef.current
@@ -562,18 +578,41 @@ export function ChatView({
     scheduleActiveTurn()
   }
 
-  // Bind the scroll listener on the resolved scrollport once per mount;
-  // reader-input attribution rides the observed-top ledger, not per-device
-  // input listeners.
+  // Non-reader pinned deliveries must settle before layout growth invalidates
+  // their floor. Reader movement stays pending even inside the follow threshold,
+  // so growth cannot erase small gestures before they accumulate off the floor.
   useEffect(() => {
     const local = listRef.current
     /* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
     if (local === null) return
     const el = scrollerOf(local)
-    const onScroll = (): void => { onScrollRef.current() }
+    let sampleTimer: number | undefined
+    const sample = (): void => {
+      if (!scrollSamplePendingRef.current) return
+      scrollSamplePendingRef.current = false
+      if (sampleTimer !== undefined) window.clearTimeout(sampleTimer)
+      sampleTimer = undefined
+      onScrollRef.current()
+      setScrollSampleTick(tick => tick + 1)
+    }
+    const onScroll = (): void => {
+      scrollSamplePendingRef.current = true
+      if (atBottomRef.current) {
+        const floor = Math.max(0, el.scrollHeight - el.clientHeight)
+        if (!readerMovedScroll(el.scrollTop, floor, observedTopRef.current)) {
+          sample()
+          return
+        }
+      }
+      sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS)
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('scrollend', sample, { passive: true })
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('scrollend', sample)
+      if (sampleTimer !== undefined) window.clearTimeout(sampleTimer)
+      scrollSamplePendingRef.current = false
     }
   }, [])
 
@@ -581,6 +620,7 @@ export function ChatView({
   // initializer a function initial value would need never exists.
   const followRef = useRef<(() => void) | null>(null)
   followRef.current = () => {
+    if (scrollSamplePendingRef.current) return
     const local = listRef.current
     if (local !== null && atBottomRef.current) {
       const el = scrollerOf(local)
@@ -741,26 +781,25 @@ export function ChatView({
               </button>
             </div>
           )}
-          {order.map(nodeKey => (
-            <ChatNodeSeat
-              key={nodeKey}
-              nodeKey={nodeKey}
-              historyIncomplete={hasMore}
-              compactTranscript={compactTranscript}
-              useChat={useChat}
-              useStore={useStore}
-              actions={actions}
-              selectedCallId={selectedCallId}
-              cwd={cwd}
-              openFile={requestOpenFile}
-              inspectCall={inspectCall}
-              forkAt={forkAt}
-              renderMessageImages={renderMessageImages}
-              fileMentions={fileMentions}
-              renderSlot={renderSlot}
-              t={t}
-            />
-          ))}
+          <ChatNodeList
+            order={order}
+            useChatNode={useChatNode}
+            useChatNodeProcess={useChatNodeProcess}
+            historyIncomplete={hasMore}
+            compactTranscript={compactTranscript}
+            useStore={useStore}
+            actions={actions}
+            cwd={cwd}
+            openFile={requestOpenFile}
+            openSkill={openSkill}
+            inspectCall={inspectCall}
+            forkAt={forkAt}
+            loadImage={loadImage}
+            renderMessageImages={renderMessageImages}
+            fileMentions={fileMentions}
+            renderSlot={renderSlot}
+            t={t}
+          />
           {/* No pending placeholders: questions (ui-user-questions) and approvals
               (ApprovalPanel) both take over the composer, so a flow card would
               double-render the same wait. */}
@@ -803,7 +842,6 @@ export function ChatView({
       </div>
       {fileOpenError !== null && (
         <FileOpenErrorDialog
-          path={fileOpenError.path}
           message={fileOpenError.message}
           busy={fileOpenBusy}
           onClose={closeFileOpenError}
@@ -817,9 +855,8 @@ export function ChatView({
 
 /** In-page Host open-path refusal: the wire reason plus a retry of the same path. */
 function FileOpenErrorDialog({
-  path, message, busy, onClose, onRetry, t,
+  message, busy, onClose, onRetry, t,
 }: {
-  path: string
   message: string
   busy: boolean
   onClose: () => void
@@ -831,7 +868,7 @@ function FileOpenErrorDialog({
       open
       onClose={onClose}
       closeLabel={t('close')}
-      title={t(isFolderOpenPath(path) ? 'fileOpen.folderTitle' : 'fileOpen.title')}
+      title={t('fileOpen.title')}
       description={message}
       footer={(
         <>

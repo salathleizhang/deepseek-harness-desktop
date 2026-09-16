@@ -17,7 +17,7 @@ type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
 
 ```ts type-equiv
 /** Exact auxiliary model route that produced a title. */
-interface SessionTitleModelProvenance {
+interface SessionTitleModelIdentity {
   /** Registered LLM provider route. */
   readonly provider: string
   /** Provider model id. */
@@ -32,7 +32,7 @@ type SessionTitleSource =
   | {
     readonly kind: 'provider'
     readonly provider: SessionTitleProviderId
-    readonly model?: SessionTitleModelProvenance
+    readonly model?: SessionTitleModelIdentity
   }
   | {
     /** Explicit user rename: pins the title — automatic generation stops scheduling. */
@@ -46,7 +46,7 @@ interface SessionTitleEventData {
   /** Normalized non-empty title text. */
   readonly title: string
   /** Exact human `user/message` seqs used to derive this title; empty for an explicit user rename. */
-  readonly messageSeqs: number[]
+  readonly messageSeqs: SessionSeq[]
   /** Whether the built-in fallback, a registered provider, or the user supplied the title. */
   readonly source: SessionTitleSource
 }
@@ -56,7 +56,7 @@ interface SessionTitleEventData {
 /** Latest folded title plus the title event's durable envelope facts. */
 interface SessionTitleSnapshot extends SessionTitleEventData {
   /** Seq of the latest `session/title` event. */
-  readonly eventSeq: number
+  readonly eventSeq: SessionSeq
   /** Timestamp of the latest `session/title` event. */
   readonly updatedAt: number
 }
@@ -72,9 +72,9 @@ interface SessionTitleLlmRequestEventData {
   /** Registered title-provider identity responsible for the request. */
   readonly titleProvider: SessionTitleProviderId
   /** Exact human `user/message` seqs represented in `messages`. */
-  readonly messageSeqs: number[]
+  readonly messageSeqs: SessionSeq[]
   /** Exact auxiliary LLM route. */
-  readonly route: SessionTitleModelProvenance
+  readonly route: SessionTitleModelIdentity
   /** Exact auxiliary system prompt. */
   readonly system: string
   /** Exact auxiliary message list. */
@@ -92,7 +92,7 @@ interface SessionTitleLlmRequestEventData {
 /** One eligible human text message exposed to title providers. */
 interface SessionTitleUserMessage {
   /** Source `user/message` event seq. */
-  readonly seq: number
+  readonly seq: SessionSeq
   /** Exact concatenated text-block content. */
   readonly text: string
 }
@@ -111,7 +111,7 @@ interface SessionTitleProviderRequest {
   /** All eligible human messages through this generation revision. */
   readonly messages: readonly SessionTitleUserMessage[]
   /** Exact current logged main-request route, when one has been recorded. */
-  readonly route?: SessionTitleModelProvenance
+  readonly route?: SessionTitleModelIdentity
   /** Cancellation for supersession, disposal, timeout composition, or the explicit caller. */
   readonly signal: AbortSignal
 }
@@ -123,9 +123,9 @@ interface SessionTitleProviderResult {
   /** Proposed title text. */
   readonly title: string
   /** Exact seqs from `request.messages` used by this result. */
-  readonly messageSeqs: readonly number[]
+  readonly messageSeqs: readonly SessionSeq[]
   /** Auxiliary LLM route, when generation used a model. */
-  readonly model?: SessionTitleModelProvenance
+  readonly model?: SessionTitleModelIdentity
 }
 ```
 

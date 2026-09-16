@@ -23,7 +23,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('spawn backend with-key smoke', (
   it('a parent delegates to a child that writes a file on disk', async () => {
     workdir = await mkdtemp(join(tmpdir(), 'dsh-subagent-spawn-e2e-'))
     ctx = await spawnHarness(workdir)
-    const parent = ctx.agentLoop.create(SessionId('e2e-parent'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    const parent = await ctx.agentLoop.create(SessionId('e2e-parent'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
 
     parent.followup(createUserMessage({
       content: [{ type: 'text', text:
@@ -38,7 +38,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('spawn backend with-key smoke', (
 
     // The parent's log records the subagent tool/call + its result (not the
     // child's internal steps).
-    const events = [...parent.session.events]
+    const events = parent.session.snapshotEvents()
     const subagentCalls = events.filter(e => e.type === 'tool/call' && e.data.name === 'subagent')
     expect(subagentCalls.length).toBeGreaterThan(0)
   }, 180_000)

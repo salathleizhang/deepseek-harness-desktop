@@ -1,24 +1,40 @@
 /** Chat-owned Slot declarations and composed component props. */
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
+import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type {
-  ConversationTurnDataMap, MessageImageLoader, MessageImagesOwnerProps, RenderMessageImages, TurnLocation,
+  CommandNode, CompactionSummaryNode, ConversationLocationDataStore, ConversationTurnDataMap,
+  MessageImageLoader, MessageImagesOwnerProps, RenderMessageImages, TurnLocation,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
-  InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore, SlotHookFactory,
-  SnapshotSelectorHook,
+  InjectFace, KeyedSnapshotSelectorHook, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore,
+  SlotHookFactory, SnapshotSelectorHook,
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { MarkdownFileMentions } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { createChatStore } from '../stores.ts'
-import type { ToolCallId, SelectionTarget } from './store.ts'
-import type { ChatNode, ChatNodeKind } from './chat-nodes.ts'
-import type { ChatSnapshot, CommandNode, CompactionSummaryNode, ToolCallBlock } from './snapshot.ts'
+import type { ToolCallId } from './store.ts'
+import type { ChatConversationViewNode, ChatNode, ChatNodeKind } from './chat-nodes.ts'
+import type {
+  ChatNodeProcessSource, ChatNodeSource, ChatSnapshot, ChatTurnProcessPresentation,
+} from './snapshot.ts'
 import type { TurnProcessSpec } from './turn-process.ts'
 import type { TranscriptViewMode } from '../../chat-settings.ts'
 
 /** Selector hook over the current Conversation binding's Chat target. */
 export type UseChat = SnapshotSelectorHook<ChatSnapshot>
+
+/** Per-key selector hook over one Chat Node. */
+export type UseChatNode = KeyedSnapshotSelectorHook<ChatConversationViewNode | undefined>
+
+/** Per-key selector hook over one Chat Node's Turn-process presentation. */
+export type UseChatNodeProcess = KeyedSnapshotSelectorHook<ChatTurnProcessPresentation | undefined>
+
+/** Where in a file an open should land. */
+export interface OpenFileOptions {
+  /** 1-based line to reveal; absent = the file's beginning. */
+  readonly line?: number
+}
 
 /** Owner currency of the completed-Turn extension chain. */
 export interface TurnTailOwnerProps {
@@ -37,9 +53,10 @@ export interface ChatFileMentions {
   /**
    * Resolve prose links for one closing Turn.
    * @param owner - closing-Turn identity and file opener.
+   * @param sessionId - viewed Session, including when history is inherited from a fork.
    * @returns link resolver when available.
    */
-  forClosing(owner: TurnTailOwnerProps): MarkdownFileMentions | undefined
+  forClosing(owner: TurnTailOwnerProps, sessionId: SessionId): MarkdownFileMentions | undefined
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -61,11 +78,19 @@ export interface ChatNodeTurnDataInjected {
 
 /** Stable owner currency delivered to a keyed Chat renderer. */
 export interface ChatNodeOwnerProps {
-  selectedCallId?: ToolCallId | undefined
   cwd?: string | undefined
-  openFile: (path: string) => void
+  /** Open the current source file of a skill referenced by a sent message. */
+  openSkill: (name: string) => void
+  openFile: (path: string, options?: OpenFileOptions) => void
   inspectCall: (callId: ToolCallId) => void
   forkAt: (seq: number) => void
+  /**
+   * Session-authorized image loader, down-threaded from the Chat view so a
+   * chat-node renderer can render the attachment presentation slot directly
+   * with only the durable references plus this loader, instead of receiving a
+   * rendering closure.
+   */
+  loadImage: MessageImageLoader
   renderMessageImages: RenderMessageImages
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
   /** Turn-process state when this Node belongs to a projected Turn. */
@@ -83,12 +108,6 @@ export interface TurnProcessOwnerProps {
 /** Full props of one keyed Chat renderer. */
 export type ChatNodeViewProps<Kind extends ChatNodeKind = ChatNodeKind> =
   PropsRuntime<'conversation.chat.node', Kind> & PropsLocale<'chat'>
-
-/** Tool block rendered in the details panel. */
-export interface DetailsToolOwnerProps {
-  block: ToolCallBlock
-  cwd?: string | undefined
-}
 
 /** Command-row owner share. */
 export interface CommandRowOwnerProps {
@@ -115,11 +134,18 @@ export interface ChatViewInjected {
     /** Persisted completed-Turn transcript presentation. */
     transcriptView: SnapshotStore<TranscriptViewMode>
   }
-  openDetails: (target: SelectionTarget) => void
-  openFile: (path: string) => Promise<void>
+  keyedHooks: {
+    /** Resolve the stable source for one Chat Node key. */
+    chatNode: (key: string) => ChatNodeSource
+    /** Resolve the stable Turn-process source for one Chat Node key. */
+    chatNodeProcess: (key: string) => ChatNodeProcessSource
+  }
+  /** Open the current source file of a skill referenced by a sent message. */
+  openSkill: (name: string) => void
+  openFile: (path: string, options?: OpenFileOptions) => Promise<void>
   loadOlder: () => void
   /** Jump loader: page history back through seq; resolves when the window covers it. */
-  loadThrough: (seq: number) => Promise<void>
+  loadThrough: (seq: SessionSeq) => Promise<void>
   loadImage: MessageImageLoader
   chatScroll: {
     save: (position: ChatScrollPosition | null) => void
@@ -139,19 +165,6 @@ export type ChatViewSlotProps =
 
 /** Full props of the durable-message image renderer. */
 export type MessageImagesProps = PropsRuntime<'conversation.message.images'> & PropsLocale<'conversation'>
-
-/** Details-panel callbacks. */
-export interface DetailsInjected {
-  closeDetails: () => void
-}
-
-/** Full details-panel props. */
-export type DetailsSlotProps =
-  PropsRuntime<'details'>
-  & PropsRenderSlots<'conversation.details.tool'>
-  & PropsStore<ChatStore>
-  & InjectFace<DetailsInjected>
-  & PropsLocale<'chat'>
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SessionStandardProps {
@@ -175,7 +188,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       scope: 'session'
       owner: ChatNodeOwnerProps
       keyProps: { [Kind in ChatNodeKind]: { node: ChatNode<Kind> } }
-      hookContext: string
+      hookContext: ConversationLocationDataStore<ConversationTurnDataMap> | undefined
       inject: ChatNodeTurnDataInjected
     }
     /**
@@ -202,11 +215,5 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * that entry. With no entries, the standard action row remains unchanged.
      */
     'conversation.chat.assistant-actions': { kind: 'list'; scope: 'session'; owner: AssistantActionOwnerProps }
-    /**
-     * Whole details-panel body for the selected Tool call. The component receives
-     * the running or settled block and optional workspace root. A registration
-     * replaces the shipped Tool details renderer; absence uses the raw fallback.
-     */
-    'conversation.details.tool': { kind: 'single'; scope: 'session'; owner: DetailsToolOwnerProps }
   }
 }

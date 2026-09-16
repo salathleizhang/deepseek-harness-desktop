@@ -3,8 +3,8 @@ scenario: empty-response-retry
 profile: headless
 composition: retry
 recording: authored
+sessionFormat:
+  version: 0
+  coverage: [retry-failure]
 header:
   class: retry
-  pin: true
-  systemPromptSource: text-turn
-  toolSchemasSource: text-turn

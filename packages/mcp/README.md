@@ -1,5 +1,5 @@
 ---
-description: "The MCP package group: attach external Model Context Protocol servers so their tools are callable as native tools."
+description: "The MCP package group: connect external Model Context Protocol servers, call their tools, and read their resources."
 kind: "package-group"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The `mcp/` group connects the harness to the Model Context Protocol (MCP) ecosystem of tool servers. The one package in this group attaches an external server — a filesystem, GitHub, database, or memory server — so its tools are available to the model as native tools under stable server-qualified names. Each server is one configuration entry; nothing ships enabled, so you opt in per server. Only the Tools capability is bridged: MCP resources and prompts are not supported. This page maps the group; the package README owns the per-package contract.
+The `mcp/` group lets the model call external Model Context Protocol (MCP) tools and read server resources. Configure only `mcp-client` entries; shipped profiles already mount `mcp-resources` once. MCP tools and prompt text appear only for callers with a configured server in scope. Connections also supply server instructions. Package READMEs own configuration and limitations.
 
 ## Table of Contents
 
@@ -22,22 +22,22 @@ The `mcp/` group connects the harness to the Model Context Protocol (MCP) ecosys
 <a id="packages"></a>
 ## Packages
 
-The group holds one package; the package README and the links below own the details.
+The client owns each configured connection; the shared resource package supplies resource tools across those connections.
 
 | Package | What it provides |
 |---|---|
-| [`mcp-client/`](mcp-client/README.md) | Attach one external MCP server so the model can call its tools as native tools |
+| [`mcp-client/`](mcp-client/README.md) | Connect one MCP server, expose its tools and instructions, and provide its resource operations |
+| [`mcp-resources/`](mcp-resources/README.md) | Discover and read resources through shared tools with explicit server selection |
 
 -----
 
 <a id="related-documentation"></a>
 ## Related documentation
 
-Try the worked example configurations to see the plugin in action, then read the Agent Notes for the behavior decisions behind it.
+Try the worked example configurations to see the plugin in action, then read the Agent Note for the behavior decisions behind it.
 
 - [MCP client plugin Agent Note](../../.agents/notes/implemented/feature/2026-07-07-mcp-client-plugin.md) — the bridge's design: server-qualified naming, discovery, execution, and environment scrubbing.
-- [MCP client auto-reconnect Agent Note](../../.agents/notes/implemented/feature/2026-08-06-mcp-client-auto-reconnect.md) — the reconnect policy, the per-outage attempt budget, and the opt-out.
-- [Third-party memory MCP examples Agent Note](../../.agents/notes/implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) — three default-off memory-server overlays delivered as reference configurations.
+- [Resources and instructions Agent Note](../../.agents/notes/implemented/feature/2026-09-12-mcp-resources-and-instructions.md) — on-demand resource access and scoped server guidance.
 - [Third-party memory MCP guide](../../docs/user/guide/mcp-memory.md) — runnable overlay rows and setup instructions.
 - [Tools subsystem reference](../../docs/subsystems/tools.md) — the `ToolRuntime` that receives the registered tools.
 

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
-import { Context, type Fiber } from '@deepseek-ai/cordis'
+import { Context, FiberState, type Fiber } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderIndexInjections, type WebServer, type WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import * as modulesClient from '../src/client/index.ts'
@@ -24,10 +24,48 @@ const BOOTSTRAP_URL = comboUrl([MODULES_ID], 'boot')
 const APPLICATION_URL = comboUrl([UI_RENDERER_ID], 'app')
 
 let root: string | undefined
+const contexts: { ctx: Context; ready?: Promise<WebRoute> }[] = []
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map(async ({ ctx, ready }) => {
+    await ready
+    await ctx.fiber.dispose()
+  }))
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
+})
+
+it.each([false, true])('tracks the Web carrier lifetime when server-first is %s', async (serverFirst) => {
+  const ctx = new Context()
+  contexts.push({ ctx })
+  ctx.provide('loader', { entries: () => [] })
+  const routes = new Set<WebRoute>()
+  const mountServer = () => ctx.plugin((serverCtx) => {
+    serverCtx.provide('webServer', {
+      register: (route: WebRoute) => {
+        routes.add(route)
+        return () => { routes.delete(route) }
+      },
+    } as WebServer)
+  })
+  let server = serverFirst ? await mountServer() : undefined
+  const modules = await ctx.plugin(ClientModuleRegistry)
+  const service = ctx.get('clientModules')!
+  expect(service.graph().entries).toEqual([])
+  expect((await service.fetchBundle(new Request('http://localhost/plugins/missing'))).status).toBe(404)
+  if (!serverFirst) {
+    expect(routes.size).toBe(0)
+    server = await mountServer()
+  }
+  await expect.poll(() => routes.size).toBe(1)
+  await server!.dispose()
+  await expect.poll(() => routes.size).toBe(0)
+  expect(modules.state).toBe(FiberState.ACTIVE)
+  expect((await service.fetchBundle(new Request('http://localhost/plugins/missing'))).status).toBe(404)
+  await mountServer()
+  await expect.poll(() => routes.size).toBe(1)
+  await modules.dispose()
+  expect(routes.size).toBe(0)
 })
 
 /** Create a resolvable package whose client export points at the returned path. */
@@ -65,8 +103,10 @@ function constructWithRoute(
     entryBaseUrl?: string
     internal?: NonNullable<Context['loader']['internal']>
   } = {},
-): { context: Context; service: ClientModuleRegistry; route: WebRoute } {
+): { context: Context; service: ClientModuleRegistry; route: Promise<WebRoute> } {
   const ctx = new Context()
+  const owned: typeof contexts[number] = { ctx }
+  contexts.push(owned)
   ctx.baseUrl = options.contextBaseUrl ?? pathToFileURL(root!).href + '/'
   ctx.provide('loader', {
     internal: options.internal,
@@ -81,19 +121,19 @@ function constructWithRoute(
       }
     },
   })
-  let route: WebRoute | undefined
+  const route = Promise.withResolvers<WebRoute>()
   const webServer: Pick<WebServer, 'port' | 'register' | 'tapIndex'> = {
     port: 0,
     register: (candidate) => {
-      if (candidate.path === '/plugins') route = candidate
+      if (candidate.path === '/plugins') route.resolve(candidate)
       return () => {}
     },
     tapIndex: () => () => {},
   }
   ctx.provide('webServer', webServer as WebServer)
   const service = new ClientModuleRegistry(ctx)
-  if (route === undefined) throw new Error('client bundle route was not registered')
-  return { context: ctx, service, route }
+  owned.ready = route.promise
+  return { context: ctx, service, route: route.promise }
 }
 
 /** Construct the node-half service over the enabled fixture entries. */
@@ -102,7 +142,7 @@ function construct(packageNames: string[]): ClientModuleRegistry {
 }
 
 /** Invoke the registered plugin route and capture status, headers, and bytes. */
-async function routeRequest(route: WebRoute, url: string, method = 'GET'): Promise<{
+async function routeRequest(route: Promise<WebRoute>, url: string, method = 'GET'): Promise<{
   status: number
   headers: Record<string, string> | undefined
   body: Buffer
@@ -121,7 +161,7 @@ async function routeRequest(route: WebRoute, url: string, method = 'GET'): Promi
       return response
     },
   } as unknown as ServerResponse
-  await route.handler({ method, url } as IncomingMessage, response)
+  await (await route).handler({ method, url } as IncomingMessage, response)
   return { status, headers, body }
 }
 
@@ -467,6 +507,85 @@ describe('client bundle activation', () => {
 
     writeFileSync(`${clientPath}.map`, '{"version":3,"sources":[null]}\n')
     expect(() => construct([packageName])).not.toThrow()
+
+    writeFileSync(`${clientPath}.map`, JSON.stringify({
+      version: 3,
+      names: [],
+      mappings: 'AAAA',
+      sourceRoot: 'http://[',
+      sources: ['src/index.ts'],
+    }))
+    const invalidUrl = constructWithRoute([packageName])
+    const invalidMapUrl = mapUrl(invalidUrl.service.graph().batches[0]!.url)
+    expect(JSON.parse((await routeRequest(invalidUrl.route, invalidMapUrl)).body.toString('utf8'))).toMatchObject({
+      sections: [{ map: { sources: [`/plugins/${packageName}/client.js`] } }],
+    })
+  })
+
+  it('reads a source map only on its first map GET', async () => {
+    const packageName = '@fixture/lazy-source-map'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'module.exports = {}\n//# sourceMappingURL=client.js.map')
+    writeFileSync(`${clientPath}.map`, '{')
+    const { service, route } = constructWithRoute([packageName])
+    const batch = service.graph().batches[0]!
+    const sourceMapUrl = mapUrl(batch.url)
+
+    const script = await routeRequest(route, batch.url)
+    expect(script.status).toBe(200)
+    expect((await routeRequest(route, sourceMapUrl, 'HEAD')).body).toHaveLength(0)
+    writeFileSync(`${clientPath}.map`, JSON.stringify({
+      version: 3,
+      names: [],
+      mappings: 'AAAA',
+      sources: ['src/first.ts'],
+    }))
+    const first = await routeRequest(route, sourceMapUrl)
+    expect(JSON.parse(first.body.toString('utf8'))).toMatchObject({
+      sections: [{ map: { sources: [`/plugins/${packageName}/src/first.ts`] } }],
+    })
+
+    writeFileSync(`${clientPath}.map`, JSON.stringify({
+      version: 3,
+      names: [],
+      mappings: 'AAAA',
+      sources: ['src/second.ts'],
+    }))
+    expect((await routeRequest(route, sourceMapUrl)).body).toEqual(first.body)
+    expect((await routeRequest(route, batch.url)).body).toEqual(script.body)
+  })
+
+  it('retains a materialized resource when an unrelated row recomposes the graph', async () => {
+    const stablePackage = '@fixture/stable-source-map'
+    const rebuiltPackage = '@fixture/rebuilt-neighbor'
+    const stablePath = writePackage(stablePackage)
+    const rebuiltPath = writePackage(rebuiltPackage)
+    for (const clientPath of [stablePath, rebuiltPath]) {
+      mkdirSync(dirname(clientPath), { recursive: true })
+      writeFileSync(clientPath, 'module.exports = {}\n//# sourceMappingURL=client.js.map')
+      writeFileSync(`${clientPath}.map`, JSON.stringify({
+        version: 3,
+        names: [],
+        mappings: 'AAAA',
+        sources: ['src/first.ts'],
+      }))
+    }
+    const { service, route } = constructWithRoute([stablePackage, rebuiltPackage])
+    const stableUrl = service.graph().entries.find(entry => entry.id === stablePackage)!.url
+    const stableMapUrl = mapUrl(stableUrl)
+    const first = await routeRequest(route, stableMapUrl)
+
+    writeFileSync(`${stablePath}.map`, JSON.stringify({
+      version: 3,
+      names: [],
+      mappings: 'AAAA',
+      sources: ['src/second.ts'],
+    }))
+    writeFileSync(rebuiltPath, 'module.exports = { rebuilt: true }\n')
+    service.rebuilt(rebuiltPackage)
+
+    expect((await routeRequest(route, stableMapUrl)).body).toEqual(first.body)
   })
 
   it('maps packed combo sections back to each generated client bundle', async () => {
@@ -628,6 +747,10 @@ describe('client bundle activation', () => {
     expect(batchScript.status).toBe(200)
     expect(batchScript.headers?.['cache-control']).toBe('public, max-age=31536000, immutable')
     expect(batchScript.body.toString('utf8')).toContain(`//# sourceMappingURL=${mapUrl(batch.url)}`)
+    const shellResponse = await service.fetchBundle(new Request(`dsh-app://app${batch.url}`))
+    expect(shellResponse.status).toBe(200)
+    expect(shellResponse.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+    expect(await shellResponse.text()).toBe(batchScript.body.toString('utf8'))
     expect((await routeRequest(route, batch.url, 'HEAD')).body).toHaveLength(0)
     expect((await routeRequest(route, batch.url, 'POST')).status).toBe(405)
     const batchMap = await routeRequest(route, mapUrl(batch.url))

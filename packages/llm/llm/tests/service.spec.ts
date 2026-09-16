@@ -22,6 +22,7 @@ import type {
   LlmModelReasoningInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  SystemPromptUpdate,
 } from '@deepseek-ai/dsh-llm'
 
 class ScriptedAdapter extends LlmAdapter {
@@ -60,6 +61,7 @@ class CatalogAdapter extends ScriptedAdapter {
     private readonly contexts: Readonly<Record<string, LlmModelContext>> = {},
     private readonly reasoning: Readonly<Record<string, LlmModelReasoningInfo>> = {},
     private readonly defaultMaxTokens: Readonly<Record<string, number>> = {},
+    private readonly systemPromptUpdate: Readonly<Record<string, string>> = {},
   ) {
     super(SCRIPT)
   }
@@ -83,6 +85,9 @@ class CatalogAdapter extends ScriptedAdapter {
       ...this.contexts[model] === undefined ? {} : { context: this.contexts[model] },
       ...this.reasoning[model] === undefined ? {} : { reasoning: this.reasoning[model] },
       ...this.defaultMaxTokens[model] === undefined ? {} : { defaultMaxTokens: this.defaultMaxTokens[model] },
+      ...this.systemPromptUpdate[model] === undefined
+        ? {}
+        : { systemPromptUpdate: this.systemPromptUpdate[model] as SystemPromptUpdate },
     })
   }
 }
@@ -203,6 +208,73 @@ describe('LlmRuntime', () => {
     })) { /* drain */ }
 
     expect(adapter.lastOptions?.messages[0]).toBe(message)
+  })
+
+  it('projects file blocks through every host-path availability outcome', async () => {
+    const attachment = {
+      attachmentId: AttachmentId(`sha256:${'ab'.repeat(32)}`),
+      name: 'notes.txt',
+      bytes: 3,
+    }
+    const cases = [
+      {
+        name: 'native tools under read-only permission receive the mapped read path',
+        attachments: { fileHostPath: () => '/host/notes.txt' },
+        fs: { processPathFromHostPath: () => '/sandbox/notes.txt' },
+        expected: '"/sandbox/notes.txt"',
+      },
+      {
+        name: 'Code Mode under workspace-write permission receives the same mapped read path',
+        attachments: { fileHostPath: () => '/host/notes.txt' },
+        fs: { processPathFromHostPath: () => '/code-sandbox/notes.txt' },
+        expected: '"/code-sandbox/notes.txt"',
+      },
+      {
+        name: 'missing attachment service',
+        expected: 'current execution environment cannot access a readable path',
+      },
+      {
+        name: 'provider without a host path',
+        attachments: { fileHostPath: () => undefined },
+        expected: 'current execution environment cannot access a readable path',
+      },
+      {
+        name: 'invalid durable reference',
+        attachments: { fileHostPath: () => { throw new Error('invalid ref') } },
+        expected: 'current execution environment cannot access a readable path',
+      },
+      {
+        name: 'missing filesystem mapping',
+        attachments: { fileHostPath: () => '/host/notes.txt' },
+        expected: 'current execution environment cannot access a readable path',
+      },
+    ]
+
+    for (const fixture of cases) {
+      const ctx = new Context()
+      if (fixture.attachments !== undefined) ctx.provide('attachments', fixture.attachments as never)
+      if (fixture.fs !== undefined) ctx.provide('fs', fixture.fs as never)
+      await ctx.plugin(LlmRuntime)
+      const adapter = new RecordingAdapter(SCRIPT)
+      ctx.llm.registerAdapter(['test-provider'], adapter)
+
+      await collect(ctx.llm.stream({
+        provider: 'test-provider',
+        model: 'test-model',
+        messages: [createUserMessage({
+          content: [{ type: 'file', attachment }],
+          source: { kind: 'user' },
+        })],
+      }))
+
+      const projected = adapter.lastOptions?.messages[0]?.content[0]
+      expect(projected, fixture.name).toMatchObject({ type: 'text' })
+      if (projected?.type !== 'text') throw new Error(`expected projected text for ${fixture.name}`)
+      expect(projected.text, fixture.name).toContain(fixture.expected)
+      if (fixture.fs !== undefined) {
+        expect(projected.text, fixture.name).toContain('include this saved path in the delegation prompt')
+      }
+    }
   })
 
   it('captures provider-owned retry policy at registration and defaults omission', async () => {
@@ -1060,6 +1132,29 @@ describe('LlmRuntime', () => {
         .rejects.toMatchObject({ code: 'INVALID_MODEL_CONTEXT' })
     },
   )
+
+  it('captures a declared in-history system prompt update mode and rejects any other mode', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['route'], new CatalogAdapter(
+      { id: 'route', name: 'Route' },
+      [],
+      {},
+      {},
+      {},
+      { capable: 'in-history', bogus: 'leading' },
+    ))
+    await expect(ctx.llm.resolveModelInfo('route', 'capable'))
+      .resolves.toMatchObject({ systemPromptUpdate: 'in-history' })
+    await expect(ctx.llm.resolveModelInfo('route', 'plain'))
+      .resolves.not.toHaveProperty('systemPromptUpdate')
+    await expect(ctx.llm.resolveModelInfo('route', 'bogus'))
+      .rejects.toMatchObject({ code: 'INVALID_MODEL_INFO' })
+    const capable = await ctx.llm.prepareCall({ provider: 'route', model: 'capable' })
+    expect(capable.systemPromptUpdate).toBe('in-history')
+    const plain = await ctx.llm.prepareCall({ provider: 'route', model: 'plain' })
+    expect(plain).not.toHaveProperty('systemPromptUpdate')
+  })
 
   it.each([
     [{ id: 1, name: 'Name' }, 'non-string id'],

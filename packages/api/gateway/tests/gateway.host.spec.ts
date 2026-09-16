@@ -1344,13 +1344,12 @@ function contextProvider(context: Context) {
   return {
     wire: 'agentId',
     wireTypeSymbol: '@fixture/domain#AgentId',
-    identity: (candidate: Context) => candidate === context ? 'agent-1' : undefined,
     resolve: (id: string) => id === 'agent-1' ? context : undefined,
   }
 }
 
 function strictCodec(typeSymbol: string, schema: z.ZodType): InvocationDescriptor['result'] {
-  return { mode: 'strict', typeSymbol, schema }
+  return { mode: 'strict', typeSymbol, create: () => schema }
 }
 
 function createDescriptor(): InvocationDescriptor {

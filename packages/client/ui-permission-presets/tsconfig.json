@@ -12,6 +12,9 @@
       "path": "../locale"
     },
     {
+      "path": "../connection/tsconfig.client.json"
+    },
+    {
       "path": "../../../vendor/cordis"
     },
     {
@@ -19,6 +22,9 @@
     },
     {
       "path": "../ui-commands"
+    },
+    {
+      "path": "../ui-conversation"
     },
     {
       "path": "../ui-primitives"
@@ -37,9 +43,6 @@
     },
     {
       "path": "../../interaction/permission-presets"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     },
     {
       "path": "../../api/remotes/tsconfig.client.json"

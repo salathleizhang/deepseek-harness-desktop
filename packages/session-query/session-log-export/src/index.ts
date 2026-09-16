@@ -1,15 +1,16 @@
 /** Session-log download command and Host-owned streaming route. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
 import Schema from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { SessionRawArtifact } from '@deepseek-ai/dsh-session-persistence'
 import {
   DEFAULT_SESSION_LOG_COMPRESSION_LEVEL,
   flushLiveSessionLog,
+  readSessionLogText,
   sessionLogExportDeps,
   sessionLogZipFilename,
   streamSessionLogZip,
@@ -20,6 +21,9 @@ import {
 export {
   DEFAULT_SESSION_LOG_COMPRESSION_LEVEL,
   flushLiveSessionLog,
+  readSessionLogText,
+  serializeSessionLog,
+  SESSION_LOG_FILENAME,
   sessionLogExportDeps,
   sessionLogZipEntries,
   sessionLogZipFilename,
@@ -55,6 +59,7 @@ interface SessionLogConnection {
     register(route: {
       readonly path: string
       readonly methods: readonly ('GET' | 'HEAD')[]
+      readonly requestBody: 'buffered'
       readonly fetch: (request: Request) => Promise<Response>
     }): () => Promise<void>
   }
@@ -72,6 +77,7 @@ const REQUESTED: CommandResult = {
  */
 export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => ctx.commands.register({
+    definitionId: brandString<CommandDefinitionId>('@deepseek-ai/dsh-session-log-export'),
     name: 'export',
     description: 'Download this Session log as a ZIP archive',
     handler: invocation => Promise.resolve(invocation.rawInput.trim() === ''
@@ -81,6 +87,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   connectionOf(ctx).fetch.register({
     path: SESSION_LOG_EXPORT_PATH,
     methods: ['GET', 'HEAD'],
+    requestBody: 'buffered',
     fetch: async (request) => {
       const response = await sessionLogExportResponse(
         ctx,
@@ -121,32 +128,31 @@ async function sessionLogExportResponse(
       { status: 500 },
     )
   }
-  if (!deps.sessionPersistence.supportsRawArtifacts) {
-    return new Response(
-      'session log export is unavailable: the persistence backend does not expose per-session raw artifacts',
-      { status: 501 },
-    )
-  }
   const ready: SessionLogExportReady = {
     sessionQuery: deps.sessionQuery,
     sessionPersistence: deps.sessionPersistence,
     attachments: deps.attachments,
     sessions: deps.sessions,
   }
-  let root: SessionRawArtifact | undefined
+  let rootContent: string | undefined
   try {
     await flushLiveSessionLog(deps, sessionId, request.signal)
-    root = await deps.sessionPersistence.readRaw(sessionId, request.signal)
+    rootContent = await readSessionLogText(deps.sessionPersistence, sessionId, request.signal)
     request.signal.throwIfAborted()
   } catch {
     request.signal.throwIfAborted()
-    return new Response('session log export failed to prepare the stored artifact', { status: 500 })
+    // Root preparation failure (flush, open, or read): answer 500 without
+    // echoing the error, which may carry absolute host paths into the
+    // browser error bar.
+    return new Response('session log export failed to read the stored log', { status: 500 })
   }
-  if (root === undefined) return new Response('session not found', { status: 404 })
+  if (rootContent === undefined) {
+    return new Response('session not found', { status: 404 })
+  }
   const response = new Response(
     streamSessionLogZip(
       ready,
-      root,
+      rootContent,
       sessionId,
       descendantsValue === 'true',
       compressionLevel,

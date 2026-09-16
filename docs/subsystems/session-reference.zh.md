@@ -68,7 +68,31 @@ interface SessionReferenceMentionCandidate extends SessionReferenceCandidate {
 
 ## 准备后的消息
 
-准备过程保留可读的当前消息内容，并最多返回一个聚合上下文。
+准备过程保留可读的当前消息内容，并最多返回一个聚合上下文。其持久 source 记录会把 `capturedThroughSeq` 保留为被引用 Session 原始 generation 中的坐标，绝不会把它重新解释为所在 Session 的 seq。`capturedFormatVersion` 记录该 generation；缺失表示已发布格式 v0。
+
+```ts type-equiv
+/** Durable source session, cited event seqs, and snapshot facts for prepared cross-session context. */
+interface SessionReferenceSource {
+  kind: 'session-reference'
+  /** Material lifted out of another session's log (`recall` context form). */
+  form: 'recall'
+  version: 1
+  references: {
+    sessionId: string
+    label: string
+    /** Source Session format generation; absence identifies version 0. */
+    capturedFormatVersion?: number
+    capturedThroughSeq: OptionalSessionSeq
+    compacted: boolean
+    originalMessages: number
+    retainedMessages: number
+    omittedMessages: number
+    omittedBytes: number
+    truncated: boolean
+    inputIndex: number
+  }[]
+}
+```
 
 ```ts type-equiv
 /** Direct message content and optional referenced-session context. */
@@ -180,6 +204,10 @@ async listCandidates( agent: Agent, query: string = '', limit: number = this.con
 
 /**
  * Snapshot all references for one accepted direct message and return one aggregated durable context.
+ * Automatic budgets use the last assembled route, or agent options before any assembly.
+ * Missing model capacity or adapter uses 64 KiB; other metadata lookup failures and cancellation reject preparation.
+ * Truncated previews include omission facts and a full-snapshot spill locator, or an explicit unavailable notice.
+ * Cancellation prevents context publication, including when storage completes after cancellation.
  * @param agent - target agent; references to it are rejected.
  * @param content - already host-normalized readable message content.
  * @param references - structured source sessions in mention order.

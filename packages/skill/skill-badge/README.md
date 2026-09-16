@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Agents can load the official "powered by dsh" badge skill from this bundled provider and follow its instructions for adding attribution badges to documents, pull requests, and other content produced with DeepSeek Harness. The provider has no configuration, and the shipped CLI composition includes the plugin disabled, so deployments enable it explicitly. The skill ships both Markdown snippets and a packaged PNG for systems that cannot reliably import remote images.
+Agents can load the official "powered by dsh" badge skill from this bundled provider and follow its instructions for adding attribution badges to documents, PRs, and other content produced with DeepSeek Harness. The provider has no configuration, and the shipped CLI composition includes the plugin disabled, so deployments enable it explicitly. The skill ships both Markdown snippets and a packaged PNG for systems that cannot reliably import remote images.
 
 ## Table of Contents
 
@@ -43,7 +43,7 @@ After enabling, `dsh-badge` appears in the available skills of the session catal
 
 ### What the badge skill provides
 
-- **Markdown snippets.** Instructions for embedding the official badge markup in documents, pull requests, and merge requests.
+- **Markdown snippets.** Instructions for embedding the official badge markup in documents, PRs, and merge requests.
 - **Packaged PNG asset.** A `dsh-badge.png` resource (726×120 source, rendered at 121×20) that works where remote images cannot be imported.
 
 ### Observable success and failures
@@ -69,7 +69,7 @@ The provider is an immutable, synchronously registered skill source: it register
 | File | Role |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry and the immutable provider: one candidate, resource base, body load |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion |
+| — | No runtime invariant companion is published; the package owns one immutable provider registration, while the skill registry owns registration uniqueness and lifecycle checks. |
 | [`assets/`](assets/) | Packaged skill body (`dsh-badge.md`) and PNG asset (`dsh-badge.png`) |
 
 </details>
@@ -79,12 +79,11 @@ The provider is an immutable, synchronously registered skill source: it register
 <a id="further-exploration"></a>
 ## Further Exploration
 
-Read these pages when the package-level contract is not enough. They move from the registry this provider registers on to how the skill reaches the model and why the provider ships as it does.
+Read these pages when the package-level contract is not enough. They move from the registry this provider registers on to how the skill reaches the model.
 
 - [Skill subsystem reference](../../../docs/subsystems/skills.md) — the registry and provider contract this provider implements.
 - [skill package](../skill/README.md) — the registry the provider registers on, and the shared rendering of loaded skills.
 - [tool-skill package](../tool-skill/README.md) — how the badge skill reaches the session catalog and the model.
-- [Web preview product badge Agent Note](../../../.agents/notes/implemented/feature/2026-08-05-web-preview-product-badge.md) — why the provider ships disabled and the asset decisions.
 
 -----
 

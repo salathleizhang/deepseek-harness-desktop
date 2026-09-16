@@ -65,10 +65,10 @@ Each companion protects relationships its package owns, and a companion installs
 | `dsh-permission-presets`, `dsh-user-approval`, `dsh-commands` | Preset references to live presets, approval asked/decided pairing, command run/done pairing |
 | `dsh-jobs`, `dsh-tool-todo`, `dsh-time-context` | Job snapshot field relationships, whole-list todo shape, durable clock readings |
 | `dsh-credentials`, `dsh-settings`, `dsh-storage-domain`, `dsh-workspace` | Commit events against the live service or memory state, entity-cache mirroring |
-| `dsh-agent-presets`, `dsh-session-title`, `dsh-plan-mode`, `dsh-schedule`, `dsh-webserver` | Preset mount placement, title source citation, plan-mode payload, schedule stream, route disposer symmetry |
+| `dsh-agent-presets`, `dsh-session-title`, `dsh-plan-mode`, `dsh-schedule` | Preset mount placement, title source citation, plan-mode payload, schedule stream |
 | `dsh-client-hmr`, `dsh-client-modules`, `dsh-client-runtime` | Browser/node-half stat-watcher lifecycle, boot entry graph, slot mutation versioning |
 
-Every other workspace package publishes an empty companion with a `No runtime invariant:` explanation of why nothing is checkable.
+Every other workspace package omits the companion and states the package-specific reason in its README.
 
 ### Adding a companion to a custom composition
 
@@ -97,21 +97,21 @@ A violation throws an `InvariantError` from the context that reported it: it car
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-This section explains the design behind the registry; the observable behavior is covered in [Use this package](#use-this-package). The full decision rationale lives in the [invariant-service Agent Note](../../../.agents/notes/implemented/architecture/2026-07-19-package-owned-invariant-service.md).
+This section explains the design behind the registry; the observable behavior is covered in [Use this package](#use-this-package).
 
 ### Design philosophy
 
 - **Product-independent registry.** The service imports no session, agent, scope, or agent-loop package and contains none of their checks; companions carry checks next to their owners.
 - **Real relationships, not synthetic assertions.** A companion checks an event-stream or mutable-data relationship its package owns; confirming a method, plugin name, injection, or fixed pure result is a type, load, or unit-test concern, never a runtime invariant.
 - **Registration reserves ownership.** A package name is reserved even when filters keep its installer inactive, so two plugins can never silently claim the same name.
-- **Exhaustive wiring, mechanically enforced.** `pnpm run verify-package-invariants` rejects generated markers, unexplained empty installers, non-empty installers that omit or ignore the reporter, wrong registration names, and incomplete export, publication, dependency, or bundle wiring ([contracts note](../../../.agents/notes/implemented/architecture/2026-07-19-package-invariant-runtime-contracts.md)).
+- **Companion wiring is mechanically enforced.** `pnpm run verify-package-invariants` rejects empty installers, installers that omit or ignore the reporter, wrong registration names, incomplete publication wiring, and stale wiring for omitted companions ([companion-omission note](../../../.agents/notes/implemented/simplification/2026-08-28-omit-unneeded-invariant-companions.md)).
 
 ### Source map
 
 | File | Role |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: `Config` schema, `InvariantRegistry` service, selection, registration, `InvariantError` |
-| [`src/invariant.ts`](src/invariant.ts) | This package's own companion: an empty installer explaining that registration ownership is the service's own mutation boundary |
+| — | No runtime invariant companion is published; registration ownership and child lifecycle are the service's mutation boundary itself; observing them from the same registry would only duplicate its implementation. |
 
 ### Selection and registration lifecycle
 
@@ -128,7 +128,6 @@ Read these pages when the package-level contract is not enough. They move from t
 
 - [Runtime invariants subsystem](../../../docs/subsystems/invariants.md) — the generated reference for `Config`, the installer, the service, and the companion contract.
 - [Generated configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-invariants) — every accepted config field and its source declaration.
-- [Package-owned invariant service Agent Note](../../../.agents/notes/implemented/architecture/2026-07-19-package-owned-invariant-service.md) — why checks live beside their owners and the registry owns selection and lifecycle.
 - [Invariant runtime contracts Agent Note](../../../.agents/notes/implemented/architecture/2026-07-19-package-invariant-runtime-contracts.md) — what a runtime invariant may assert and the mechanical gate that enforces companion wiring.
 - [Runtime-diagnostics group map](../../README.md) — adjacent diagnostics packages.
 

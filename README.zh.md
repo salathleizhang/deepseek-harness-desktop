@@ -147,6 +147,18 @@ electron-builder 通过 `extraResources` 把两者复制进 `resources/`。启�
 - 深链转发已端到端接通。
 - macOS 安装包已签名并公证；Windows 安装包仍为未签名，因此 Windows 自动更新在加入 Authenticode 证书前可能触发 SmartScreen 提示。
 
+## 引用
+
+```bibtex
+@misc{deepseek-harness2026,
+  title={DeepSeek Harness: Everything is a Plugin},
+  author={DeepSeek-AI},
+  year={2026},
+  publisher={GitHub},
+  howpublished={\url{https://github.com/deepseek-ai/deepseek-harness}},
+}
+```
+
 ## 许可证
 
 [MIT](LICENSE)

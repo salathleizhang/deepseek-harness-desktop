@@ -34,6 +34,10 @@ import {
   IMAGE_FILE_NAME, PREVIEW_FIXTURE_MANIFEST_FILE, PREVIEW_FIXTURE_MANIFEST_VERSION,
   type PreviewFixtureManifest,
 } from '@deepseek-ai/dsh-experimental-webworker-runtime'
+import {
+  VFS_EXAMPLE_SESSION_IDS,
+  buildVfsExampleFiles,
+} from '../../../packages/experimental/webworker-runtime/tests/vfs-example-fixture.ts'
 import { captureStableAria, compareOrRefreshGolden, webSnapshotMode } from './scaffold.ts'
 import { newEnglishPage, REPO_ROOT, saveFailureShot } from './support.ts'
 
@@ -41,9 +45,6 @@ const DIST_ROOT = fileURLToPath(new URL('../dist', import.meta.url))
 
 /** Where the client looks for the image: the runtime's own name, beside the page. */
 const IMAGE_FILE = join(DIST_ROOT, 'preview', IMAGE_FILE_NAME)
-
-/** Built-in source catalog read by the pre-boot chooser. */
-const FIXTURE_MANIFEST_FILE = join(DIST_ROOT, 'preview', PREVIEW_FIXTURE_MANIFEST_FILE)
 
 /** Keyless browser golden for the pre-Worker source chooser. */
 const SOURCE_CHOOSER_EXPECTED = fileURLToPath(new URL('./snapshots/preview-boot/source-chooser.expected.md', import.meta.url))
@@ -114,12 +115,13 @@ function requirePreviewPages(): void {
 }
 
 /**
- * The base image, fixture manifest, and overlays to serve, packed here when
- * `dist/` does not carry the complete set: `pnpm run build` emits the pages but
- * only `build:preview` packs these files, so this lane packs for itself rather
- * than skipping the deployment it accepts. A complete built set is used as it
- * stands — the worker refuses a base lowered against another wrapper contract.
- * Self-packed files land in a temp directory, never in `dist/`: the
+ * The base image, fixture manifest, and overlays to serve. `pnpm run build`
+ * emits the pages but only `build:preview` packs the image, so this lane packs
+ * a missing image rather than skipping the deployment it accepts. The example
+ * overlay pairs its committed Session generations with the generator-owned
+ * current projection cache. The worker therefore exercises historical reads
+ * without relying on a stale cache schema. Generated files land in a temp
+ * directory, never in `dist/`: the
  * client-artifact digest record treats `dist/` as build-owned, so a test write
  * there fails the record check for every later consumer.
  * @returns Static-path overrides and their teardown.
@@ -128,21 +130,6 @@ function requirePreviewPages(): void {
  */
 function requireVfsAssets(): PreviewAssets {
   const fixtureDefinitions = previewFixtures(REPO_ROOT)
-  const fixtureFiles = fixtureDefinitions.map(fixture =>
-    join(DIST_ROOT, 'preview', 'fixtures', `${fixture.id}.tar.gz`))
-  if ([IMAGE_FILE, FIXTURE_MANIFEST_FILE, ...fixtureFiles].every(existsSync)) {
-    return { overrides: new Map(), cleanup: () => {} }
-  }
-  const packed = packVfsImage({
-    config: composeProfile(REPO_ROOT, PROFILE),
-    profile: PROFILE,
-    workspaces: indexWorkspacePackages(REPO_ROOT),
-    resolveFrom: REPO_ROOT,
-    configTrees: configTrees(REPO_ROOT),
-  })
-  if (packed.missing.length > 0) {
-    throw new Error(`preview boot: ${String(packed.missing.length)} dependencies did not resolve: ${packed.missing.join(', ')}`)
-  }
   const directory = mkdtempSync(join(tmpdir(), 'dsh-preview-boot-'))
   const overrides = new Map<string, string>()
   const writeAsset = (relativePath: string, bytes: Uint8Array | string): void => {
@@ -151,10 +138,30 @@ function requireVfsAssets(): PreviewAssets {
     writeFileSync(path, bytes)
     overrides.set(relativePath, path)
   }
-  writeAsset(`preview/${IMAGE_FILE_NAME}`, packed.image)
+  if (!existsSync(IMAGE_FILE)) {
+    const packed = packVfsImage({
+      config: composeProfile(REPO_ROOT, PROFILE),
+      profile: PROFILE,
+      workspaces: indexWorkspacePackages(REPO_ROOT),
+      resolveFrom: REPO_ROOT,
+      configTrees: configTrees(REPO_ROOT),
+    })
+    if (packed.missing.length > 0) {
+      throw new Error(`preview boot: ${String(packed.missing.length)} dependencies did not resolve: ${packed.missing.join(', ')}`)
+    }
+    writeAsset(`preview/${IMAGE_FILE_NAME}`, packed.image)
+  }
+  const currentCache = buildVfsExampleFiles().get('home/storages/session_projcache.json')
+  if (currentCache === undefined) throw new Error('preview boot: generated example has no projection cache')
+  const cacheDirectory = join(directory, 'current-projection-cache')
+  mkdirSync(cacheDirectory, { recursive: true })
+  writeFileSync(join(cacheDirectory, 'session_projcache.json'), currentCache)
   const fixtures = fixtureDefinitions.map((fixture) => {
     const relativePath = `preview/fixtures/${fixture.id}.tar.gz`
-    writeAsset(relativePath, packVfsOverlay(fixture.trees).image)
+    const trees = fixture.id === 'vfs-example'
+      ? [...fixture.trees, { mount: 'home/storages', directory: cacheDirectory }]
+      : fixture.trees
+    writeAsset(relativePath, packVfsOverlay(trees).image)
     return {
       id: fixture.id,
       label: fixture.label,
@@ -175,7 +182,7 @@ function requireVfsAssets(): PreviewAssets {
  * Answer one request with its generated override or the file under `dist/`.
  * @param request - Incoming request; only its path is read.
  * @param response - Response to write the bytes or the 404 to.
- * @param overrides - Generated deployment files used when `dist/` has none.
+ * @param overrides - Generated deployment files served before `dist/`.
  */
 async function respond(
   request: IncomingMessage,
@@ -310,10 +317,10 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
     const configureLater = page.getByRole('button', { name: 'Configure later' })
     await configureLater.waitFor({ timeout: 30_000 })
     await configureLater.click()
-    await page.locator('[data-composer-input][data-placeholder="Describe what you want to build... / commands, @ files or sessions"]')
+    await page.locator('[data-composer-input][data-placeholder="Describe what you want to build, / commands, @ files or sessions"]')
       .waitFor({ timeout: 30_000 })
 
-    const exercised = await page.evaluate(async () => {
+    const exercised = await page.evaluate(async ({ seededSessionId, seededSessionTitle }) => {
       type Result<T> = { result: { ok: true; value: T } | { ok: false; error: { code: string; message: string } } }
       interface PreviewTransport {
         fetch(input: string, init: RequestInit): Promise<Response>
@@ -348,6 +355,14 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
         if (!body.result.ok) throw new Error(`${endpoint} failed: ${body.result.error.message}`)
         return body.result.value
       }
+      // Keep the fixture title stable for later UI assertions; increasing seqs
+      // prove that the cold Session acquired its write lease and appended.
+      const firstRename = await remote<{ title: string; seq: number }>('session/rename', {
+        request: { sessionId: seededSessionId, title: seededSessionTitle },
+      })
+      const secondRename = await remote<{ title: string; seq: number }>('session/rename', {
+        request: { sessionId: seededSessionId, title: seededSessionTitle },
+      })
       const skills = await remote<{ skills: Array<{ name: string }> }>(
         'skills/list', { request: { sessionId } },
       )
@@ -380,10 +395,17 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
       await remote('credentials/unset', { ref: 'PREVIEW_TEST_SECRET' })
       await new Promise((resolve) => { setTimeout(resolve, 250) })
       return {
+        renamedTitle: secondRename.title,
+        renameAdvanced: secondRename.seq > firstRename.seq,
         skillCount: skills.skills.length,
         credentialConfigured: credentials.PREVIEW_TEST_SECRET?.configured,
       }
+    }, {
+      seededSessionId: VFS_EXAMPLE_SESSION_IDS.main,
+      seededSessionTitle: SHOWCASE_TITLE,
     })
+    expect(exercised.renamedTitle).toBe(SHOWCASE_TITLE)
+    expect(exercised.renameAdvanced).toBe(true)
     expect(exercised.skillCount).toBeGreaterThan(0)
     expect(exercised.credentialConfigured).toBe(true)
 
@@ -394,8 +416,8 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
     await page.getByText(SHOWCASE_TAIL, { exact: true }).waitFor({ timeout: 30_000 })
 
     expect(await page.getByText(SHOWCASE_OLDEST, { exact: true }).count()).toBe(0)
-    await page.getByText('PREVIEW.md', { exact: true }).waitFor()
-    await page.getByText('src/preview.ts', { exact: true }).waitFor()
+    await page.getByRole('button', { name: 'PREVIEW.md', exact: true }).waitFor()
+    await page.getByRole('button', { name: 'src/preview.ts', exact: true }).waitFor()
     await page.getByText('Update to-do list', { exact: true }).waitFor()
     await page.getByText('Error: ENOENT: no such file, open missing.txt', { exact: true }).waitFor()
 
@@ -411,7 +433,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
     await page.getByText(SHOWCASE_OLDEST, { exact: true }).waitFor({ timeout: 15_000 })
     expect(pageErrors.map(error => error.message)).toEqual([])
     expect(consoleErrors.filter(line =>
-      /watchFile|failed to watch|node-addon-landlock-run\.probe|sandbox backend is usable|SANDBOX_UNAVAILABLE/i.test(line))).toEqual([])
+      /watchFile|failed to watch|node-addon-system\.probe|sandbox backend is usable|SANDBOX_UNAVAILABLE/i.test(line))).toEqual([])
   } catch (error) {
     await saveFailureShot(page, 'preview-boot')
     throw pageErrors.length === 0
@@ -469,7 +491,11 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
     })
     expect(sessionCount).toBe(0)
     expect(pageErrors.map(error => error.message)).toEqual([])
-    expect(failedResponses).toEqual(['/plugins/events'])
+    // Two accepted static-host 404s, sorted (the boot fetches race): the HMR
+    // event stream has no server here, and the open-in-app availability read
+    // has no host routes — the controller publishes an empty list and the
+    // header renders no button, which is that surface's designed degradation.
+    expect([...failedResponses].sort()).toEqual(['/open-in-app/apps', '/plugins/events'])
     expect(consoleErrors.filter(line => !line.includes('Failed to load resource: the server responded with a status of 404')))
       .toEqual([])
   } catch (error) {

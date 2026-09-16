@@ -31,7 +31,10 @@ const windowsUnsupportedPackages = process.platform === 'win32'
       'packages/shell/tool-bash',
       'packages/hooks/*',
       'packages/terminal/terminal-bash',
+      'packages/experimental/ptc-runtime-python',
       'packages/sandbox/sandbox-local',
+      // OpenSSH multiplexing and Unix-socket helper streams require POSIX endpoints.
+      'packages/ssh/*',
     ]
   : []
 
@@ -92,7 +95,15 @@ const windowsOnlyCoverageExclusions = process.platform !== 'win32'
 // never measures child processes. Its behavior is pinned end-to-end by
 // tests/runner.spec.ts, which spawns the real entry through tsx.
 const windowsRunnerCoverageExclusions = process.platform === 'win32'
-  ? ['packages/sandbox/sandbox-windows-acl/src/runner.ts']
+  ? [
+      'packages/sandbox/sandbox-windows-acl/src/runner.ts',
+      // The session write lock's POSIX face (fs-ext flock plus inode
+      // verification) executes only off-Windows: the Linux lanes hold its
+      // per-file 100%, while the Windows branch is unit-pinned by
+      // win32.spec's injected bindings and exercised natively by every
+      // Windows suite through the real backend.
+      'packages/session/session-persistence-jsonl/src/lease.ts',
+    ]
   : []
 
 // pwsh-local's run/start/lifecycle suites self-skip without a real pwsh
@@ -113,6 +124,7 @@ const testIncludes = [
   'packages/*/*/tests/**/*.spec.{ts,tsx}',
   'apps/*/tests/**/*.spec.ts',
   'scripts/**/*.spec.ts',
+  'website/tests/**/*.spec.ts',
 ]
 
 // The instrumented coverage gate sets this env; the exempt heavy suites then
@@ -143,13 +155,13 @@ const processBoundTests = [
   'packages/context/time-context/tests/time-context.spec.ts',
   'packages/llm/llm-pi-ai/tests/adapter.spec.ts',
   'packages/boot/app-boot/tests/app-boot.spec.ts',
-  'packages/workflow/workflow-worker-thread/tests/session.spec.ts',
+  'packages/workflow/workflow-ptc/tests/workflow-ptc.spec.ts',
 ]
 
 export default defineConfig({
   plugins: [pathsPlugin(), standardDecoratorPlugin()],
   test: {
-    setupFiles: ['./scripts/test-invariants.ts'],
+    setupFiles: ['./scripts/test-proxy-environment.ts', './scripts/test-invariants.ts'],
     // .tsx: client component specs (jsdom via per-file @vitest-environment pragma).
     include: testIncludes,
     exclude: platformUnsupportedTests,
@@ -165,7 +177,7 @@ export default defineConfig({
           // MaybeLocal in cjs_lexer::Parse) from worker threads on macOS,
           // Linux, and Windows. Forked workers avoid that shared thread path.
           pool: 'forks',
-          setupFiles: ['./scripts/test-invariants.ts'],
+          setupFiles: ['./scripts/test-proxy-environment.ts', './scripts/test-invariants.ts'],
           include: testIncludes,
           exclude: [
             ...platformUnsupportedTests,
@@ -180,7 +192,7 @@ export default defineConfig({
           name: 'process-bound',
           execArgv: vitestExecArgv,
           pool: 'forks',
-          setupFiles: ['./scripts/test-invariants.ts'],
+          setupFiles: ['./scripts/test-proxy-environment.ts', './scripts/test-invariants.ts'],
           include: processBoundTests,
           exclude: [
             ...platformUnsupportedTests,
@@ -201,6 +213,8 @@ export default defineConfig({
         'packages/*/*/src/types.ts',
         'packages/*/*/src/bin.ts',
         'packages/*/*/src/worker.ts',
+        // The built Node entry invokes the independently covered process bootstrap through fd 7.
+        'packages/ptc-runtime/ptc-runtime-node/src/process-entry.ts',
         // Dynamic Host/Client composition is covered by its focused lifecycle
         // tests and assembled application checks rather than per-file coverage.
         'packages/self-modification/*/src/**/*.{ts,tsx}',
@@ -220,21 +234,20 @@ export default defineConfig({
         'packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx',
         'packages/client/ui-renderer/src/client/*',
         // Session object internals retain the runtime GUI debt exemption; the
-        // new Controller entry, transport, Agent scope, and adapters stay gated.
-        'packages/api/session-controller/src/client/sessions/*',
+        // assistant-stream reconciler, Controller entry, transport, Agent scope,
+        // and adapters stay gated.
+        'packages/api/session-controller/src/client/sessions/!(assistant-stream).ts',
         'packages/api/session-controller/src/client/ordered-baseline.ts',
         'packages/api/session-controller/src/client/time-zone.ts',
         // Keep the browser conversation tree under its existing GUI debt
         // exemption while gating the newly stateful Host half and vocabulary.
         'packages/client/ui-conversation/src/client/*',
-        'packages/client/ui-conversation/src/invariant.ts',
         // Chat presentation and assembly retain the same GUI debt exemption;
         // package wiring and the new approval-detail adapter remain gated.
         'packages/client/ui-chat/src/client/chat/!(ApprovalCommand).{ts,tsx}',
         'packages/client/ui-chat/src/client/conversation-nodes/*',
         'packages/client/ui-chat/src/client/details/*',
         'packages/client/ui-chat/src/client/model/*',
-        'packages/client/ui-chat/src/client/contract/context-provenance.ts',
         'packages/client/ui-chat/src/client/contract/snapshot.ts',
         'packages/client/ui-chat/src/client/historical-images.ts',
         'packages/client/ui-primitives/src/DisclosureRow.tsx',
@@ -293,7 +306,6 @@ export default defineConfig({
         'packages/experimental/client-ui-agent-team/src/client/index.ts',
         // Slash/command/input round: per-file gaps deferred with the same
         // client-lane debt. TODO(gui): cover and remove with the lane above.
-        'packages/client/connection/src/client/fixture.ts',
         'packages/client/ui-commands/src/index.ts',
         'packages/client/ui-skill/src/index.ts',
         'packages/client/ui-input-trigger/src/index.ts',
@@ -321,11 +333,9 @@ export default defineConfig({
         'packages/client/ui-settings-models/src/client/welcome-store.ts',
         'packages/extensions/*/src/**/*.ts',
         'packages/extensions/*/src/**/*.tsx',
-        // Typert generator: correctness is pinned by its fixture suites and
-        // the byte-for-byte catalog reproduction test; per-file coverage
-        // would put whole-workspace compiler analysis under v8
-        // instrumentation — the coverage lane's longest tail.
-        'packages/typert/generator/src/*.ts',
+        // Typert correctness is checked by its uninstrumented suites,
+        // including compiler fixtures and byte-for-byte catalog reproduction.
+        'packages/typert/*/src/**/*.{ts,tsx}',
         // Experimental webworker-runtime is outside the coverage requirement
         // by decision: its correctness signal is its uninstrumented suite and
         // the packer's end-to-end image spec.

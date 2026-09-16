@@ -1,6 +1,6 @@
 /* Official popupSelect shell card: menu-surface tokens (same family as
  * ui-primitives Menu.module.css — figma MenuDropdown r12 / hairline /
- * shadow-lv3), anchored by the conversation.input.overlay slot. */
+ * elevation-prominent), anchored by the conversation.input.overlay slot. */
 
 .card {
   /* The overlay anchor is a zero-height strip on the composer card's top
@@ -24,10 +24,11 @@
      (see ui-theme styles/scrollbar.css for the rebinding contract). */
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
-  border: 1px solid var(--dsw-alias-border-inverted);
-  border-radius: 12px;
+  border: 0;
+  border-radius: 20px;
   background: var(--dsw-specific-menu);
-  box-shadow: var(--dsw-shadow-lv3);
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-elevation-prominent);
   outline: none;
 }
 
@@ -54,14 +55,34 @@
 }
 
 .label {
-  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.labelText {
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.badge {
+  flex: none;
+  align-self: flex-start;
+  margin-top: -1px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 8px;
+  line-height: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
 .detail {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
   white-space: nowrap;
@@ -72,6 +93,7 @@
 .check {
   display: inline-flex;
   flex: none;
+  margin-left: auto;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -84,7 +106,7 @@
 .search {
   margin: 2px 2px 4px;
   padding: 6px 8px;
-  border: 1px solid var(--dsw-alias-border-inverted);
+  border: 0.5px solid var(--dsw-alias-border-inverted);
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
@@ -109,7 +131,7 @@
 
 .retry {
   padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-inverted);
+  border: 0.5px solid var(--dsw-alias-border-inverted);
   border-radius: 6px;
   background: transparent;
   font-size: 12px;

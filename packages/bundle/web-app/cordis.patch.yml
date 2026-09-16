@@ -15,8 +15,9 @@
 
 - id: system-prompt
   config:
-    persona: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+    personaSuffix: Your working directory is {{cwd}}.
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model.
 
 # Full-text session search is opt-in (the base row's `openAt: never`). This
 # restatement keeps the Web values on one ephemeral in-memory index; a
@@ -46,9 +47,6 @@
     - id: subagent-model-selection-settings
       name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
 
-    - id: code-runtime
-      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
-
     - id: message-feedback
       name: '@deepseek-ai/dsh-message-feedback'
       config:
@@ -57,6 +55,19 @@
     # Browser Session export: `/export` command plus the shared download dialog.
     - id: session-log-download
       name: '@deepseek-ai/dsh-session-log-export'
+
+    # Session-header "Open In..." split button over the host application
+    # resolution (macOS/Windows/Linux; a host with no resolved application
+    # renders no button). Two halves: the host routes and the browser surface.
+    - id: open-in-app
+      name: '@deepseek-ai/dsh-host-open-in-app'
+      config:
+        probeTimeoutMs: 10000
+        iconTimeoutMs: 10000
+        launchWatchMs: 1000
+
+    - id: ui-open-in-app
+      name: '@deepseek-ai/dsh-client-ui-open-in-app'
 
     - id: workspace
       name: '@deepseek-ai/dsh-workspace'
@@ -90,6 +101,13 @@
     # Session commands, cold reads, and live control over Typert Remote.
     - id: session-controller
       name: '@deepseek-ai/dsh-api-session-controller'
+
+    # Workspace file service: bounded read, directory listing, and the
+    # agent-write change feed inside the session workspace root.
+    - id: terminal-controller
+      name: '@deepseek-ai/dsh-api-terminal-controller'
+    - id: workspace-files
+      name: '@deepseek-ai/dsh-api-workspace-files'
 
     # Configuration-surface reads and writes over Typert Remote. Each method
     # reports an actionable error when its settings-domain provider is absent.
@@ -127,8 +145,9 @@
     # assembly fact of dsh-web-app, never user config), mounts the
     # frontend-static fallback owner, registers the web-surface prompt
     # section and the bash runtime variable, prints the URL line, and opens the
-    # canonical local URL after the full tree settles. The webStartup provider
-    # supplies invocation-only values; after the server binds, this row samples
+    # canonical local URL after the full Loader tree settles and the required-
+    # entry audit passes. The
+    # webStartup provider supplies invocation-only values; after the server binds, this row samples
     # LAN trust once and provides `webRuntime`. A complete agent-preset persona
     # suppresses the prompt section for that agent while retaining the host-owned
     # shell variable.
@@ -168,6 +187,11 @@
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
         trustedHosts: !!js ctx.webRuntime.trustedHosts
 
+    # Raw Blob and ReadableStream uploads run independently of Connection's
+    # RPC and generation service.
+    - id: file-upload
+      name: '@deepseek-ai/dsh-client-file-upload'
+
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'
 
@@ -189,8 +213,28 @@
     - id: ui-session
       name: '@deepseek-ai/dsh-client-ui-session'
 
+    # Unified resource model: protocol providers behind the useResource hook.
+    - id: resources
+      name: '@deepseek-ai/dsh-client-resources'
+
     - id: ui-sidebar
       name: '@deepseek-ai/dsh-client-ui-sidebar'
+
+    # The right Sidebar: one docking surface per session over ui-dockkit.
+    - id: ui-sidebar-right
+      name: '@deepseek-ai/dsh-client-ui-sidebar-right'
+
+
+    # The right Sidebar's document tab: bounded file reads with selectable
+    # Markdown, code, HTML, PDF, and plain-text renderers.
+    - id: ui-sidebar-documentpreview
+      name: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview'
+
+    # The right Sidebar's workspace file tree tab type.
+    - id: ui-sidebar-terminal
+      name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
+    - id: ui-sidebar-files
+      name: '@deepseek-ai/dsh-client-ui-sidebar-files'
 
     - id: ui-settings
       name: '@deepseek-ai/dsh-client-ui-settings'
@@ -203,6 +247,9 @@
 
     - id: ui-settings-plugin-inventory
       name: '@deepseek-ai/dsh-client-ui-settings-plugin-inventory'
+
+    - id: ui-settings-unarchive-sessions
+      name: '@deepseek-ai/dsh-client-ui-settings-unarchive-sessions'
 
     - id: ui-conversation
       name: '@deepseek-ai/dsh-client-ui-conversation'
@@ -273,8 +320,9 @@
     - id: ui-goal
       name: '@deepseek-ai/dsh-client-ui-goal'
 
-    # Per-message feedback: Like/Dislike plus an optional note in the
-    # assistant-message action strip, over the messageFeedback Remote.
+    # The feedback surface: Like/Dislike in the assistant-message action
+    # strip, the feedback dialog behind Dislike and /feedback with its
+    # acknowledgement toast, over the messageFeedback and sessionFeedback Remotes.
     - id: ui-message-feedback
       name: '@deepseek-ai/dsh-client-ui-message-feedback'
 
@@ -351,9 +399,6 @@
 - id: tool-fs-search
   disabled: true
 
-- id: tool-str-replace-editor
-  disabled: true
-
 # The `skill` REGISTRY stays in the host plane. It is host+per-scope layered
 # (the tools-registry shape): deployment-level providers — repository plugins,
 # a host skill-filesystem row — register into its global layer, while a preset's
@@ -416,18 +461,15 @@
 - id: tool-subagent-fork
   disabled: true
 
-# `tool-subagent-report` is host-plane for the same reason as the registry, not
-# because a preset may not want it: it registers a CONTINUABLE SETUP on that
-# singleton rather than a tool this agent calls, and the setup list is not
-# scope-aware — one copy per mounted preset means every child gets `report`
-# registered once per live session, which throws on the second.
-
-- id: workflow-worker-thread
+- id: workflow-ptc
   disabled: true
 
 - id: tool-workflow
   disabled: true
 
+# `base` ships this row disabled; the preset-plane gate reads declared row ids
+# without regard to `disabled`, so this row must stay to keep `tool-ralph` off
+# the host plane and out of collision with every preset's row.
 - id: tool-ralph
   disabled: true
 

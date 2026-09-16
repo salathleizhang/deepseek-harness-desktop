@@ -1,6 +1,7 @@
 /** Package-owned invariants for DeepSeek session-log acceptance watermarks. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 import type {} from './types.ts'
@@ -15,20 +16,36 @@ export const inject = ['invariants']
 /** Validate one acceptance watermark against its containing event and session. */
 function validateDeliveryAccepted(session: Session, event: SessionEvent<'session-log-deepseek/delivery-accepted'>, fail: InvariantFailure): void {
   const { sessionId, throughSeq } = event.data
+  const acceptedFormatVersion = event.data.sessionFormatVersion ?? 0
+  if (!Number.isSafeInteger(acceptedFormatVersion)
+    || acceptedFormatVersion < 0
+    || Object.is(acceptedFormatVersion, -0)) {
+    fail(
+      'session-log-deepseek/delivery-accepted sessionFormatVersion must be a non-negative safe integer'
+      + `, got ${String(acceptedFormatVersion)}`,
+    )
+  }
+  if (acceptedFormatVersion !== session.header.version) return
   const inherited = session.header.parentSession !== undefined
-    && session.header.seedLength !== undefined
-    && event.seq < session.header.seedLength
+    && !session.isOwnSeq(event.seq)
   if (sessionId !== session.id && !inherited) {
     fail('a non-inherited session-log-deepseek/delivery-accepted event must name its containing session')
   }
-  if (!Number.isSafeInteger(throughSeq) || throughSeq < 0 || throughSeq >= event.seq) {
+  let acceptedSeq: ReturnType<typeof SessionSeq>
+  try {
+    acceptedSeq = SessionSeq(throughSeq)
+  } catch {
+    fail(`session-log-deepseek/delivery-accepted throughSeq must identify an earlier event, got ${throughSeq} at seq ${event.seq}`)
+  }
+  if (acceptedSeq >= event.seq) {
     fail(`session-log-deepseek/delivery-accepted throughSeq must identify an earlier event, got ${throughSeq} at seq ${event.seq}`)
   }
 }
 
 /** Validate acceptance watermarks already present in one Session. */
 function validateSession(session: Session, fail: InvariantFailure): void {
-  for (const event of session.events) {
+  // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+  for (const event of session.snapshotEvents()) {
     if (event.type === 'session-log-deepseek/delivery-accepted') validateDeliveryAccepted(session, event, fail)
   }
 }

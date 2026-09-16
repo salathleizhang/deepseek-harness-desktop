@@ -1,9 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { scanLog } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
+import { SESSION_FORMAT_VERSION, Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {
+  generationLogFilename,
+  scanLog,
+} from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
+import { projectionCacheDomainSpec } from '@deepseek-ai/dsh-session-projection-cache'
 import {
   buildVfsExampleFiles,
   VFS_EXAMPLE_OLDEST_MESSAGE,
@@ -27,9 +31,10 @@ function filesUnder(root: string): string[] {
 }
 
 function readSession(id: string): ReturnType<typeof scanLog> {
-  return scanLog(readFileSync(
-    join(VFS_EXAMPLE_ROOT, 'home/sessions/--dsh-workspace--', id, 'session.jsonl'),
-  ))
+  const path = `home/sessions/--dsh-workspace--/${id}/${generationLogFilename(SESSION_FORMAT_VERSION, 'none')}`
+  const generated = buildVfsExampleFiles().get(path)
+  if (generated === undefined) throw new Error(`missing generated VFS example Session ${path}`)
+  return scanLog(Buffer.from(generated))
 }
 
 function textOf(event: SessionEvent): string {
@@ -45,23 +50,51 @@ function textOf(event: SessionEvent): string {
 describe('WebWorker preview VFS example', () => {
   it('matches its deterministic source byte for byte', () => {
     const expected = buildVfsExampleFiles()
-    expect(filesUnder(VFS_EXAMPLE_ROOT)).toEqual([...expected.keys()].sort())
+    const predecessors = Object.values(VFS_EXAMPLE_SESSION_IDS)
+      .map(id => `home/sessions/--dsh-workspace--/${id}/session.v2.jsonl`)
+    expect(filesUnder(VFS_EXAMPLE_ROOT)).toEqual([...expected.keys(), ...predecessors].sort())
     for (const [path, content] of expected) {
       expect(readFileSync(join(VFS_EXAMPLE_ROOT, path), 'utf8'), path).toBe(content)
     }
   })
 
-  it('seeds the cold-list title cache against the main log identity', () => {
-    const cache = JSON.parse(readFileSync(
+  it('keeps the committed cache on the current generated projection', () => {
+    const committed = JSON.parse(readFileSync(
       join(VFS_EXAMPLE_ROOT, 'home/storages/session_projcache.json'),
       'utf8',
     )) as {
       unit: { name: string; version: number }
-      tables: { sessions: Record<string, { identity: { createdAt: number; cwd: string }; rows: { title: unknown } }> }
+      tables: {
+        sessions: Record<string, {
+          identity: {
+            formatVersion: number
+            createdAt: number
+            cwd: string
+            isSeeded: boolean
+            inheritedEventCount: number
+          }
+          rows: { title: unknown }
+        }>
+      }
     }
-    expect(cache.unit).toEqual({ name: 'session_projcache', version: 3 })
-    expect(cache.tables.sessions[VFS_EXAMPLE_SESSION_IDS.main]).toMatchObject({
-      identity: { createdAt: 1_787_472_000_000, cwd: '/dsh/workspace' },
+    const generatedText = buildVfsExampleFiles().get('home/storages/session_projcache.json')
+    if (generatedText === undefined) throw new Error('missing generated VFS example projection cache')
+    const generated = JSON.parse(generatedText) as typeof committed
+    expect(committed).toEqual(generated)
+    expect(committed.tables.sessions[VFS_EXAMPLE_SESSION_IDS.main]?.identity.formatVersion)
+      .toBe(SESSION_FORMAT_VERSION)
+    expect(generated.unit).toEqual({
+      name: projectionCacheDomainSpec.name,
+      version: projectionCacheDomainSpec.version,
+    })
+    expect(generated.tables.sessions[VFS_EXAMPLE_SESSION_IDS.main]).toMatchObject({
+      identity: {
+        formatVersion: SESSION_FORMAT_VERSION,
+        createdAt: 1_787_472_000_000,
+        cwd: '/dsh/workspace',
+        isSeeded: false,
+        inheritedEventCount: 0,
+      },
       rows: {
         title: {
           ver: 1,
@@ -72,7 +105,7 @@ describe('WebWorker preview VFS example', () => {
   })
 
   it('restores the main production log with paging and tool coverage', () => {
-    const { meta, events } = readSession(VFS_EXAMPLE_SESSION_IDS.main)
+    const { meta, inheritedEventCount, events } = readSession(VFS_EXAMPLE_SESSION_IDS.main)
     expect(meta).toMatchObject({
       id: VFS_EXAMPLE_SESSION_IDS.main,
       cwd: '/dsh/workspace',
@@ -81,7 +114,13 @@ describe('WebWorker preview VFS example', () => {
     })
     expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index))
     expect(events.at(-1)).toMatchObject({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
-    expect(() => Session.fromRestore(SessionId(meta.id), events, meta)).not.toThrow()
+    expect(() => Session.fromRestore(
+      SessionId(meta.id),
+      events,
+      meta,
+      inheritedEventCount,
+      'detached',
+    )).not.toThrow()
 
     const messages = events.filter(event =>
       (event.type === 'user/message' || event.type === 'assistant/message') && event.surfaceOp === 'append')
@@ -105,7 +144,7 @@ describe('WebWorker preview VFS example', () => {
       [VFS_EXAMPLE_SESSION_IDS.continuable, 'continuable'],
     ] as const
     for (const [id, mode] of expected) {
-      const { meta, events } = readSession(id)
+      const { meta, inheritedEventCount, events } = readSession(id)
       expect(meta).toMatchObject({
         id,
         cwd: '/dsh/workspace',
@@ -116,8 +155,14 @@ describe('WebWorker preview VFS example', () => {
       })
       expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index))
       expect(events.at(-1)).toMatchObject({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
-      expect(foldSubagentDescriptor(events.slice(meta.seedLength ?? 0))).toMatchObject({ mode })
-      expect(() => Session.fromRestore(SessionId(meta.id), events, meta)).not.toThrow()
+      expect(foldSubagentDescriptor(events.slice(inheritedEventCount))).toMatchObject({ mode })
+      expect(() => Session.fromRestore(
+        SessionId(meta.id),
+        events,
+        meta,
+        inheritedEventCount,
+        'detached',
+      )).not.toThrow()
     }
   })
 })

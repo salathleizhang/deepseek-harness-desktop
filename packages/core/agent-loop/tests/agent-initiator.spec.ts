@@ -130,8 +130,8 @@ describe('AgentLoop initiator scope', () => {
     await ctx.plugin(AgentLoop, { agents: [] })
     ctx.llm.registerAdapter(['mock'], adapter)
 
-    const a = ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
-    const b = ctx.agentLoop.create(SessionId('b'), { provider: 'mock', model: 'mock' })
+    const a = await ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
+    const b = await ctx.agentLoop.create(SessionId('b'), { provider: 'mock', model: 'mock' })
     const idleA = waitForIdle(ctx, a)
     const idleB = waitForIdle(ctx, b)
     send(a, 'a')
@@ -154,7 +154,7 @@ describe('AgentLoop initiator scope', () => {
       textResponse('second done'),
     ])
     const { ctx } = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('signal-owner'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('signal-owner'), { provider: 'mock', model: 'mock' })
     let signals: AbortSignal[] = []
     let preStepSignals: AbortSignal[] = []
     const capture = (signal: AbortSignal | undefined): void => {
@@ -238,9 +238,10 @@ describe('AgentLoop initiator scope', () => {
         const handle = await exec.agent.ctx.agents.create({
           sessionId: SessionId('child-session'),
           agentOptions: { provider: 'mock', model: 'mock' },
-          setup: (agentCtx) => {
+          parentAgent: exec.agent,
+          setup: (agentCtx, childAgent) => {
             parentDuringSetup = ctx.agents.requireInitiator()
-            explicitChild = agentCtx.agent
+            explicitChild = childAgent
             agentCtx.tools.register(defineContentToolFixture({
               name: 'observe-child',
               description: 'observe child execution identity',
@@ -334,7 +335,7 @@ describe('AgentLoop initiator scope', () => {
     }])
     const schema = adapter.requests[0]?.tools?.find(tool => tool.name === 'capability-request')
     expect(JSON.stringify(schema?.parameters)).not.toMatch(/session|harness/i)
-    const call = handle.agent.session.events.find(event => event.type === 'tool/call')
+    const call = handle.agent.session.snapshotEvents().find(event => event.type === 'tool/call')
     expect(call?.type === 'tool/call' ? call.data.arguments : undefined)
       .toBe(JSON.stringify({ path: '/v1/capability' }))
     expect(captured).toBe(handle.agent)

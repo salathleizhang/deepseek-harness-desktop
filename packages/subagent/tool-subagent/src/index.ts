@@ -16,6 +16,8 @@ import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type { Session } from '@deepseek-ai/dsh-session'
 import {
   assertSubagentMaxDepth,
   parentAgentOptionsForDelegation,
@@ -42,8 +44,6 @@ import {
 export const name = 'tool-subagent'
 export const inject = ['tools', 'subagents', 'systemPrompt', 'sessionProjections']
 
-/** Prompt order after bounded delegation policy and before child reporting. */
-
 /** Config: which registered provider this tool delegates to, plus child defaults. */
 export interface Config {
   /** The `ctx.subagents` provider name to start runs on (e.g. `spawn`, `acp`). */
@@ -54,8 +54,8 @@ export interface Config {
    */
   toolName?: string
   /**
-   * Sample the Host `subagent-model-selection` user setting for each new
-   * top-level session and inherit that decision in its child sessions.
+   * Sample the Host `subagent-model-selection` setting for each new top-level
+   * Session and inherit that decision in its child Sessions.
    */
   modelSelectionSettings?: boolean
   /**
@@ -75,7 +75,7 @@ export interface Config {
    */
   agentOptions?: AgentOptions
   /**
-   * Per-child persona that shadows `deployment:persona`. Requires the
+   * Per-child persona that shadows `deployment:persona-prefix`. Requires the
    * provider's `persona` capability; omission preserves the deployment persona.
    */
   persona?: string
@@ -304,7 +304,13 @@ function resolveDelegationRun(
   }
 }
 
-export function apply(ctx: Context, config: Config): void {
+/**
+ * Install one delegation-tool composition.
+ * @param ctx - Context that owns the registrations.
+ * @param config - delegation-tool configuration.
+ * @param session - unpublished Session supplied by a direct Agent setup; omit for a standing composition.
+ */
+export function apply(ctx: Context, config: Config, session?: Session): void {
   // Direct apply() bypasses Schemastery's numeric constraints. A direct-apply
   // omission stays capless (the schema default only runs through the loader).
   if (config.maxDepth !== 'provider-managed') assertSubagentMaxDepth(config.maxDepth)
@@ -377,7 +383,7 @@ export function apply(ctx: Context, config: Config): void {
           // a separately installed capability, so this promise holds whenever the
           // continuable background path is reachable at all.
           ? continuable
-            ? ' This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result.'
+            ? ' This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` steers the child\'s nearest step while it is running and starts a turn while it is idle. Set `run_in_background: false` only when your next action depends on receiving the result.'
             : ' This call waits for the result by default. Set `run_in_background: true` to return a job id; collect with `job_output` and stop with `job_kill`.'
           : ' This call waits for the subagent and returns its result.') + choiceDescription,
         parameters: {
@@ -611,53 +617,61 @@ export function apply(ctx: Context, config: Config): void {
       + '@deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope',
     )
   }
-  const compositionScope = scopeOf(ctx)
-  if (compositionScope === undefined) {
-    throw new Error('tool-subagent: `modelSelectionSettings` requires an Agent or preset scope')
-  }
-
-  const selectForAgent = (agent: NonNullable<Context['agent']>): ModelSelectionPolicy | undefined => {
-    let allowedModels = subagentModelSelectionPolicy(ctx.sessionProjections, agent.session)
+  const selectForSession = (target: Session): ModelSelectionPolicy | undefined => {
+    const freshSession = target.firstLiveSeq === 0
+      // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+      && target.eventAt(SessionSeq(0))?.type !== 'session/end-seed'
+    let allowedModels = subagentModelSelectionPolicy(ctx.sessionProjections, target)
     if (allowedModels === undefined) {
-      const parentId = agent.session.header.origin === 'subagent'
-        ? agent.session.header.parentSession
+      const parentId = target.header.origin === 'subagent'
+        ? target.header.parentSession
         : undefined
       if (parentId !== undefined) {
-        const parent = ctx.get('agents')?.get(parentId)
+        const sessions = ctx.get('sessions')
+        if (sessions === undefined) {
+          throw new Error('tool-subagent: child model-selection inheritance requires the Session registry')
+        }
+        const parent = sessions.get(parentId)
         allowedModels = parent === undefined
           ? undefined
-          : subagentModelSelectionPolicy(ctx.sessionProjections, parent.session)
-      } else if (agent.session.firstLiveSeq === 0) {
+          : subagentModelSelectionPolicy(ctx.sessionProjections, parent)
+      } else if (freshSession) {
         const current = settings.current()
         allowedModels = current.enabled ? current.allowedModels : undefined
       }
     }
     if (allowedModels !== undefined) {
-      recordSubagentModelSelection(ctx.sessionProjections, agent.session, allowedModels)
+      recordSubagentModelSelection(ctx.sessionProjections, target, allowedModels)
     }
     return allowedModels === undefined ? undefined : { routes: allowedModels }
   }
 
-  const agent = ctx.agent
-  if (agent !== undefined) {
-    install(ctx, selectForAgent(agent))
+  if (session !== undefined) {
+    install(ctx, selectForSession(session))
     return
   }
+
+  const compositionScope = scopeOf(ctx)
+  if (compositionScope === undefined) {
+    throw new Error('tool-subagent: standing `modelSelectionSettings` requires a scoped preset Context')
+  }
   const agents = ctx.get('agents')
-  /* v8 ignore next -- Agent and preset scopes are minted only by the Agent registry. */
-  if (agents === undefined) throw new Error('tool-subagent: scoped model-selection settings require the Agent registry')
+  /* v8 ignore next -- shipped preset compositions always include the Agent registry. */
+  if (agents === undefined) throw new Error('tool-subagent: standing `modelSelectionSettings` requires the Agent registry')
   const scopedInstalls = new WeakMap<Agent, ReturnType<Context['inject']>>()
   const installing = new WeakSet<Agent>()
   const belongsToComposition = (candidate: Agent): boolean =>
     scopeChainOf(scopeOf(candidate.ctx)).includes(compositionScope)
-  const installScoped = (candidate: Agent): void => {
-    if (scopedInstalls.has(candidate) || installing.has(candidate)) return
+  const installScoped = (candidate: Agent): ReturnType<Context['inject']> | undefined => {
+    const existing = scopedInstalls.get(candidate)
+    if (existing !== undefined) return existing
+    if (installing.has(candidate)) return
     // Reserve before the injected fiber runs: tool registration emits
     // `tools/change` synchronously, which re-enters the reconciliation below.
     installing.add(candidate)
     let fiber: ReturnType<Context['inject']>
     try {
-      const policy = selectForAgent(candidate)
+      const policy = selectForSession(candidate.session)
       fiber = candidate.ctx.inject(['tools', 'subagents', 'systemPrompt'], (runtimeCtx) => {
         install(runtimeCtx, policy)
       })
@@ -665,6 +679,7 @@ export function apply(ctx: Context, config: Config): void {
       installing.delete(candidate)
     }
     scopedInstalls.set(candidate, fiber)
+    return fiber
   }
   const removeScoped = (candidate: Agent): void => {
     const fiber = scopedInstalls.get(candidate)
@@ -676,22 +691,21 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
   const reconcileComposedAgents = (): void => {
-    // Every Agent and preset scope is minted by the Agent registry; the scope
-    // check above makes this same-process typed relationship authoritative.
     for (const candidate of agents.list()) {
       if (belongsToComposition(candidate)) installScoped(candidate)
       else removeScoped(candidate)
     }
   }
-  // A shipped preset is mounted once in a standing scope. Its listener admits
-  // only descendant Agents and installs the sampled tool definition in each
-  // Agent's own scope, so a later settings change cannot mutate a live session.
-  ctx.on('agent/created', ({ agent: created }) => {
-    installScoped(created)
+  // The preset-scoped listener admits descendant Agents and installs the
+  // sampled tool definition in each Agent's own scope, so a later settings
+  // change cannot mutate a live session.
+  ctx.on('agent/created', async ({ agent: created }) => {
+    await installScoped(created)
   })
   ctx.on('agent/disposed', ({ agent: disposed }) => { removeScoped(disposed) })
   // Reparenting an Agent between standing presets changes its inherited tool
   // set and emits `tools/change`; reconcile the Agent-owned override with the
   // new ancestry. Other registry changes are idempotent no-ops here.
   ctx.on('tools/change', reconcileComposedAgents)
+  reconcileComposedAgents()
 }

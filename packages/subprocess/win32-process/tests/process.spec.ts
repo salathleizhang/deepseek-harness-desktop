@@ -7,7 +7,7 @@ import {
   spawnPipedProcess,
 } from '../src/index.ts'
 import { CREATE_SUSPENDED } from '../src/abi.ts'
-import { PROCESS_INFORMATION } from '../src/ffi.ts'
+import { processInformationType } from '../src/ffi.ts'
 import type { NativePtr, Win32ProcessBindings } from '../src/index.ts'
 
 const PVOID = koffi.pointer('void')
@@ -24,7 +24,7 @@ function inheritedApi(overrides: Partial<Win32ProcessBindings> = {}): {
     overrides.createProcessAsUserW
     ?? ((_token, _app, _line, _pa, _ta, _inherit, _flags, _env, _cwd, _startup, info) => {
       events.push('create')
-      koffi.encode(info, PROCESS_INFORMATION, {
+      koffi.encode(info, processInformationType(), {
         hProcess: 60n,
         hThread: 61n,
         dwProcessId: 1234,
@@ -69,6 +69,16 @@ function inheritedApi(overrides: Partial<Win32ProcessBindings> = {}): {
 
 describe('spawnInheritedJobProcess', () => {
   const token = 70n as NativePtr
+
+  it('inherits the control carrier into a restricted child before resume', () => {
+    const descriptorHandle = vi.fn(() => 107n as NativePtr)
+    const { api, events } = inheritedApi({ uvGetOsfhandle: descriptorHandle, getFileType: vi.fn(() => 3) })
+    const child = spawnInheritedJobProcess(api, { command: 'node.exe', args: [], cwd: 'C:\\work', token, controlFileDescriptor: 7 })
+    expect(child.pid).toBe(1234)
+    expect(descriptorHandle).toHaveBeenCalledExactlyOnceWith(7)
+    expect(events.filter(event => event === 'inherit')).toHaveLength(4)
+    expect(events.indexOf('assign')).toBeLessThan(events.indexOf('resume'))
+  })
 
   it('creates suspended, assigns the Job, then resumes the restricted child', () => {
     const {
@@ -166,7 +176,7 @@ describe('spawnInheritedJobProcess', () => {
       closeHandle,
       terminateProcess,
       createProcessAsUserW: vi.fn((_token, _app, _line, _pa, _ta, _inherit, _flags, _env, _cwd, _startup, info) => {
-        koffi.encode(info, PROCESS_INFORMATION, {
+        koffi.encode(info, processInformationType(), {
           hProcess: 60n,
           hThread: 0n,
           dwProcessId: 1234,
@@ -222,7 +232,7 @@ describe('wait and pipe cleanup', () => {
       }),
       setHandleInformation: vi.fn(() => 1),
       createProcessAsUserW: vi.fn((_token, _app, _line, _pa, _ta, _inherit, _flags, _env, _cwd, _startup, info) => {
-        koffi.encode(info, PROCESS_INFORMATION, {
+        koffi.encode(info, processInformationType(), {
           hProcess: 60n,
           hThread: 0n,
           dwProcessId: 1234,

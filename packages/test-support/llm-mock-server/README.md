@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-llm-mock-server` stands in for a real model provider during tests as a scriptable OpenAI-compatible HTTP/SSE server: you script a sequence of wire behaviors — stream resets, stalls, malformed chunks, rate limits, server errors, successful completions, tool calls — and each accepted `/chat/completions` request consumes the next one. It serves the shipping DeepSeek adapter and the agent loop over real HTTP, so recovery policy such as retries, backoff, and timeouts is exercised against a genuine wire boundary without a provider key. A CLI (`pnpm run mock:llm`) runs the server standalone; the library entry `startMockLlmServer` embeds it in tests and returns captured requests. A `random` behavior with seeded weights mixes failures for open-ended stress runs.
+This package gives tests and demos a scriptable OpenAI-compatible HTTP/SSE endpoint, so they can exercise model-provider failures and successes without a provider key. Each accepted `/chat/completions` request consumes the next scripted behavior, including resets, stalls, malformed chunks, rate limits, server errors, completions, and tool calls. Test authors can run it with `pnpm run mock:llm` or call `startMockLlmServer`, which returns captured requests for assertions. Seeded `random` behavior supports reproducible mixed-failure stress runs.
 
 ## Table of Contents
 
@@ -117,7 +117,7 @@ The server is built on one rule: each accepted chat-completions request consumes
 | [`src/index.ts`](src/index.ts) | `startMockLlmServer`: listener, behavior table, seeded randomness, telemetry, captured request records |
 | [`src/cli.ts`](src/cli.ts) | `--sequence` and timing/content option parsing, JSONL stdout telemetry |
 | [`src/bin.ts`](src/bin.ts) | The `pnpm run mock:llm` source entry |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; wire behavior is exercised through HTTP tests) |
+| — | No runtime invariant companion is published; this standalone test server owns no Cordis event stream or shared data; its wire behavior and lifecycle are exercised through direct HTTP and assembled-loop tests. |
 
 ### Wire flow
 

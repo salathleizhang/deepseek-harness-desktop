@@ -13,8 +13,11 @@ import type {
   ConversationViewSnapshotStore,
 } from '../contract/conversation.ts'
 import type { ConversationSnapshot } from '../contract/snapshot.ts'
-import type { ConversationPromptSnapshot, RequestPromptInspection } from '../contract/request-inspection.ts'
+import type {
+  ConversationPromptSnapshot, RequestPromptInspection, SystemPromptNode,
+} from '../contract/request-inspection.ts'
 import { inspectRequestPrompt } from '../contract/request-inspection.ts'
+import { inspectSystemPrompt, type SystemPromptState } from '../contract/system-prompt.ts'
 import { ConversationNodeAssembler } from './assembler.ts'
 import { ConversationEventRegistry } from './event-registry.ts'
 import { HistoricalImageCache } from './historical-images.ts'
@@ -86,10 +89,7 @@ class BoundConversation implements ConversationBinding {
   rebuild(): void { this.publish(this.assembler.rebuildRegistry()) }
 
   dispose(): void {
-    if (this.frame !== undefined && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(this.frame)
-    }
-    this.frame = undefined
+    this.cancelFrame()
     this.disposeFeed()
   }
 
@@ -116,7 +116,14 @@ class BoundConversation implements ConversationBinding {
           if (next === 'immediate' || publication === 'none') publication = next
         }
         this.publish(publication)
+        return
       }
+      case 'settle-assistant':
+        this.publish(this.assembler.settleAssistant(
+          window.change.attemptId,
+          window.change.entry,
+        ))
+        return
     }
   }
 
@@ -124,13 +131,26 @@ class BoundConversation implements ConversationBinding {
     if (publication === 'none') return
     if (publication === 'animation-frame' && typeof requestAnimationFrame === 'function') {
       if (this.frame !== undefined) return
+      // Cross three paint opportunities before publishing high-frequency stream updates.
       this.frame = requestAnimationFrame(() => {
-        this.frame = undefined
-        this.flush()
+        this.frame = requestAnimationFrame(() => {
+          this.frame = requestAnimationFrame(() => {
+            this.frame = undefined
+            this.flush()
+          })
+        })
       })
       return
     }
+    this.cancelFrame()
     this.flush()
+  }
+
+  private cancelFrame(): void {
+    if (this.frame !== undefined && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this.frame)
+    }
+    this.frame = undefined
   }
 
   private flush(): void {
@@ -253,20 +273,33 @@ export class UiConversation extends Service {
   }
 
   /**
-   * Canonicalize one `request/header` event against the previous prompt state.
+   * Interpret a system message or surface replacement for target-owned prompt Definitions.
+   * @param previous - System facts at the preceding relevant loaded event.
+   * @param event - Durable system message or positional replacement.
+   * @returns Immutable prompt interpretation at this event.
+   */
+  inspectSystemPrompt(previous: SystemPromptState | undefined, event: SessionEvent): SystemPromptState {
+    return inspectSystemPrompt(previous, event)
+  }
+
+  /**
+   * Canonicalize one `request/header` event against the previous prompt state
+   * and the `system/message` node in force.
    *
    * A pure interpretation shared by the Chat and Trajectory Definitions, exposed
    * as a service method because cross-plugin value imports are forbidden in
    * client bundles.
    * @param previous - prompt recorded by the preceding loaded header, if any.
    * @param event - the `request/header` session event to interpret.
+   * @param system - effective prompt after loaded surface replacements, if any.
    * @returns the canonical prompt snapshot and any model-visible change.
    */
   inspectRequestPrompt(
     previous: ConversationPromptSnapshot | undefined,
     event: SessionEvent<'request/header'>,
+    system: SystemPromptNode | undefined,
   ): RequestPromptInspection {
-    return inspectRequestPrompt(previous, event)
+    return inspectRequestPrompt(previous, event, system)
   }
 
   private drop(record: BindingRecord, releaseScope: boolean): void {

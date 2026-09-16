@@ -10,19 +10,19 @@
  * is pinned separately in integration.spec.ts.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
-import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
+import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { ShellExecutor } from '@deepseek-ai/dsh-shell'
@@ -37,6 +37,12 @@ import { processOutcome } from '../src/background.ts'
 import { renderPwshProcessRead, renderPwshResult } from '../src/render.ts'
 
 const testToolSignal = new AbortController().signal
+
+/** Per-test temp dirs (session cwd/home fixtures), removed after each test. */
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 /**
  * A scriptable fake executor: `resolve()` mirrors the real defaulting, `run()`
@@ -70,7 +76,7 @@ class FakeBash extends ShellExecutor {
     return this.handler(spec)
   }
 
-  override start(spec: ShellExecSpec): ShellProcess {
+  override async start(spec: ShellExecSpec): Promise<ShellProcess> {
     this.startCalls++
     this.specs.push(spec)
     return this.backgroundHandler(spec)
@@ -142,13 +148,13 @@ async function setup(toolConfig: Partial<ToolPwsh.Config> = {}, dshHome?: string
 }
 
 /** Full harness: the generic job runtime + its controller, then the pwsh tool. */
-async function setupWithTasks(toolConfig: Partial<ToolPwsh.Config> = {}, dshHome?: string) {
+async function setupWithJobs(toolConfig: Partial<ToolPwsh.Config> = {}, dshHome?: string) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(LocalJobRegistry)
-  await ctx.plugin(ToolTasks)
+  await ctx.plugin(ToolJobs)
   await ctx.plugin(BashEnvPlugin, dshHome === undefined ? {} : { dshHome })
   await ctx.plugin(FakeBash)
   await ctx.plugin(ToolPwsh, toolConfig)
@@ -197,7 +203,7 @@ class ConfiningFakeBash extends ShellExecutor {
     })
   }
 
-  override start(spec: ShellExecSpec): ShellProcess {
+  override async start(spec: ShellExecSpec): Promise<ShellProcess> {
     this.modes.push(spec.sandboxPolicy?.mode)
     return fakeProcess()
   }
@@ -210,7 +216,7 @@ async function setupSandboxed(withApproval = false) {
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(LocalJobRegistry)
-  await ctx.plugin(ToolTasks)
+  await ctx.plugin(ToolJobs)
   await ctx.plugin(BashEnvPlugin)
   await ctx.plugin(SessionProjectionRegistry)
   // The loop's turnBoundary unit (the open-turn fold) is not mounted in this
@@ -236,20 +242,39 @@ function sandboxAgent(
   ctx?: Context,
   onAppend?: (type: string) => void,
 ): Agent {
-  const events: Array<{ type: string; data?: Record<string, unknown>; seq?: number }> = [
-    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+  const events: Array<{
+    type: string
+    seq: ReturnType<typeof SessionSeq>
+    time: number
+    data: Record<string, unknown>
+  }> = [
+    { type: 'turn/start', seq: SessionSeq(0), time: 0, data: { turn: 1 } },
   ]
-  if (mode !== undefined) events.push({ type: 'sandbox/mode', seq: 1, data: { mode } })
+  if (mode !== undefined) {
+    events.push({ type: 'sandbox/mode', seq: SessionSeq(1), time: 1, data: { mode } })
+  }
   const id = SessionId('sandbox-session')
   return {
     id,
     ...ctx === undefined ? {} : { ctx: ctx.plugin(() => {}).ctx },
     session: {
       id,
-      header: { version: 0, id, createdAt: 0 },
-      events,
+      header: { version: SESSION_FORMAT_VERSION, id, createdAt: 0, isSeeded: false },
+      inheritedEventCount: SessionLogOffset(0),
+      firstLiveSeq: SessionLogOffset(0),
+      get seq() { return SessionLogOffset(events.length) },
+      eventAt: (seq: ReturnType<typeof SessionSeq>) => events[seq],
+      snapshotEvents: (
+        fromSeq = SessionLogOffset(0),
+        toSeqExclusive = SessionLogOffset(events.length),
+      ) => events.slice(fromSeq, toSeqExclusive),
       append: (type: string, data: Record<string, unknown>) => {
-        const event = { type, data }
+        const event = {
+          type,
+          seq: SessionSeq(events.length),
+          time: events.length,
+          data,
+        }
         events.push(event)
         onAppend?.(type)
         return event
@@ -264,15 +289,23 @@ function sandboxAgent(
  * The fake session carries an empty event log (the sandbox-policy resolver
  * folds the log for mode overrides, mirroring a real session).
  */
-function registerFakeAgent(ctx: Context, sessionId: string): Agent {
+async function registerFakeAgent(ctx: Context, sessionId: string): Promise<Agent> {
   const scopeFiber = ctx.plugin(() => {})
   const id = SessionId(sessionId)
   const agent = {
     id,
     ctx: scopeFiber.ctx,
-    session: { id, header: { version: 0, id, createdAt: 0 }, events: [] },
+    session: {
+      id,
+      header: { version: SESSION_FORMAT_VERSION, id, createdAt: 0, isSeeded: false },
+      inheritedEventCount: SessionLogOffset(0),
+      firstLiveSeq: SessionLogOffset(0),
+      seq: SessionLogOffset(0),
+      eventAt: () => undefined,
+      snapshotEvents: () => [],
+    },
   } as unknown as Agent
-  ctx.agents.register(agent)
+  await ctx.agents.register(agent)
   return agent
 }
 
@@ -361,9 +394,10 @@ describe('argument validation', () => {
 describe('execution through the bash seam', () => {
   it('forwards command, session cwd, timeout, and managed DSH_* environment', async () => {
     const dshHome = mkdtempSync(join(tmpdir(), 'dsh-tool-pwsh-home-'))
+    tempDirs.push(dshHome)
     const { ctx, bash } = await setup({}, dshHome)
     bash.handler = () => runResult('hi\n')
-    const agent = registerFakeAgent(ctx, 'session-1')
+    const agent = await registerFakeAgent(ctx, 'session-1')
     Object.assign(agent.session.header, { cwd: '/sessions/s1' })
     const result = await call(ctx, 'pwsh', {
       command: 'Write-Output hi',
@@ -386,7 +420,7 @@ describe('execution through the bash seam', () => {
   it('resolves a relative workdir against the session cwd, absolute ones verbatim', async () => {
     const { ctx, bash } = await setup()
     bash.handler = () => runResult('ok\n')
-    const agent = registerFakeAgent(ctx, 'session-cwd')
+    const agent = await registerFakeAgent(ctx, 'session-cwd')
     Object.assign(agent.session.header, { cwd: '/sessions/s1' })
     await call(ctx, 'pwsh', { command: 'pwd', description: 'cwd', workdir: 'sub/dir' }, agent)
     expect(bash.requests[0]?.workdir).toBe(resolvePath('/sessions/s1', 'sub/dir'))
@@ -511,16 +545,15 @@ describe('per-call sandbox policy resolution', () => {
   it('stamps the CALLING SESSION\'s resolved policy onto the request (session cwd, not the server launch dir)', async () => {
     const { ctx, bash } = await setupSandboxed()
     const sessionCwd = mkdtempSync(join(tmpdir(), 'dsh-tool-pwsh-policy-'))
-    const agent = registerFakeAgent(ctx, 'policy-session')
+    tempDirs.push(sessionCwd)
+    const agent = await registerFakeAgent(ctx, 'policy-session')
     Object.assign(agent.session.header, { cwd: sessionCwd })
     const result = await call(ctx, 'pwsh', { command: 'Write-Output hi', description: 'say hi' }, agent)
     expect(result.isError).toBe(false)
-    // The policy's workspace root is the session cwd canonicalized by the
-    // policy service (realpath + resolve), NEVER the web server's launch dir;
-    // the calling session's identity rides along for backend per-session state.
+    // The policy preserves Session cwd spelling; its enforcing provider owns canonicalization.
     expect(bash.requests[0]?.sandboxPolicy).toEqual({
       mode: 'read-only',
-      workspaceRoot: resolvePath(realpathSync.native(sessionCwd)),
+      workspaceRoot: sessionCwd,
       sessionId: 'policy-session',
     })
   })
@@ -530,7 +563,7 @@ describe('per-call sandbox policy resolution', () => {
     await call(ctx, 'pwsh', { command: 'Write-Output hi', description: 'say hi' })
     expect(bash.requests[0]?.sandboxPolicy).toEqual({
       mode: 'read-only',
-      workspaceRoot: resolvePath(realpathSync.native(process.cwd())),
+      workspaceRoot: process.cwd(),
     })
 
     // The base FakeBash advertises no sandboxMode, so the tool must not stamp
@@ -602,10 +635,10 @@ describe('sandbox escalation through ctx.approval', () => {
     expect(prompted).not.toHaveBeenCalled()
 
     const malformed = sandboxAgent()
-    ;(malformed.session.events as unknown as Array<{ type: string; data: { mode: string } }>).push({
-      type: 'sandbox/mode',
-      data: { mode: 'unknown-mode' },
-    })
+    ;(malformed.session.append as unknown as (
+      type: string,
+      data: Record<string, unknown>,
+    ) => unknown)('sandbox/mode', { mode: 'unknown-mode' })
     expect(text(await call(ctx, 'pwsh', escalate, malformed))).toContain('not strictly wider')
   })
 
@@ -633,7 +666,7 @@ describe('sandbox escalation through ctx.approval', () => {
     const { ctx, bash } = await setupSandboxed(true)
     ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
     const agent = sandboxAgent(undefined, ctx)
-    ctx.agents.register(agent)
+    await ctx.agents.register(agent)
     const foreground = await ctx.tools.execute({
       callId: ToolCallId('sandbox-signal'),
       name: 'pwsh',
@@ -653,7 +686,7 @@ describe('sandbox escalation through ctx.approval', () => {
     const agent = sandboxAgent(undefined, ctx, (type) => {
       if (type === 'approval/decided') controller.abort()
     })
-    ctx.agents.register(agent)
+    await ctx.agents.register(agent)
     ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
     const start = vi.spyOn(bash, 'start')
 
@@ -707,7 +740,7 @@ describe('sandbox escalation through ctx.approval', () => {
 
 describe('background execution through the job runtime', () => {
   it('run_in_background acks with the job id, readable through the REAL job_output tool', async () => {
-    const { ctx } = await setupWithTasks()
+    const { ctx } = await setupWithJobs()
     const started = await call(ctx, 'pwsh', { command: 'Write-Output bg-ok', description: 'test command', run_in_background: true })
     expect(started.isError).toBe(false)
     if (started.isError) throw new Error('expected background pwsh success')
@@ -722,7 +755,7 @@ describe('background execution through the job runtime', () => {
   })
 
   it('a running background job is killable through the REAL job_kill tool', async () => {
-    const { ctx, bash } = await setupWithTasks()
+    const { ctx, bash } = await setupWithJobs()
     bash.backgroundHandler = () => killableProcess()
     await call(ctx, 'pwsh', { command: 'Start-Sleep -Seconds 60', description: 'test command', run_in_background: true })
 
@@ -735,8 +768,8 @@ describe('background execution through the job runtime', () => {
   })
 
   it('a background job started by an agent is registered with that agent as owner', async () => {
-    const { ctx } = await setupWithTasks()
-    const agent = registerFakeAgent(ctx, 'sess-owner')
+    const { ctx } = await setupWithJobs()
+    const agent = await registerFakeAgent(ctx, 'sess-owner')
     const started = await call(ctx, 'pwsh', { command: 'Start-Sleep -Seconds 60', description: 'test command', run_in_background: true }, agent)
     expect(text(started)).toBe('started background job pwsh-1')
 
@@ -750,14 +783,14 @@ describe('background execution through the job runtime', () => {
   })
 
   it('fails loud when the job runtime is not loaded', async () => {
-    const { ctx } = await setup() // no LocalJobRegistry / ToolTasks
+    const { ctx } = await setup() // no LocalJobRegistry / ToolJobs
     const result = await call(ctx, 'pwsh', { command: 'Start-Sleep -Seconds 60', description: 'test command', run_in_background: true })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('background jobs unavailable: load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs')
   })
 
   it('a pre-aborted call is skipped before the process starts', async () => {
-    const { ctx, bash } = await setupWithTasks()
+    const { ctx, bash } = await setupWithJobs()
     const controller = new AbortController()
     controller.abort()
     const result = await ctx.tools.execute({

@@ -45,15 +45,20 @@ describe('scoped-dispatch invariants', () => {
       source: { kind: 'user' },
     })
     const agentRows = {
-      'agent/created': [{ agent }],
+      'agent/created': [{ agent, source: 'startup' }],
       'agent/disposed': [{ agent }],
       'agent/status': [{ agent, status: 'idle' }],
       'agent/inbox/inserted': [{ agent, message }],
       'agent/inbox/claimed': [{ agent, message, turn: 1 }],
       'agent/inbox/discarded': [{ agent, message }],
-      'agent/session-start': [{ agent, source: 'startup' }],
       'agent/pre-step': [{ agent, messages: [message], turn: 1, step: 1, signal }, () => Promise.resolve({ kind: 'enter', messages: [message] })],
       'agent/request': [{ agent, turn: 1, step: 1, signal }, () => Promise.resolve(config)],
+      'agent/assistant-stream': [{
+        agent,
+        frame: {
+          type: 'start', attemptId: 'attempt-1' as never, revision: 1, turn: 1, step: 1,
+        },
+      }],
       'agent/request-error': [
         {
           agent,

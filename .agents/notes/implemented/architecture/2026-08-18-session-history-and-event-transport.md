@@ -64,7 +64,8 @@ The browser's Client Remote plugin starts `RemoteStreamMuxClient` idempotently o
 
 The Host sends one RFC 6455 Ping control frame to every open mux socket at the configured `websocketHeartbeatIntervalMs` interval (two seconds by default). The browser replies with Pong at the protocol layer; neither control frame enters the Remote stream JSON union or changes Connection generation state. Before each Ping, the Host marks the socket as awaiting Pong and terminates it at the next interval if no Pong arrived.
 
-After an initial connection failure or the loss of a connected socket, open logical streams end their current physical generation with `RemoteStreamCarrierError`. `ConnectionController` owns the bounded exponential retry schedule; each attempt asks the mux to replace any candidate or active socket exactly once before reopening `$events`. A user-requested reconnect resets the attempt sequence and bypasses the delay through the same path ([decision](../feature/2026-08-28-web-connection-recovery-control.md)).
+After an initial connection failure or the loss of a connected socket, open logical streams end their current physical generation with `RemoteStreamCarrierError`. `ConnectionController` owns the continuous exponential retry schedule with a capped delay; each attempt asks the mux to replace any candidate or active socket exactly once before reopening `$events`. A user-requested reconnect resets the attempt sequence and bypasses the delay through the same path ([decision](../../archived/feature/2026-08-28-web-connection-recovery-control.md)).
+
 
 The browser's network-status events are inputs to the same Controller. `offline` withdraws the Connection generation and suspends automatic retries; the next `online` transition restarts the base backoff. These events never establish connectivity: only a fresh `$events` ready frame publishes a Connection generation.
 
@@ -163,7 +164,7 @@ Each method explicitly selects a cold inspection, live-only lookup, or resume-ca
 
 Reading titles, lists, and projections does not require an Agent. An observation operation cannot inherit resume authority merely because another Remote endpoint uses Agent lookup.
 
-`SessionQuery.observeSession()` chooses an attached Session or borrows one prepared source from `SessionPersistence.borrowSession()`. The persistence preparation cache shares concurrent cold reads and pins the exact unpublished Session until every observation lease is released. An observation computes either all registered projections or none; callers may expose a subset, but no caller creates a partial projection state.
+`SessionQuery.observeSession()` chooses an attached Session or serves a cold one from the reader's own prepared cache, filled through a persistence read handle. The cache shares concurrent cold reads and pins an entry until every observation lease is released. An observation computes either all registered projections or none; callers may expose a subset, but no caller creates a partial projection state.
 
 `session.list` never performs an unbounded cold-log scan. It uses cached projection hints when available and may fully observe only an individually stored artifact within the configured small-log byte limit to distinguish an abandoned blank Session. Missing or unreadable hints keep the row visible with unknown metadata.
 
@@ -219,7 +220,7 @@ Session-list `updatedAt` is `max(header.createdAt, sessionListMetadata.lastPromp
 
 `packages/api/workspace-controller` provides Host `ctx.workspaceController` and the generated `ctx.remote.workspace` namespace.
 
-It owns create, rename, delete, insertBefore, insertSessionBefore, archiveSession, and `follow`. Workspace registry remains the durable source of truth; the Controller owns Remote commands, projection, and error mapping.
+It owns create, rename, delete, insertBefore, insertSessionBefore, archiveSession, unarchiveSession, and `follow`. Workspace registry remains the durable source of truth; the Controller owns Remote commands, projection, and error mapping.
 
 `WorkspaceFeed` synchronously observes storage `domain/changed`, and each follow generation emits a complete baseline before `upsert`, `remove`, `order`, and `archived` deltas.
 
@@ -380,4 +381,4 @@ Remote waterfalls preserve first claim across multiple Clients, continuation of 
 
 This decision extends the allowlist and single Cordis-signature design from [Remote event delivery](2026-08-10-remote-event-delivery.md): ordinary notifications use `emit`, while Agent-scoped async waterfalls use the same `ctx.remote.$on` surface with explicit `waterfall` mode. It creates no second invocation map.
 
-This decision takes over the Session, Workspace, and Host-event carriers retained by [simple unary API Proxy migration](2026-08-10-unary-apiproxy-remote-migration.md) while preserving the complete jobs snapshot, process-local lifecycle, and “observation does not resume an Agent” semantics required by [background job display](../feature/2026-08-08-web-background-job-display.md).
+This decision takes over the Session, Workspace, and Host-event carriers retained by [simple unary API Proxy migration](../../archived/architecture/2026-08-10-unary-apiproxy-remote-migration.md) while preserving the complete jobs snapshot, process-local lifecycle, and “observation does not resume an Agent” semantics required by [background job display](../feature/2026-08-08-web-background-job-display.md).

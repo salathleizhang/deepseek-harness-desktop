@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-projection-cache` persists the state checkpoints of every registered projection unit (`ctx.sessionProjectionCache`) as one versioned document per session in the `session_projcache` storage domain's `per-record` layout. The shipped JSON backend stores each record at `<root>/session_projcache/sessions/<id>.json`, and the cache never reads the session-persistence layer. A stored row is a fold shortcut, never an authority: it may be stale — its `seq` says exactly how stale — but never wrong. Three mandatory checkpoints (session creation, `turn/end`, and session disposal) plus configurable count and interval throttles keep the cache fresh. Choose it when list views need synchronous cached values or cold projection folds should skip an already-checkpointed prefix.
+This package keeps durable per-session projection checkpoints so history lists, statistics, and goal snapshots can read cached values without loading each session log. Cold projection folds can resume after the checkpointed prefix, reducing restart work. The session log remains authoritative: a crash can leave a checkpoint stale, but never ahead of committed events, and incompatible records are ignored or backed up. Choose it for restarted sessions with frequent projection reads; skip it when projections are live-only or extra storage writes and unbounded checkpoint retention outweigh the saved work.
 
 ## Table of Contents
 
@@ -58,11 +58,13 @@ Three mandatory points always write: session creation persists the seed-derived 
 
 ### Reading cached values
 
-`cachedSnapshot(meta)` synchronously serves client values from the storage domain's in-memory tables with zero I/O. It accepts only an identity-matching record and version- and schema-matching keys, then returns a `{ asOfSeq, values }` cut at the lowest served-row watermark. It returns `undefined` for an unknown id, unrelated lifecycle, absent or foreign record document, or no usable rows. `coldSnapshot(meta, events)` accepts a complete ordered log, skips the checkpointed prefix while folding, and refreshes the record without reading the persistence layer itself.
+`cachedSnapshot(meta, inheritedEventCount)` synchronously serves client values from the storage domain's in-memory tables with zero I/O. It accepts only an identity-matching record and version- and schema-matching keys, then returns a `{ asOfSeq, values }` cut at the lowest served-row watermark. `cachedPredecessorTitle(meta, inheritedEventCount)` is the narrower listing-only exception: a structurally admitted predecessor record whose lifecycle matches may expose only a current-version-compatible `title` row. The title is a possibly stale fact from a durable prefix, not a fold seed; it carries the sentinel `asOfSeq: -1` because a cardinality-changing Session migration can invalidate the predecessor row's numeric sequence. All other predecessor rows remain unavailable. An unseeded listing knows that its cut is zero; a seeded header-only listing does not know the numeric cut and skips both fast paths until an authoritative body read supplies it. `coldSnapshot(meta, inheritedEventCount, events)` accepts the exact cut with a complete ordered log, skips the checkpointed prefix while folding, and refreshes the record without reading persistence itself.
 
 ### What the cache guarantees
 
-The log leads and the cache follows: a live checkpoint flushes the session's buffered events durably before the cache row lands, so a crash can leave the cache behind the log but never ahead of it. Reads and writes share the storage domain's coherent in-memory state; the per-unit write chain mutates memory only after durability. Each version-stamped record must match the live unit schema and session header identity (`createdAt`, `cwd`), so malformed, stale, or unrelated records read as absent. The JSON backend stores each record at `<root>/session_projcache/sessions/<id>.json` in an owner-only directory tree.
+The log leads and the cache follows: a live checkpoint flushes the session's buffered events durably before the cache row lands, so a crash can leave the cache behind the log but never ahead of it. Reads and writes share the storage domain's coherent in-memory state; the per-unit write chain mutates memory only after durability. Each version-stamped record must match the live unit schema and complete lifecycle identity (`formatVersion`, `createdAt`, `cwd`, `isSeeded`, and `inheritedEventCount`), so a row folded from another Session format generation or fork cut cannot seed the caller. The JSON backend stores each record at `<root>/session_projcache/sessions/<id>.json` in an owner-only directory tree.
+
+Upgrades never block startup or expose an unproven fold. Records stamped with a version in the spec's `compatibleVersions` remain structurally readable for a current checkpoint rewrite, but a missing or older `formatVersion` never matches a current Session and therefore cannot seed hydration. A lifecycle-matching predecessor title remains available only through the listing hint above because title text is invariant across the adjacent Session-format edges and its row still passes the current projection `stateVersion` and schema. Once the format matches, absent lineage fields decode as the unseeded lineage — exact for unseeded sessions, while a seeded caller fails the identity match and refolds cold. A stored record that still fails schema validation is moved aside as `<id>.json.bak.<stamp>` under the domain's `invalidRecords: 'backup-and-skip'` policy, logged with its cause, and rebuilt by the next checkpoint.
 
 -----
 
@@ -88,7 +90,7 @@ The cache stores one version-stamped document per session in the `session_projca
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: `SessionProjectionCache` service, write-behind listeners, cache reads |
 | [`src/spec.ts`](src/spec.ts) | The `session_projcache` domain spec and record identity types |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; correctness is enforced at the write and read paths) |
+| — | No runtime invariant companion is published; the cache's correctness relation (a stored row equals the registry fold at its `seq` watermark) is only checkable by re-running the fold over the persisted log — duplicating the implementation rather than detecting drift — and its staleness is by design (fail-soft writes). The durable boundary is schema-validated by the cache's own zod parse on every read, and the read ladder's version/watermark guards are proven by the package spec. |
 
 </details>
 
@@ -126,6 +128,7 @@ These limits define where the cache needs operational care. They are current pac
 - **No eviction or retention surface** — records accumulate per session; pruning stored checkpoints is out-of-band maintenance, same stance as session persistence itself.
 - **Interval throttle is per-session coarse** — the timer arms at the first dirty event after a clean write; a steady sub-threshold trickle writes once per interval, not a sliding window.
 - **No cache-side cold refold** — the cache serves and refreshes its rows but never reads the session log (it does not depend on the persistence layer); a consumer that needs a guaranteed cold snapshot refolds from the log itself.
+- **Every schema or domain-version change must prove its upgrade story** — a change to the stored record schema or the domain version lands in the same PR with an archived fixture of the previously shipped on-disk format under `tests/fixtures/` and test cases in `tests/fixtures.spec.ts` proving the chosen disposition: read-compat recovery (`compatibleVersions`), current-version rewrite, or backup-and-skip salvage. A bump whose old records are simply discarded still proves that the discard neither causes startup to fail nor poisons the tree.
 
 <a id="dev-note"></a>
 ### Dev Note

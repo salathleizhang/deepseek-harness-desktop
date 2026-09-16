@@ -122,7 +122,7 @@ export function assertServiceablePwshConfig(config: Config): void {
 
 /**
  * Local PowerShell executor over `ctx.subprocess`. Bounded output, spill
- * files, and process-tree termination are the subprocess service's mechanics;
+ * files, and managed-range termination are the subprocess service's mechanics;
  * this executor supplies their configured budgets per spawn.
  */
 export class PwshLocalExecutor extends ShellExecutor {
@@ -255,13 +255,42 @@ export class PwshLocalExecutor extends ShellExecutor {
   }
 
   async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    return this.runArgv(spec, this.argv(spec))
+    return (await this.runArgv(spec, this.argv(spec))).result
   }
 
-  /** Foreground run of an exact argv (the confining subclass re-wraps it). */
-  protected async runArgv(spec: ShellExecSpec, argv: readonly string[]): Promise<ShellRunResult> {
-    // One deadline combines timeout and upstream cancellation; disposal clears its timer.
+  /**
+   * Run argv preparation and execution under one foreground deadline.
+   * @param spec - resolved execution settings and caller-owned command metadata.
+   * @param argvOrPrepare - exact argv, or preparation cancelled by the same deadline as execution.
+   * @returns the foreground result and whether argv reached the subprocess provider.
+   */
+  protected async runArgv(
+    spec: ShellExecSpec,
+    argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>),
+  ): Promise<{ result: ShellRunResult; spawnRequested: boolean }> {
     using d = deadline(spec.signal, spec.timeoutMs, 'BASH_TIMEOUT')
+    let argv: readonly string[]
+    if (typeof argvOrPrepare === 'function') {
+      const cancelled = Promise.withResolvers<never>()
+      const abort = (): void => { cancelled.reject(d.signal.reason) }
+      d.signal.addEventListener('abort', abort, { once: true })
+      try {
+        argv = await Promise.race([
+          Promise.resolve().then(() => { d.signal.throwIfAborted(); return argvOrPrepare(d.signal) }),
+          cancelled.promise,
+        ])
+        d.signal.throwIfAborted()
+      } catch (error) {
+        if (timeoutOf(d.signal, 'BASH_TIMEOUT') === undefined) throw error
+        return {
+          spawnRequested: false,
+          result: {
+            exitCode: null, signal: null, timedOut: true, aborted: false, timeoutMs: spec.timeoutMs,
+            stdout: { text: '', truncated: false }, stderr: { text: '', truncated: false },
+          },
+        }
+      } finally { d.signal.removeEventListener('abort', abort) }
+    } else { argv = argvOrPrepare }
     const handle = this.ctx.subprocess.spawn(this.spawnSpec(spec, spec.stdoutMaxBytes, d.signal, argv))
     const outcome = await handle.done
     const collected = PwshLocalExecutor.collected(handle)
@@ -269,31 +298,35 @@ export class PwshLocalExecutor extends ShellExecutor {
     const timedOut = timeoutOf(d.signal, 'BASH_TIMEOUT') !== undefined
     const aborted = d.signal.aborted && !timedOut
     return {
-      ...outcome,
-      timedOut,
-      aborted,
-      timeoutMs: spec.timeoutMs,
-      stdout: finalOutput(collected.stdout),
-      stderr: finalOutput(collected.stderr),
+      spawnRequested: true,
+      result: {
+        ...outcome,
+        timedOut,
+        aborted,
+        timeoutMs: spec.timeoutMs,
+        stdout: finalOutput(collected.stdout),
+        stderr: finalOutput(collected.stderr),
+      },
     }
   }
 
-  start(spec: ShellExecSpec): ShellProcess {
-    return this.startArgv(spec, this.argv(spec))
+  async start(spec: ShellExecSpec): Promise<ShellProcess> {
+    return Promise.resolve(this.startArgv(spec, this.argv(spec)))
   }
 
   /** Background start of an exact argv (the confining subclass re-wraps it). */
   protected startArgv(spec: ShellExecSpec, argv: readonly string[]): ShellProcess {
     // Background runs ignore timeoutMs; callers stop them through kill() or spec.signal.
+    spec.signal?.throwIfAborted()
     const running = this.ctx.subprocess.spawn(this.spawnSpec(spec, this.config.maxOutputBytes, spec.signal, argv))
     const collected = PwshLocalExecutor.collected(running)
 
-    // A spawn failure produces no process output, so the subprocess service has nothing
-    // to buffer; the note is delivered exactly once through the read path.
-    let spawnFailureNote: string | undefined
-    const consumeSpawnFailure = (): string => {
-      const note = spawnFailureNote ?? ''
-      spawnFailureNote = undefined
+    // A provider rejection has no direct outcome to display; its stage is not
+    // public, so a neutral note is delivered once through the read path.
+    let providerFailureNote: string | undefined
+    const consumeProviderFailure = (): string => {
+      const note = providerFailureNote ?? ''
+      providerFailureNote = undefined
       return note
     }
 
@@ -312,10 +345,16 @@ export class PwshLocalExecutor extends ShellExecutor {
         proc.signal = outcome.signal
         this.onProcessDone(proc, collected.stderr.readFrom(0).text, false)
       }, (error: unknown) => {
-        // Background spawn failures settle as killed and surface through the read path.
+        // Background provider failures settle as killed and surface through the read path.
         proc.status = 'killed'
-        spawnFailureNote = `spawn failed: ${String(error)}`
-        this.onProcessDone(proc, spawnFailureNote, true, error)
+        let detail = 'unprintable provider failure'
+        try {
+          detail = String(error)
+        } catch {
+          // Provider-owned rejection values cannot make ShellProcess.done reject.
+        }
+        providerFailureNote = `subprocess failed before reporting an outcome: ${detail}`
+        this.onProcessDone(proc, providerFailureNote, true, error)
       }),
       readOutput: (): ShellProcessRead => {
         const out = collected.stdout.readFrom(stdoutOffset)
@@ -323,9 +362,10 @@ export class PwshLocalExecutor extends ShellExecutor {
         stdoutOffset = out.nextOffset
         stderrOffset = err.nextOffset
 
-        // A failed spawn never produced process output, so the note and real
-        // stderr text are mutually exclusive.
-        const errText = err.text.length > 0 ? err.text : consumeSpawnFailure()
+        const providerFailure = consumeProviderFailure()
+        const failureSeparator = err.text.length > 0 && !err.text.endsWith('\n') ? '\n' : ''
+        const errText = err.text
+          + (providerFailure.length > 0 ? `${failureSeparator}${providerFailure}` : '')
         // Single newline between sections: stdout chunks usually end with one
         // already; add it only when missing.
         const separator = out.text.length > 0 && !out.text.endsWith('\n') ? '\n' : ''
@@ -355,10 +395,10 @@ export class PwshLocalExecutor extends ShellExecutor {
    * pwsh-confining consumer is `@deepseek-ai/dsh-pwsh-sandbox`.
    * @param _proc - the settled process handle.
    * @param _stderr - the process's retained stderr tail used by subclasses for settlement classification.
-   * @param _spawnFailed - whether the spawn rejected before any process existed.
-   * @param _spawnError - the spawn rejection, when `_spawnFailed`.
+   * @param _providerRejected - whether the subprocess promise rejected without a direct outcome.
+   * @param _providerError - the provider rejection reason, which may itself be undefined.
    */
-  protected onProcessDone(_proc: ShellProcess, _stderr: string, _spawnFailed: boolean, _spawnError?: unknown): void {}
+  protected onProcessDone(_proc: ShellProcess, _stderr: string, _providerRejected: boolean, _providerError?: unknown): void {}
 }
 /* jscpd:ignore-end */
 

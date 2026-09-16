@@ -2,17 +2,19 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
-import type { AttachmentIdType, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentIdType, FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { SessionLogOffset, SessionSeq, type SessionId } from '@deepseek-ai/dsh-session/types'
 import { SessionEventStream } from '../transport.ts'
 import type { SessionJournalChange } from '../transport.ts'
 import type {
   PromptContentPart,
   QueueAction,
   SessionAddress,
+  SessionAssistantStreamBaseline,
   SessionControlFrame,
+  SessionProjectionBaseline,
   SessionQueuedItem,
   SessionRequestId,
 } from '../../types.ts'
@@ -28,12 +30,24 @@ import type {
 } from '../contract/events.ts'
 import { Notifier } from './notifier.ts'
 import { isRemoteFailure } from '@deepseek-ai/dsh-api-gateway/client'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { RemoteFailure, RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { SessionRemotes } from './remotes.ts'
 import { ProjectionValueStore } from './projection-store.ts'
 import type { ProjectionsBaseline } from './projection-store.ts'
 import { resolvedClientTimeZone } from '../time-zone.ts'
 import { SessionQueueMirror } from './queue-mirror.ts'
+import {
+  ClientAssistantStream,
+  type ClientAssistantStreamResult,
+} from './assistant-stream.ts'
+
+function projectionsBaseline(value: SessionProjectionBaseline): ProjectionsBaseline {
+  return {
+    ...value,
+    asOfSeq: value.asOfSeq === -1 ? -1 : SessionSeq(value.asOfSeq),
+  }
+}
 
 /** Messages requested per history page. */
 export const PAGE_MESSAGES = 50
@@ -72,7 +86,7 @@ export interface SessionOptions {
  */
 export class Session implements SessionFace {
   // ---- Window and derived state (all private; the snapshot is the only read API) ----
-  private baseSeq = 0
+  private baseSeq = SessionLogOffset(0)
   private hasMore = false
   private openState: OpenState = 'cold'
   private openError: RemoteFailure | null = null
@@ -82,11 +96,12 @@ export class Session implements SessionFace {
   private openGeneration = 0
   private loadingOlder = false
   /** Shared low-water target of the running jump loop; null when no jump is paging. */
-  private jumpTargetSeq: number | null = null
+  private jumpTargetSeq: SessionSeq | null = null
   /** The running jump loop's completion, shared by retargeting callers. */
   private jumpPromise: Promise<void> | null = null
   /** Authoritative stream-only inbox snapshot; pending work never hits history. */
   private readonly queueMirror = new SessionQueueMirror()
+  private readonly assistantStream = new ClientAssistantStream()
   private running = false
   private address: SubagentAddress | undefined
   private parentAvailable: boolean | undefined
@@ -196,7 +211,7 @@ export class Session implements SessionFace {
         : 'transcript',
       time: Date.now(),
       text: input.text,
-      images: input.images,
+      attachments: input.attachments,
     }]
     this.submissionSettlements.set(requestId, { onRetire: input.onRetire, retiring: false })
     // The blank → engaging edge flips here, ahead of prompt(): the composer
@@ -208,7 +223,7 @@ export class Session implements SessionFace {
 
   /**
    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
-   * @param content - text plus browser-owned temporary image uploads.
+   * @param content - text, browser-owned temporary image uploads, and staged-file receipts.
    * @param mode - queue appends after the current turn; steer interrupts it.
    * @param signal - optional caller cancellation for the complete admission round-trip.
    * @param requestId - identity from {@link beginSubmission}; a failed identified prompt retires its echo.
@@ -238,13 +253,26 @@ export class Session implements SessionFace {
         content,
         clientTimeZone,
       }, signal)
+    } else if (content.some(part => part.type === 'file')) {
+      result = {
+        ok: false,
+        error: new RemoteError(
+          'subagent/attachment-invalid',
+          'subagent continuation does not accept files',
+          { reason: 'SUBAGENT_FILE_UNSUPPORTED' },
+        ),
+      }
     } else {
+      // The preceding branch rejects file parts before the narrower subagent
+      // wire type is used; this array is not filtered or reordered.
+      const routedContent = content as Exclude<PromptContentPart, { readonly type: 'file' }>[]
       const routed = await this.remote.subagents.prompt({
         requestId: randomUUID() as SessionRequestId,
         parentSessionId: this.address.parentSessionId,
         childSessionId: this.address.childSessionId,
         mode: 'continuable',
-        content,
+        delivery: mode,
+        content: routedContent,
         clientTimeZone: resolvedClientTimeZone(),
       }, signal)
       result = routed.ok ? { ok: true, value: { accepted: true } } : routed
@@ -326,10 +354,12 @@ export class Session implements SessionFace {
    * @param title - raw title text (the host normalizes acceptance).
    * @returns the rename result (normalized accepted title + title event seq).
    */
-  async rename(title: string): Promise<RemoteResult<{ title: string; seq: number }>> {
+  async rename(title: string): Promise<RemoteResult<{ title: string; seq: SessionSeq }>> {
     const result = await this.remote.session.rename({ sessionId: this.sessionId, title })
-    if (result.ok) this.projections.apply('title', result.value.title, result.value.seq)
-    return result
+    if (!result.ok) return result
+    const seq = SessionSeq(result.value.seq)
+    this.projections.apply('title', result.value.title, seq)
+    return { ok: true, value: { title: result.value.title, seq } }
   }
 
   /**
@@ -377,11 +407,11 @@ export class Session implements SessionFace {
   }
 
   /** Jump loader: page backwards until the window covers seq (see ISession.loadThrough). */
-  loadThrough(seq: number): Promise<void> {
+  loadThrough(seq: SessionSeq): Promise<void> {
     if (this.openState !== 'open' || !this.hasMore || this.baseSeq <= seq) return Promise.resolve()
     if (this.jumpPromise !== null) {
       // Retarget the running loop to the lowest requested seq.
-      this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq)
+      this.jumpTargetSeq = SessionSeq(Math.min(this.jumpTargetSeq ?? seq, seq))
       return this.jumpPromise
     }
     // A plain single-page pull owns the busy flag; the jump does not queue
@@ -434,7 +464,7 @@ export class Session implements SessionFace {
     this.openPromise = null
     this.openState = 'cold'
     this.openError = null
-    this.baseSeq = 0
+    this.baseSeq = SessionLogOffset(0)
     this.notifier.markDirty()
     await this.open()
   }
@@ -606,30 +636,74 @@ export class Session implements SessionFace {
   private acceptEventChange(change: SessionJournalChange): void {
     switch (change.type) {
       case 'replace':
-        this.installWindow(change.entries, change.hasMore, change.page.projections)
+        this.installWindow(
+          change.entries,
+          change.hasMore,
+          change.page.projections === undefined ? undefined : projectionsBaseline(change.page.projections),
+          change.page.assistantStream,
+        )
         return
       case 'prepend':
         this.prependWindow(change.entries, change.hasMore)
         return
       case 'append':
-        if (this.appendLive(change.entry)) this.notifier.markDirty()
+        this.publishAssistantEntry(this.assistantStream.acceptDurable(change.entry))
+        return
+      case 'assistant-stream':
+        this.publishAssistantEntry(this.assistantStream.acceptFrame(change.frame))
     }
   }
 
   /** Replace the complete contiguous window and apply page-owned projection metadata. */
-  private installWindow(entries: readonly SessionEventLikeEntry[], hasMore: boolean, projections?: ProjectionsBaseline): void {
-    this.baseSeq = entries[0]?.event.seq ?? 0
+  private installWindow(
+    entries: readonly SessionEventLikeEntry[],
+    hasMore: boolean,
+    projections?: ProjectionsBaseline,
+    assistantStream?: SessionAssistantStreamBaseline,
+  ): void {
+    // A durable gap-repair page has no assistant baseline. Clearing transient
+    // attempts makes a held notification reopen follow once for an atomic
+    // page/baseline pair instead of applying it to an unrelated repair cut.
+    const visible = this.assistantStream.replace(entries, assistantStream)
+    this.baseSeq = SessionLogOffset(entries[0]?.event.seq ?? 0)
     this.hasMore = hasMore
-    if (entries.some(entry => entry.event.type === 'turn/start')) this.firstPromptPendingTurn = false
+    if (visible.some(entry => entry.event.type === 'turn/start')) this.firstPromptPendingTurn = false
     if (projections !== undefined) this.projections.seed(projections)
-    this.eventSource.replace(entries, hasMore)
-    for (const entry of entries) this.observeSubmissionEvent(entry.event)
+    this.eventSource.replace(visible, hasMore)
+    for (const entry of visible) this.observeSubmissionEvent(entry.event)
     this.notifier.markDirty()
+  }
+
+  private publishAssistantEntry(result: ClientAssistantStreamResult): void {
+    if (result?.type === 'rebaseline') {
+      const events = this.events
+      queueMicrotask(() => {
+        if (events !== undefined && this.events === events) events.restart()
+      })
+      return
+    }
+    if (result?.type === 'settlement') {
+      this.eventSource.settleAssistant(result.attemptId, result.entry)
+      this.observeSubmissionEvent(result.entry.event)
+      this.notifier.markDirty()
+      return
+    }
+    if (result?.type === 'abandonment') {
+      this.eventSource.settleAssistant(result.attemptId)
+      this.notifier.markDirty()
+      return
+    }
+    if (result?.type === 'publish' && this.appendLive(result.entry)) {
+      this.notifier.markDirty()
+    } else if (result?.type === 'transient') {
+      this.eventSource.append(result.entry)
+      this.notifier.markDirty()
+    }
   }
 
   /** Prepend one stream-validated history page. */
   private prependWindow(entries: readonly SessionEventLikeEntry[], hasMore: boolean): void {
-    this.baseSeq = entries[0]?.event.seq ?? this.baseSeq
+    this.baseSeq = entries[0] === undefined ? this.baseSeq : SessionLogOffset(entries[0].event.seq)
     this.hasMore = hasMore
     this.eventSource.prepend(entries, hasMore)
   }
@@ -657,7 +731,7 @@ export class Session implements SessionFace {
     const data = event.data as { readonly source?: unknown; readonly content?: unknown } | undefined
     const source = data?.source as { readonly kind?: unknown; readonly rpcId?: unknown } | undefined
     if (source?.kind !== 'user' || typeof source.rpcId !== 'string') return
-    this.scheduleObservedRetirement(source.rpcId as SessionRequestId, imageRefsIn(data?.content))
+    this.scheduleObservedRetirement(source.rpcId as SessionRequestId, attachmentRefsIn(data?.content))
   }
 
   /** Retire echoes whose prompts landed in the host inbox instead of the log (running-turn submissions). */
@@ -665,7 +739,7 @@ export class Session implements SessionFace {
     if (this.submissionSettlements.size === 0) return
     for (const item of items) {
       if (item.rpcId !== undefined) {
-        this.scheduleObservedRetirement(item.rpcId, imageRefsIn(item.message.content))
+        this.scheduleObservedRetirement(item.rpcId, attachmentRefsIn(item.message.content))
       }
     }
   }
@@ -678,7 +752,7 @@ export class Session implements SessionFace {
    */
   private scheduleObservedRetirement(
     requestId: SessionRequestId,
-    attachments: readonly ImageAttachmentRef[],
+    attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[],
   ): void {
     const settlement = this.submissionSettlements.get(requestId)
     if (settlement === undefined || settlement.retiring) return
@@ -756,15 +830,16 @@ function scheduleFrame(fn: () => void): void {
   else setTimeout(fn, 0)
 }
 
-/** Image attachment references in one structurally-read content block list, in block order. */
-function imageRefsIn(content: unknown): readonly ImageAttachmentRef[] {
+/** Attachment references in one structurally-read content block list, in block order. */
+function attachmentRefsIn(content: unknown): readonly (ImageAttachmentRef | FileAttachmentRef)[] {
   if (!Array.isArray(content)) return []
-  const refs: ImageAttachmentRef[] = []
+  const refs: Array<ImageAttachmentRef | FileAttachmentRef> = []
   for (const block of content) {
     if (typeof block !== 'object' || block === null) continue
     const candidate = block as { readonly type?: unknown; readonly attachment?: unknown }
-    if (candidate.type === 'image' && typeof candidate.attachment === 'object' && candidate.attachment !== null) {
-      refs.push(candidate.attachment as ImageAttachmentRef)
+    if ((candidate.type === 'image' || candidate.type === 'file')
+      && typeof candidate.attachment === 'object' && candidate.attachment !== null) {
+      refs.push(candidate.attachment as ImageAttachmentRef | FileAttachmentRef)
     }
   }
   return refs

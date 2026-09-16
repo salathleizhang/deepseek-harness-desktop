@@ -37,6 +37,7 @@ export interface TrajectoryTurnModel {
 
 /** Snapshot slice the trajectory view folds. */
 export interface TrajectoryLayoutInput {
+  systemPrompts?: TrajectorySnapshot['systemPrompts']
   nodes: TrajectorySnapshot['eventNodes']
   eventLocations?: ReadonlyMap<number, ConversationLocation>
   partial: TrajectorySnapshot['partial']
@@ -94,7 +95,8 @@ type OrderedLayoutEntry =
   | {
     kind: 'system'
     seq: number
-    request: AssistantRequestView
+    request?: AssistantRequestView
+    systemPrompt?: string
     change: RequestPromptChange
   }
   | {
@@ -125,10 +127,15 @@ function inputCellDetail(node: InputNode, t: TrajectoryTranslate): Pick<
   const preview = previewContent(node.content)
   const previewMarkdown = preview === '' ? undefined : preview
   const images = imageBlockCount(node.content)
-  return {
-    text: previewMarkdown === undefined && images > 0
+  const files = fileBlockCount(node.content)
+  const attachmentSummary = [
+    previewMarkdown === undefined && images > 0
       ? t('layout.imageOnly', { count: images })
-      : '',
+      : undefined,
+    files > 0 ? t('layout.fileAttachments', { count: files }) : undefined,
+  ].filter((value): value is string => value !== undefined).join(' · ')
+  return {
+    text: attachmentSummary,
     ...(previewMarkdown === undefined ? {} : { previewMarkdown }),
     sourceSeq: node.seq,
     messageSource: node.source,
@@ -229,6 +236,10 @@ export function deriveTrajectoryLayout(
   }
 
   const entries: OrderedLayoutEntry[] = [
+    ...(input.systemPrompts ?? []).map(prompt => ({
+      kind: 'system' as const, seq: prompt.seq, systemPrompt: prompt.text,
+      change: { seq: prompt.seq, time: prompt.time, kind: prompt.update ? 'system' as const : 'initial' as const },
+    })),
     ...nodes.map((node, nodeIndex) => ({
       kind: 'node' as const,
       seq: node.seq,
@@ -301,7 +312,8 @@ export function deriveTrajectoryLayout(
           kind: 'system',
           text: promptChangeLabel(change, t),
           sourceSeq: change.seq,
-          ...(request.prompt === undefined ? {} : { promptDetail: request.prompt }),
+          ...(request?.prompt === undefined ? {} : { promptDetail: request.prompt }),
+          ...(entry.systemPrompt === undefined ? {} : { systemPromptDetail: entry.systemPrompt }),
           ...(change.previous === undefined
             ? {}
             : { previousPromptDetail: change.previous }),
@@ -848,6 +860,10 @@ function imageBlockCount(content: readonly { type: string }[]): number {
   return content.filter(block => block.type === 'image').length
 }
 
+function fileBlockCount(content: readonly { type: string }[]): number {
+  return content.filter(block => block.type === 'file').length
+}
+
 function stringifySourceValue(value: unknown): string {
   const json = JSON.stringify(value, null, 2)
   return json || String(value)
@@ -1046,8 +1062,9 @@ function expandSubCalls(
 function summarizeCall(
   name: string,
   argsRaw: string,
-): Pick<TrajectoryCellProps, 'text' | 'previewMarkdown'> {
+): Pick<TrajectoryCellProps, 'text' | 'previewMarkdown' | 'toolName'> {
   return {
+    toolName: name,
     text: name,
     ...(argsRaw === '' ? {} : { previewMarkdown: argsRaw }),
   }

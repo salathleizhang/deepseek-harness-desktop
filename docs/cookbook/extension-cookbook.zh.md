@@ -2,7 +2,7 @@
 
 [English](extension-cookbook.md) | 中文
 
-harness 扩展的参考模式。代码片段省略了 import 和辅助实现，无法直接复制运行。具体编写路径见[包检查清单](adding-a-package.zh.md)、[第一个工具教程](../user/develop/basic/tool.zh.md)、[工具参考](adding-a-tool.zh.md)和 [LLM（大语言模型）适配器指南](adding-an-llm-adapter.zh.md)；系统与扩展点映射由[架构文档](../architecture.zh.md)负责。
+harness 扩展的参考模式。代码片段省略了 import 和辅助实现，无法直接复制运行。具体编写路径见[包检查清单](adding-a-package.zh.md)、[第一个工具教程](../user/develop/basic/tool.zh.md)、[工具参考](adding-a-tool.zh.md)、[LLM（大语言模型）适配器指南](adding-an-llm-adapter.zh.md)和 [Session 格式版本教程](adding-a-session-format-version.zh.md)；系统与扩展点映射由[架构文档](../architecture.zh.md)负责。
 
 ## 工具插件
 
@@ -36,7 +36,7 @@ export function apply(ctx: Context) {
 
 ## UI 插件
 
-UI 插件从 `session/event` 事件流渲染（助手 token 流以 `assistant/chunk` 形式到达，加上轮次/步骤边界与工具活动），并通过 `agent.followup()` / `agent.steer()` 将输入驱动回去。如果浏览器插件要向内建 Web Client 贡献业务行，则应注册 `ConversationNodeDefinition` 与 keyed Chat renderer；具体约定见 [Conversation 子系统参考](../subsystems/conversation.zh.md)。
+UI 插件把持久 `session/event` record（Assistant settlement、轮次/步骤边界与工具活动）和用于实时 token 呈现的瞬态 `agent/assistant-stream` frame 组合起来，并通过 `agent.followup()` / `agent.steer()` 将输入驱动回去。如果浏览器插件要向内建 Web Client 贡献业务行，则应注册 `ConversationNodeDefinition` 与 keyed Chat renderer；具体约定见 [Conversation 子系统参考](../subsystems/conversation.zh.md)。
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
@@ -51,9 +51,9 @@ export const name = 'my-ui'
 export const inject = ['agents']
 
 export function apply(ctx: Context) {
-  ctx.on('session/event', (_session, event) => {
-    if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
-      render(event.data.chunk.text)
+  ctx.on('agent/assistant-stream', ({ frame }) => {
+    if (frame.type === 'chunk' && frame.chunk.type === 'text-delta') {
+      render(frame.chunk.text)
     }
   })
   onUserInput(text => ctx.agents.get(brandString<SessionId>('client-session'))?.followup(createUserMessage({
@@ -71,17 +71,19 @@ export function apply(ctx: Context) {
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
+import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
 
 export const name = 'my-protocol-bridge'
 export const inject = ['agents', 'sessions', 'sessionPersistence']
 
 export function apply(ctx: Context) {
-  // Stream every logged assistant text/reasoning delta out to the client.
+  // Publish every committed Assistant text delta to the client.
   ctx.on('session/event', (_session, event) => {
-    if (event.type === 'assistant/chunk') {
-      const chunk = event.data.chunk
-      if (chunk.type === 'text-delta') {
-        // sendToClient({ kind: 'message_chunk', text: chunk.text })
+    if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
+      for (const { chunk } of expandAssistantStream(event.data.stream)) {
+        if (chunk.type === 'text-delta') {
+          // sendToClient({ kind: 'message_chunk', text: chunk.text })
+        }
       }
     }
   })
@@ -105,10 +107,10 @@ export function apply(ctx: Context) {
 
 | 产品功能 | 插件机制 |
 |---|---|
-| 钩子系统（用户级 + 项目级） | `agent/session-start`、`agent/pre-step`、`agent/request`、`tools/pre-execute`、`tools/post-execute` 和 `agent/turn-stopping` 上的监听器；waterfall 返回类型化决策，`agent/turn-stopping` 则可通过 steering（中途引导）触发下一步；`dsh-hooks-claude-code` / `dsh-hooks-codex` 桥接器将钩子配置文件映射到这些扩展点上 |
+| 钩子系统（用户级 + 项目级） | `agent/created`、`agent/pre-step`、`agent/request`、`tools/pre-execute`、`tools/post-execute` 和 `agent/turn-stopping` 上的监听器；waterfall 返回类型化决策，`agent/turn-stopping` 则可通过 steering（中途引导）触发下一步；`dsh-hooks-claude-code` / `dsh-hooks-codex` 桥接器将钩子配置文件映射到这些扩展点上 |
 | `/goal` | `ctx.goals` 管理持久状态，`dsh-goal-round-driver` 通过公共 `Agent` 调度同会话 Round，独立的命令/工具生产方分别提供人类/模型控制 |
 | `/loop` | 在 `turn/end` 会话事件上 `followup()` 下一次迭代；或强制继续 |
-| 动态工作流 | `ctx.workflowEngine` + worker-thread 引擎 + `workflow` 工具；结构化的进程内子任务通过作用域化的提示词/工具注册、单调工具守卫、最终 `tools/result` 提交（包括外层 `run_code`）和结构化输出执行的单调 `concludeTurn()` 标记来强制输出 |
+| 动态工作流 | `ctx.workflowEngine` + PTC 工作流引擎 + `workflow` 工具；结构化的进程内子任务通过作用域化的提示词/工具注册、单调工具守卫、最终 `tools/result` 提交（包括外层 `run_code`）和结构化输出执行的单调 `concludeTurn()` 标记来强制输出 |
 | 排队消息 + steering | 核心 `Agent.followup()` / `Agent.steer()` |
 | 上下文压缩（context compaction）（自动 + 手动） | `ctx.compaction` seam + `dsh-compaction-basic`；自动压力检查运行在串行 `agent/pre-step`，标准的溢出恢复机制运行在 `agent/request-error`，手动调用方使用同一个压缩服务（[压缩 Agent Note](../../.agents/notes/implemented/feature/2026-06-18-compaction-capability-seam.zh.md)） |
 | 系统提示词可配置性 | `ctx.systemPrompt.section()`，支持排序与作用域局部覆盖 |
@@ -127,7 +129,7 @@ export function apply(ctx: Context) {
 | skill（技能） | section + 工具注册；调用时通过 `inject()` 注入 skill 内容 |
 | 记忆 | section 提供方 + 工具 |
 | 定时任务（cron） | 插件注册面向模型的调度工具；定时器触发 → 空闲时 `followup(…, {source: {kind: 'plugin', plugin: 'schedule'}})`／忙碌时 `inject()` 通知 |
-| UI（GUI；CLI（命令行界面）输出 JSONL） | 监听 `session/event`（助手分片、边界、工具活动）；输入 → `followup()` |
+| UI（GUI；CLI（命令行界面）输出 JSONL） | 监听 `agent/assistant-stream` 的实时 chunk，并监听 `session/event` 的持久 settlement、边界与工具活动；输入 → `followup()` |
 | Web Client Chat 业务节点 | 注册 `ConversationNodeDefinition` 与 `conversation.chat.node` keyed renderer |
 | 遥测 / 可回放 trace | `session/event` → JSONL；回放 = `sessions.create(id, { seed })` |
 | 模型适配器 | 通过 `registerAdapter` 注册 `LlmAdapter` 子类（`dsh-llm-deepseek`、`dsh-llm-pi-ai`） |

@@ -83,6 +83,8 @@ interface SubprocessStdio {
   stdin: SubprocessStdinMode
   stdout: SubprocessOutputMode
   stderr: SubprocessOutputMode
+  /** Request a separate byte-mode duplex channel; omission creates none. */
+  control?: 'pipe'
 }
 ```
 
@@ -106,14 +108,15 @@ interface SubprocessSpawnSpec {
   stdio: SubprocessStdio
   /**
    * Positive finite grace period in milliseconds, no greater than
-   * `MAX_TIMER_DELAY_MS`, for the {@link SubprocessHandle.terminate} escalation
-   * and for draining still-open collected pipes after the process exits (an
-   * inherited descriptor held by a surviving descendant cannot hold the
-   * outcome open indefinitely).
+   * `MAX_TIMER_DELAY_MS`, available to the provider's termination procedure
+   * and used for draining still-open collected pipes after the process exits
+   * (an inherited descriptor held by a survivor cannot hold the outcome open
+   * indefinitely). Providers document whether range termination is staged or
+   * immediate.
    */
   graceMs: number
   /**
-   * Abort signal — starts the terminate escalation on the process tree when
+   * Abort signal — starts the terminate escalation on the managed range when
    * it fires. The caller owns deadlines and cause classification; this seam
    * only reacts to the abort.
    */
@@ -129,45 +132,44 @@ interface SubprocessSpawnSpec {
 }
 ```
 
-## 句柄：流、读取器与以进程树为范围的终止
+## 句柄：流、读取器与 managed-range 终止
 
-spawn 会立即返回一个活动句柄。收集模式的读取器接受全流字节偏移量且从不消费，因此独立的读取器不会抢走彼此的增量；管道化的流归调用方所有。终止在每个平台上都以进程树为范围：`terminate()`（唯一的终止动词）执行 SIGTERM→宽限期→SIGKILL 升级，`waitForExit()` 观察整棵进程树。这足以让消费方构建自己的分级清理流程；ACP 后端的 `disposeAcpChild` 会先关闭 stdin，让子进程收到 EOF，是仓库内的参考实现。
+spawn 会同步返回活动句柄，目标与受管范围标识则保留在 provider 内部。收集模式的读取器接受全流字节偏移量且从不消费，因此独立读取器不会抢走彼此的增量；管道化的流归调用方所有。`terminate()` 启动 provider 记录的终止过程，`waitForExit()` 观察同一个 provider-managed range；分阶段 provider 可以使用 `graceMs`，立即终止的 provider 不会等待。消费方可以在这两项操作上构建自己的分级清理流程；ACP 后端先关闭 stdin 的 `disposeAcpChild` 是参考实现。
 
 ```ts type-equiv
 /**
- * A live child process rooted in its own process tree. Collected output
+ * A live subprocess and its provider-managed process range. Collected output
  * remains readable after exit; piped streams belong to the caller.
  *
- * Termination is tree-scoped everywhere: POSIX signals the detached process
- * group (falling back to the direct child when the group is gone), Windows
- * terminates the tree via `taskkill /T`, so helper processes cannot outlive
- * the handle unnoticed.
+ * Termination and {@link SubprocessHandle.waitForExit} use the same managed
+ * range. Each provider documents the range it can observe and its signalling
+ * and observation limits.
  */
 interface SubprocessHandle {
-  /** Process id (tree root); -1 when the spawn itself failed. */
-  readonly pid: number
   /** The child's stdin, present iff spawned with `stdin: 'pipe'`. */
   readonly stdin: Writable | undefined
   /** The child's raw stdout, present iff spawned with `stdout: 'pipe'`. */
   readonly stdout: Readable | undefined
   /** The child's raw stderr, present iff spawned with `stderr: 'pipe'`. */
   readonly stderr: Readable | undefined
+  /** Separate caller-owned byte channel when requested; native startup failure may leave it absent. */
+  readonly control: Duplex | undefined
   /** Offset-based readers for collect-mode streams (also readable after exit). */
   readonly collected: SubprocessCollectedOutputs
-  /** Resolves at process close with exit facts; rejects only for spawn-level failures. */
+  /** Resolves with spawned-command exit facts; rejects for spawn or provider failures. */
   readonly done: Promise<SubprocessOutcome>
   /**
-   * Begin the SIGTERM → `graceMs` → SIGKILL escalation on the process tree
-   * (Windows force-terminates immediately) — the seam's only termination
-   * verb. Idempotent, a no-op once the tree is gone (the pid may be reused),
-   * and also triggered by the spec's abort signal.
+   * Begin the provider's documented termination procedure on the managed range
+   * — the seam's only termination verb. Idempotent, a no-op once that range is
+   * gone, and also triggered by the spec's abort signal.
    */
   terminate(): void
   /**
-   * Wait until the process tree has exited — the tree, not just the direct
-   * child, so a still-running helper is observable before teardown returns.
+   * Wait until the same managed range is empty — not just until the spawned
+   * command reports its outcome, so surviving work remains observable.
    * @param signal - optional bound for the wait.
-   * @returns `true` when the tree exited, `false` when the signal aborted first.
+   * @returns `true` when the managed range is empty, `false` when the signal aborted first.
+   * @throws when the selected provider can no longer observe its managed range.
    */
   waitForExit(signal?: AbortSignal): Promise<boolean>
 }
@@ -242,11 +244,13 @@ interface SubprocessOutcome {
 
 `spawnTerminal(spec)` 是非管道进程原语。提供方分配控制终端，并负责 UTF-8 文本传输、前台进程组检查与信号发送，以及一项须等待的 TERM→KILL 操作；该操作会使提供方仍可观察到的每个会话成员完全停稳，提供方则会记录执行基底特有的可观察性限制。PTY 后端仍负责提示符检测、就绪推断、scrollback、沙箱策略和持久会话所有权；普通 `spawn()` 无法重建控制终端语义。
 
-终端 spec 完全指定 argv、cwd、环境覆盖、尺寸、清理宽限期与可选的分配取消。其句柄公开 `pid`、有序输出、`done`、`write`、`inspectForeground`、`signalForeground` 和须等待的 `terminate`；确切的公共形状生成到 [`ctx.subprocess` 服务目录](#ctxsubprocess--subprocessruntime-abstract-seam)中。
+终端 spec 完全指定 argv、cwd、环境覆盖、终端类型、尺寸、清理宽限期与可选的分配取消。其句柄公开 `pid`、有序输出、`done`、`write`、`resize`、`inspectForeground`、`signalForeground` 和须等待的 `terminate`；[`SubprocessTerminalSpawnSpec` 与 `SubprocessTerminalHandle`](../../packages/subprocess/subprocess/src/types.ts) 定义这些字段和操作。`resize(cols, rows)` 更新正在运行的 PTY 尺寸，进程退出后拒绝调用。
+
+`terminalEnvironment(signal?)` 返回 `SubprocessTerminalEnvironment`：执行环境平台（`posix` 或 `windows`）与可选的 `defaultShell`。这些事实来自提供方，而非 Web 服务器或浏览器。`resolveExecutable` 验证候选 shell；`SubprocessExecutableNotFoundError` 表示可执行文件不存在，提供方与传输故障仍作为错误报告。
 
 ## 服务行为
 
-抽象的 [`SubprocessRuntime`](../../packages/subprocess/subprocess/src/index.ts) Service Definition 规定执行世界坐标、可执行文件查找、普通 `spawn` 与 `spawnTerminal`。[`LocalSubprocessRuntime`](../../packages/subprocess/subprocess-local/src/index.ts) 以 detached 进程树、按处置方式接线、凭据清除、`node-pty`、平台进程检查，以及先终止再等待退出的资源释放提供这些能力。Service Definition 约定见 [`dsh-subprocess`](../../packages/subprocess/subprocess/README.zh.md)，本地机制见 [`dsh-subprocess-local`](../../packages/subprocess/subprocess-local/README.zh.md)。
+抽象的 [`SubprocessRuntime`](../../packages/subprocess/subprocess/src/index.ts) Service Definition 规定执行世界坐标、可执行文件查找、普通 `spawn` 与 `spawnTerminal`。[`LocalSubprocessRuntime`](../../packages/subprocess/subprocess-local/src/index.ts) 以平台选择的 managed range、按处置方式接线、凭据清除、`node-pty`、平台进程检查，以及先终止再等待退出的资源释放提供这些能力。Service Definition 约定见 [`dsh-subprocess`](../../packages/subprocess/subprocess/README.zh.md)，本地机制见 [`dsh-subprocess-local`](../../packages/subprocess/subprocess-local/README.zh.md)。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -255,23 +259,6 @@ interface SubprocessOutcome {
 ## Cordis API
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
-
-<a id="ctxe2b--e2bruntime"></a>
-
-### `ctx.e2b` — `E2BRuntime`
-
-Creates one lazily consumable E2B SDK handle and deletes the sandbox at timeout or disposal. Creation begins at plugin construction; adapters await getSandbox before their first operation.
-
-```ts cordis-catalog
-/**
- * Return the shared live SDK handle.
- * @returns the created sandbox after the configured cwd exists.
- * @throws when E2B rejects creation or the service is disposing.
- */
-async getSandbox(): Promise<Sandbox>
-```
-
-Source: [`packages/e2b/e2b/src/index.ts`](../../packages/e2b/e2b/src/index.ts)
 
 <a id="ctxsubprocess--subprocessruntime-abstract-seam"></a>
 
@@ -282,9 +269,9 @@ Abstract subprocess service. Subclass, implement spawn, and load the subclass as
 Implementations must honor these semantics:
 
 - Executable paths belong to one execution world shared with the mounted filesystem provider.
-- spawn returns immediately with a live handle; `done` resolves at process close with exit facts and rejects only for spawn-level failures.
+- spawn returns a live handle synchronously. Target identity remains provider-private; `done` resolves with the spawned command's exit facts and may reject for spawn or provider failures.
 - Collect-mode readers are offset-based and non-consuming, so independent readers never consume one another's output; lossy reads report truncation and the spill file holding the complete stream when one exists. Piped streams are handed to the caller raw and never buffered here.
-- SubprocessHandle.terminate (and the spec's abort signal) escalates SIGTERM→grace→SIGKILL — the only termination verb — tree-scoped on every platform. SubprocessHandle.waitForExit observes whole-tree liveness, so a consumer-owned teardown ladder can hold each tier on real quiescence.
+- SubprocessHandle.terminate (and the spec's abort signal) starts the provider's documented procedure against its managed range. SubprocessHandle.waitForExit observes that same range so a consumer-owned teardown ladder can hold each tier on real quiescence; each provider documents its signalling and observability limits.
 - Disposal of the service terminates all still-running managed processes and awaits their exit.
 - spawnTerminal owns terminal allocation, text transport, foreground groups, signalling, and whole-session quiescence behind one awaited termination method; readiness and persistent-shell policy stay in the PTY consumer. Its output stream ends after queued terminal output when the top-level process exits.
 
@@ -303,17 +290,25 @@ Implementations must honor these semantics:
 abstract resolveExecutable( command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal, ): Promise<string>
 
 /**
+ * Inspect shell-selection facts in the provider's execution environment.
+ * @param signal - cancellation of remote environment inspection.
+ * @returns platform and preferred shell; executable lookup and allocation remain separate operations.
+ */
+abstract terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment>
+
+/**
  * Start one managed child process from a fully-specified spec; this seam
  * applies no defaults.
  * @param spec - argv, directory, stdio dispositions, grace, cancellation, and environment.
  * @returns the live process handle (streams/readers, signalling, outcome promise).
+ * @throws synchronously when pre-aborted or when argv, cwd, environment, or grace is invalid before handle creation.
  */
 abstract spawn(spec: SubprocessSpawnSpec): SubprocessHandle
 
 /**
  * Allocate a real terminal and start one owned process session. This is the
  * only non-pipe process primitive: implementations own terminal byte I/O,
- * foreground groups, signals, and complete session-tree cleanup.
+ * foreground groups, signals, and whole-session quiescence.
  * @param spec - fully specified argv, cwd, environment, dimensions, grace, and allocation cancellation.
  * @returns the live terminal handle after allocation succeeds.
  */

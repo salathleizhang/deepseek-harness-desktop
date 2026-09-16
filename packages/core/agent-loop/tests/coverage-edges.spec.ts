@@ -63,19 +63,19 @@ describe('tool JSON parse', () => {
         return [{ type: 'text', text: typeof args === 'string' ? `raw: ${args}` : JSON.stringify(args) }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'use tool')
     await waitForIdle(ctx, agent)
 
     // tool/call event should have recorded the raw arguments string
-    const callEvent = agent.session.events.find(e => e.type === 'tool/call')
+    const callEvent = agent.session.snapshotEvents().find(e => e.type === 'tool/call')
     expect(callEvent).toBeDefined()
     if (callEvent!.type === 'tool/call') {
       expect(callEvent!.data.arguments).toBe('not json')
     }
     // the loop did not crash — a result was produced
-    expect(agent.session.events.some(e => e.type === 'tool/result')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'tool/result')).toBe(true)
   })
 
   it('uses empty object when tool-call arguments are empty string', async () => {
@@ -96,12 +96,12 @@ describe('tool JSON parse', () => {
         return [{ type: 'text', text: 'ran with empty args' }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'use tool')
     await waitForIdle(ctx, agent)
 
-    expect(agent.session.events.some(e => e.type === 'tool/result')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'tool/result')).toBe(true)
   })
 })
 
@@ -109,7 +109,7 @@ describe('thrown-value propagation', () => {
   it('preserves non-Error throws from pre-commit dispatch validation', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let threwOnce = false
     ctx.on('internal/dispatch', (_mode, name, args) => {
@@ -130,9 +130,9 @@ describe('thrown-value propagation', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]).toBe('naked string error')
     expect(adapter.requests).toHaveLength(0)
-    const starts = agent.session.events.filter(event => event.type === 'turn/start')
-    const ends = agent.session.events.filter(event => event.type === 'turn/end')
-    const messages = agent.session.events.filter(event => event.type === 'user/message')
+    const starts = agent.session.snapshotEvents().filter(event => event.type === 'turn/start')
+    const ends = agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+    const messages = agent.session.snapshotEvents().filter(event => event.type === 'user/message')
     expect(starts).toHaveLength(0)
     expect(ends).toHaveLength(0)
     expect(messages).toHaveLength(0)
@@ -142,7 +142,7 @@ describe('thrown-value propagation', () => {
   it('preserves non-Error throws from the agent/request waterfall', async () => {
     const adapter = new MockAdapter([textResponse('irrelevant')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let threwOnce = false
     ctx.on('agent/request', async (_payload, next) => {
@@ -155,7 +155,7 @@ describe('thrown-value propagation', () => {
 
     send(agent, 'go')
     await waitForIdle(ctx, agent)
-    const turnEnd = agent.session.events.find(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().find(e => e.type === 'turn/end')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind === 'error'
       ? turnEnd.data.reason.error.message
       : undefined).toBe('[object Object]')
@@ -166,7 +166,7 @@ describe('durable error rendering', () => {
   it('renders a coded error thrown from a plugin', async () => {
     const adapter = new MockAdapter([textResponse('turn 1')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let threwOnce = false
     ctx.on('agent/request', async (_payload, next) => {
@@ -180,7 +180,7 @@ describe('durable error rendering', () => {
     send(agent, 'go')
     await waitForIdle(ctx, agent)
 
-    const turnEnd = agent.session.events.find(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().find(e => e.type === 'turn/end')
     expect(turnEnd).toBeDefined()
     if (turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind === 'error') {
       expect(turnEnd.data.reason.error).toEqual({
@@ -196,8 +196,8 @@ describe('disposed vs aborted branching', () => {
     const adapter = new MockAdapter(['hang'])
     const ctx = await harness(adapter)
     let agent!: Agent
-    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
-      agent = inner.agentLoop.create(SessionId('scoped'), { provider: 'mock', model: 'mock' })
+    const fiber = await ctx.plugin(Object.assign(async (inner: Context) => {
+      agent = await inner.agentLoop.create(SessionId('scoped'), { provider: 'mock', model: 'mock' })
     }, { inject: ['agentLoop'] }))
 
     const reasons: TurnEndReason[] = []
@@ -223,7 +223,7 @@ describe('structured tool error propagation (the runtime-validation Agent Note, 
       textResponse('done'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     ctx.tools.register(defineContentToolFixture({
       name: 'boom',
       description: 'always fails',
@@ -236,7 +236,7 @@ describe('structured tool error propagation (the runtime-validation Agent Note, 
     send(agent, 'go')
     await waitForIdle(ctx, agent)
 
-    const toolResult = agent.session.events.find(e => e.type === 'tool/result')
+    const toolResult = agent.session.snapshotEvents().find(e => e.type === 'tool/result')
     expect(toolResult?.type === 'tool/result' && toolResult.data.message.content[0].isError).toBe(true)
     expect(toolResult?.type === 'tool/result' && toolResult.data.error)
       .toEqual({ name: 'HarnessError', code: 'BOOM' })
@@ -251,7 +251,7 @@ describe('request-error action edges', () => {
       textResponse('never used'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('retry-after-cancel'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('retry-after-cancel'), { provider: 'mock', model: 'mock' })
     ctx.on('agent/request-error', async ({ agent: subject }) => {
       subject.cancel({ kind: 'user' })
       return { kind: 'retry' }
@@ -262,7 +262,7 @@ describe('request-error action edges', () => {
 
     // One failed request, no retry turn.
     expect(adapter.requests).toHaveLength(1)
-    const ends = agent.session.events.filter(e => e.type === 'turn/end')
+    const ends = agent.session.snapshotEvents().filter(e => e.type === 'turn/end')
     expect(ends).toHaveLength(1)
   })
 
@@ -272,7 +272,7 @@ describe('request-error action edges', () => {
       () => { throw new LlmError('busy', 'RATE_LIMIT') },
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('retry-raced'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('retry-raced'), { provider: 'mock', model: 'mock' })
     ctx.on('agent/request-error', async ({ agent: subject, signal }, next) => {
       await next()
       subject.cancel({ kind: 'user' })
@@ -284,7 +284,7 @@ describe('request-error action edges', () => {
     await agent.whenIdle()
 
     expect(adapter.requests).toHaveLength(1)
-    const end = agent.session.events.findLast(e => e.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason.kind).toBe('aborted')
   })
 })
@@ -293,16 +293,16 @@ describe('stream failure edges', () => {
   it('rethrows a mid-stream throw that carries no adapter failure facts', async () => {
     const adapter = new MockAdapter([textResponse('will be vetoed')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('stream-no-facts'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('stream-no-facts'), { provider: 'mock', model: 'mock' })
     let recoveries = 0
     ctx.on('agent/request-error', async () => { recoveries += 1 })
-    // A pre-commit chunk veto throws INSIDE the stream-consumption try, but it
-    // is not an adapter-boundary failure, so llmFailureOf yields no facts.
+    // A pre-commit durable-settlement veto is not an adapter-boundary failure,
+    // so it is not offered to request recovery.
     let vetoed = false
     ctx.on('internal/dispatch', (_mode, name, args) => {
       if (name !== 'session/event') return
       const event = args[1] as SessionEvent
-      if (event.type === 'assistant/chunk' && !vetoed) {
+      if (event.type === 'assistant/message' && !vetoed) {
         vetoed = true
         throw new Error('reject the first chunk')
       }
@@ -313,7 +313,7 @@ describe('stream failure edges', () => {
 
     // No facts -> not offered to recovery; the turn fails through settle().
     expect(recoveries).toBe(0)
-    const end = agent.session.events.findLast(e => e.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason.kind).toBe('error')
   })
 })
@@ -322,7 +322,7 @@ describe('post-turn continuation edges', () => {
   it('whenIdle resolves for a waiter whose awaited run fails', async () => {
     const adapter = new MockAdapter([textResponse('unused')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('whenidle-reject'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('whenidle-reject'), { provider: 'mock', model: 'mock' })
     let rejected = false
     ctx.on('internal/dispatch', (_mode, name, args) => {
       if (name !== 'session/event') return
@@ -343,7 +343,7 @@ describe('persistent step-close rejection', () => {
   it('still publishes the terminal status when both step-close attempts are vetoed', async () => {
     const adapter = new MockAdapter([textResponse('will not close')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('stepend-double-veto'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('stepend-double-veto'), { provider: 'mock', model: 'mock' })
     // Persistently reject step/end: the catch's own close attempt fails too,
     // and the contained failure must not strand status at running.
     ctx.on('internal/dispatch', (_mode, name, args) => {
@@ -370,7 +370,7 @@ describe('tool result meta persistence', () => {
       textResponse('done'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('tool-meta'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('tool-meta'), { provider: 'mock', model: 'mock' })
     ctx.tools.register(defineTool({
       name: 'meta-tool',
       description: 'carries presentation meta',
@@ -388,7 +388,7 @@ describe('tool result meta persistence', () => {
     send(agent, 'go')
     await waitForIdle(ctx, agent)
 
-    const result = agent.session.events.find(e => e.type === 'tool/result')
+    const result = agent.session.snapshotEvents().find(e => e.type === 'tool/result')
     expect(result?.type === 'tool/result' && result.data.meta).toEqual({ presentation: 'diff-card' })
   })
 })
@@ -397,7 +397,7 @@ describe('turn close failure containment', () => {
   it('a rejected turn/end append is contained: warn + agent/error, no retry', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('turnend-veto'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('turnend-veto'), { provider: 'mock', model: 'mock' })
     let vetoed = false
     ctx.on('internal/dispatch', (_mode, name, args) => {
       if (name !== 'session/event') return
@@ -427,7 +427,7 @@ describe('recovery without a retry action', () => {
       () => { throw new LlmError('down', 'SERVICE_UNAVAILABLE') },
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('recovery-no-retry'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('recovery-no-retry'), { provider: 'mock', model: 'mock' })
     let recoveries = 0
     ctx.on('agent/request-error', async () => { recoveries += 1 })
 
@@ -436,7 +436,7 @@ describe('recovery without a retry action', () => {
 
     expect(recoveries).toBe(1)
     expect(adapter.requests).toHaveLength(1)
-    const end = agent.session.events.findLast(e => e.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason.kind).toBe('error')
   })
 })
@@ -456,12 +456,12 @@ describe('unrenderable failure settlement', () => {
       },
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('unrenderable'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('unrenderable'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'go')
     await agent.whenIdle()
 
-    const end = agent.session.events.findLast(e => e.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason.kind).toBe('error')
     if (end?.type === 'turn/end' && end.data.reason.kind === 'error') {
       // The durable failure keeps the adapter facts' message, not the
@@ -474,7 +474,7 @@ describe('unrenderable failure settlement', () => {
 describe('driver bookkeeping edges', () => {
   it('rejects a direct turn invocation without a driver reservation', async () => {
     const ctx = await harness(new MockAdapter([]))
-    const agent = ctx.agentLoop.create(SessionId('turn-without-reservation'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('turn-without-reservation'), { provider: 'mock', model: 'mock' })
 
     await expect((agent as unknown as { turn(): Promise<boolean> }).turn())
       .rejects.toThrow('turn without driver reservation')
@@ -484,7 +484,7 @@ describe('driver bookkeeping edges', () => {
   it('closes an entered turn as blocked when its next step is rejected', async () => {
     const adapter = new MockAdapter([textResponse('first step')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('reject-next-step'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('reject-next-step'), { provider: 'mock', model: 'mock' })
     let proposals = 0
     ctx.on('agent/pre-step', async (_payload, next) => {
       proposals += 1
@@ -502,7 +502,7 @@ describe('driver bookkeeping edges', () => {
 
     expect(proposals).toBe(2)
     expect(adapter.requests).toHaveLength(1)
-    const end = agent.session.events.findLast(event => event.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(event => event.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason).toEqual({ kind: 'blocked' })
   })
 
@@ -518,15 +518,15 @@ describe('driver bookkeeping edges', () => {
       ] satisfies StreamChunk[],
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('finish-after-close'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('finish-after-close'), { provider: 'mock', model: 'mock' })
     void LlmError
 
     send(agent, 'go')
     await agent.whenIdle()
 
-    const types = agent.session.events.map(e => e.type)
+    const types = agent.session.snapshotEvents().map(e => e.type)
     expect(types.filter(t => t === 'step/end')).toHaveLength(1)
-    const end = agent.session.events.findLast(e => e.type === 'turn/end')
+    const end = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(end?.type === 'turn/end' && end.data.reason.kind).toBe('error')
   })
 })

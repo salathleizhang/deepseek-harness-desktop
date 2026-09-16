@@ -1,17 +1,19 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { notifySubscribers } from '@deepseek-ai/dsh-client-store'
 import type {
-  ConversationLocation, ConversationTimelineSnapshot, ConversationViewBuilder,
-  ConversationViewDefinition,
+  ConversationLocation, ConversationNode, ConversationTimelineSnapshot, ConversationViewBuilder,
+  ConversationViewDefinition, PartialAssistant, RunningToolCall,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatConversationViewNode, ChatNode } from '../contract/chat-nodes.ts'
 import { isRunningTool } from '../contract/chat-nodes.ts'
 import type {
-  ChatLocationNodeIndex, ChatNodeStore, ChatSnapshot, ChatTurnNavigationIndex, ConversationNode,
-  LegacyConversationSlice, PartialAssistant, RunningToolCall, TurnNavigationItem,
+  ChatLocationNodeIndex, ChatNodeProcessSource, ChatNodeSource, ChatNodeStore, ChatSnapshot,
+  ChatTurnNavigationIndex, ChatTurnProcessPresentation, LegacyConversationSlice, TurnNavigationItem,
 } from '../contract/snapshot.ts'
 import { TURN_PROCESS_INDEPENDENT_KINDS } from '../contract/turn-process.ts'
-import { sessionRecallLabels } from './event-projection.ts'
+import { sessionRecallLabels, skillInvocationName } from './event-projection.ts'
 import { sameTurnNavigationItem, turnNavigationItem } from './turn-navigation.ts'
+import { ChatTurnProcessProjector } from './turn-process-presentation.ts'
 
 const EMPTY_KEYS: readonly string[] = []
 const EMPTY_TURNS: readonly number[] = []
@@ -22,13 +24,77 @@ function sameReferences<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+function cachedSource<Key, Source>(
+  sources: Map<Key, Source>,
+  key: Key,
+  create: () => Source,
+): Source {
+  let source = sources.get(key)
+  if (source === undefined) {
+    source = create()
+    sources.set(key, source)
+  }
+  return source
+}
+
+/* jscpd:ignore-start -- Chat Node sources keep publication state inside the keyed Chat store. */
+class MutableChatSource<Value> {
+  private readonly listeners = new Set<() => void>()
+  private published: Value
+
+  constructor(
+    private readonly read: () => Value,
+    private readonly label: string,
+  ) {
+    this.published = read()
+  }
+
+  readonly getSnapshot = (): Value => this.read()
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  publish(): void {
+    const next = this.getSnapshot()
+    if (this.published === next) return
+    this.published = next
+    notifySubscribers(this.listeners, this.label)
+  }
+}
+/* jscpd:ignore-end */
+
 class MutableChatNodeStore implements ChatNodeStore {
   private readonly byKey = new Map<string, ChatConversationViewNode>()
+  private readonly turnProcesses = new ChatTurnProcessProjector()
+  private readonly sources = new Map<string, MutableChatSource<ChatConversationViewNode | undefined>>()
+  private readonly processSources = new Map<string, MutableChatSource<ChatTurnProcessPresentation | undefined>>()
+  private readonly dirtyKeys = new Set<string>()
+  private readonly dirtyProcessKeys = new Set<string>()
   private valuesCache: readonly ChatConversationViewNode[] = EMPTY_LIST
   private valuesDirty = false
 
   get(key: string): ChatConversationViewNode | undefined {
     return this.byKey.get(key)
+  }
+
+  source(key: string): ChatNodeSource {
+    return cachedSource(this.sources, key, () => new MutableChatSource(
+      () => this.get(key),
+      `[ui-chat] node source ${key}`,
+    ))
+  }
+
+  processSource(key: string): ChatNodeProcessSource {
+    return cachedSource(this.processSources, key, () => new MutableChatSource(
+      () => this.process(key),
+      `[ui-chat] node process source ${key}`,
+    ))
+  }
+
+  process(key: string): ChatTurnProcessPresentation | undefined {
+    return this.turnProcesses.get(this.get(key) as ChatNode | undefined)
   }
 
   values(): readonly ChatConversationViewNode[] {
@@ -40,8 +106,20 @@ class MutableChatNodeStore implements ChatNodeStore {
   }
 
   replace(nodes: readonly ChatConversationViewNode[]): void {
+    const previous = new Map(this.byKey)
     this.byKey.clear()
-    for (const node of nodes) this.byKey.set(node.key, node)
+    for (const node of nodes) {
+      this.byKey.set(node.key, node)
+      if (previous.get(node.key) !== node) {
+        this.dirtyKeys.add(node.key)
+        this.dirtyProcessKeys.add(node.key)
+      }
+      previous.delete(node.key)
+    }
+    for (const key of previous.keys()) {
+      this.dirtyKeys.add(key)
+      this.dirtyProcessKeys.add(key)
+    }
     this.valuesCache = [...this.byKey.values()]
     this.valuesDirty = false
   }
@@ -51,9 +129,34 @@ class MutableChatNodeStore implements ChatNodeStore {
     for (const node of nodes) {
       if (this.byKey.get(node.key) === node) continue
       this.byKey.set(node.key, node)
+      this.dirtyKeys.add(node.key)
+      this.dirtyProcessKeys.add(node.key)
       changed = true
     }
     if (changed) this.valuesDirty = true
+  }
+
+  touchProcesses(turns: ReadonlySet<number>, locations: ChatLocationNodeIndex): void {
+    for (const turn of turns) {
+      for (const key of locations.getTurn(turn)) this.dirtyProcessKeys.add(key)
+    }
+  }
+
+  replaceProcesses(order: readonly string[], locations: ChatLocationNodeIndex): void {
+    this.touchProcesses(this.turnProcesses.replace(order, locations, this), locations)
+  }
+
+  updateProcesses(turns: ReadonlySet<number>, locations: ChatLocationNodeIndex): void {
+    this.touchProcesses(this.turnProcesses.update(turns, locations, this), locations)
+  }
+
+  publish(): void {
+    const dirty = [...this.dirtyKeys]
+    const dirtyProcesses = [...this.dirtyProcessKeys]
+    this.dirtyKeys.clear()
+    this.dirtyProcessKeys.clear()
+    for (const key of dirty) this.sources.get(key)?.publish()
+    for (const key of dirtyProcesses) this.processSources.get(key)?.publish()
   }
 }
 
@@ -191,6 +294,25 @@ function locationCoordinates(location: ConversationLocation): { turn?: number; s
   if (location.kind === 'step') return { turn: location.turn.turn, step: location.step.step }
   if (location.kind === 'turn') return { turn: location.turn.turn }
   return {}
+}
+
+function locationTurnStatus(location: ConversationLocation): string | undefined {
+  return location.kind === 'turn' || location.kind === 'step' ? location.turn.status : undefined
+}
+
+function processPresentationInputChanged(
+  previous: ChatNode | undefined,
+  next: ChatNode,
+  structural: boolean,
+): boolean {
+  if (structural || previous === undefined) return true
+  if (locationTurnStatus(previous.location) !== locationTurnStatus(next.location)) return true
+  if (previous.kind === 'turn-process' && next.kind === 'turn-process') {
+    return previous.data !== next.data
+  }
+  return previous.kind === 'assistant-step'
+    && next.kind === 'assistant-step'
+    && previous.data.step !== next.data.step
 }
 
 interface TurnProcessPresentation {
@@ -383,6 +505,214 @@ class ReferenceLabelProjector {
   }
 }
 
+function withSkillNames(
+  node: ChatConversationViewNode,
+  names: readonly string[],
+): ChatConversationViewNode {
+  const candidate = node as ChatNode
+  if (candidate.kind !== 'user' && candidate.kind !== 'steering') return node
+  const current = candidate.data.skillNames ?? EMPTY_KEYS
+  const hasNames = Object.hasOwn(candidate.data, 'skillNames')
+  if (sameReferences(current, names) && hasNames === (names.length > 0)) return node
+  const data: Record<string, unknown> = { ...candidate.data }
+  if (names.length === 0) delete data.skillNames
+  else data.skillNames = names
+  return { ...candidate, data }
+}
+
+/** What skill-name batches are made of; every other Node is transparent. */
+type SlashEntryKind = 'message' | 'skill' | 'boundary'
+
+interface SlashEntry {
+  readonly key: string
+  readonly seq: number
+  readonly kind: SlashEntryKind
+  /** The injected skill name of a `skill` entry. */
+  readonly name: string | null
+}
+
+/**
+ * Classify one Node for batching: a direct message, a `skill-invocation`
+ * context, or a boundary of any other kind. A context that injects no skill
+ * (workspace rules, the catalog, a recall) is transparent and yields null.
+ */
+function slashEntryOf(node: ChatConversationViewNode): SlashEntry | null {
+  const candidate = node as ChatNode
+  if (candidate.kind === 'user' || candidate.kind === 'steering') {
+    return { key: node.key, seq: node.anchorSeq, kind: 'message', name: null }
+  }
+  if (candidate.kind === 'context') {
+    const name = skillInvocationName(candidate.data.source)
+    return name === null ? null : { key: node.key, seq: node.anchorSeq, kind: 'skill', name }
+  }
+  return { key: node.key, seq: node.anchorSeq, kind: 'boundary', name: null }
+}
+
+function sameSlashEntry(left: SlashEntry, right: SlashEntry): boolean {
+  return left.seq === right.seq && left.kind === right.kind && left.name === right.name
+}
+
+/**
+ * Attaches each direct message's step-loaded skill names to its Node.
+ *
+ * A step's `skill-invocation` injections follow the direct messages the host
+ * scanned for `/name` gestures and precede the step's first Node of any other
+ * kind, so every non-message, non-context Node closes a batch. Every ended
+ * Turn publishes its `turn-tail` Node on `turn/end` whatever the reason, so a
+ * batch never spans Turns, and `step/start` precedes the direct message in
+ * the log, so no boundary separates a message from its injections. Names
+ * attach to every direct message of the batch: the bubble decorates only the
+ * tokens its own text carries.
+ *
+ * The index holds only messages, skill injections, and boundaries, ordered by
+ * `anchorSeq`. An apply re-reads just the batches around the Nodes whose
+ * classification changed and never scans the store, so an assistant
+ * streaming frame costs nothing here (the append hot path never scans the
+ * Chat Nodes).
+ */
+export class SkillNameProjector {
+  private readonly entries = new Map<string, SlashEntry>()
+  /** Every indexed entry in `anchorSeq` order. */
+  private sorted: SlashEntry[] = []
+
+  /**
+   * Rebuild the index from a whole Node set and attach names to its messages.
+   * @param nodes - every materialized Chat Node, in any order.
+   * @returns the same Nodes, direct messages carrying their batch's names.
+   */
+  replace(nodes: readonly ChatConversationViewNode[]): readonly ChatConversationViewNode[] {
+    this.entries.clear()
+    this.sorted = []
+    for (const node of nodes) {
+      const entry = slashEntryOf(node)
+      if (entry === null) continue
+      this.entries.set(entry.key, entry)
+      this.sorted.push(entry)
+    }
+    this.sorted.sort((left, right) => left.seq - right.seq)
+    const names = new Map<string, readonly string[]>()
+    for (let index = 0; index < this.sorted.length; index++) {
+      if (this.sorted[index]?.kind === 'boundary') continue
+      const end = this.runEnd(index)
+      this.assignRun(index, end, names)
+      index = end
+    }
+    return nodes.map(node => withSkillNames(node, names.get(node.key) ?? EMPTY_KEYS))
+  }
+
+  /**
+   * Fold one incremental upsert set: re-read only the batches around the
+   * Nodes whose classification changed.
+   * @param upserts - the changed Nodes.
+   * @param store - the resident Nodes, read by key for the messages of an affected batch.
+   * @returns the upserts plus any resident message whose names changed.
+   */
+  apply(
+    upserts: readonly ChatConversationViewNode[],
+    store: ChatNodeStore,
+  ): readonly ChatConversationViewNode[] {
+    const dirty: number[] = []
+    for (const node of upserts) {
+      const next = slashEntryOf(node)
+      const previous = this.entries.get(node.key)
+      if (previous !== undefined) {
+        if (next !== null && sameSlashEntry(previous, next)) {
+          // A rebuilt message Node carries Definition state only, never the
+          // names a previous apply attached: re-read its batch.
+          if (next.kind === 'message') dirty.push(next.seq)
+          continue
+        }
+        this.remove(previous)
+        dirty.push(previous.seq)
+      }
+      if (next === null) continue
+      this.insert(next)
+      dirty.push(next.seq)
+    }
+    if (dirty.length === 0) return upserts
+    const names = new Map<string, readonly string[]>()
+    for (const seq of dirty) this.collectAround(seq, names)
+    const byKey = new Map(upserts.map(node => [node.key, node]))
+    for (const [key, list] of names) {
+      const node = byKey.get(key) ?? store.get(key)
+      if (node === undefined) continue
+      const next = withSkillNames(node, list)
+      if (next !== node || byKey.has(key)) byKey.set(key, next)
+    }
+    return [...byKey.values()]
+  }
+
+  private insert(entry: SlashEntry): void {
+    this.sorted.splice(this.lowerBound(entry.seq), 0, entry)
+    this.entries.set(entry.key, entry)
+  }
+
+  private remove(entry: SlashEntry): void {
+    this.sorted.splice(this.sorted.indexOf(entry), 1)
+    this.entries.delete(entry.key)
+  }
+
+  /** First index whose seq is at least `seq`. */
+  private lowerBound(seq: number): number {
+    let low = 0
+    let high = this.sorted.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if ((this.sorted[middle]?.seq ?? Number.POSITIVE_INFINITY) < seq) low = middle + 1
+      else high = middle
+    }
+    return low
+  }
+
+  /** Last index of the boundary-free run containing `index`. */
+  private runEnd(index: number): number {
+    let end = index
+    while (end + 1 < this.sorted.length && this.sorted[end + 1]?.kind !== 'boundary') end++
+    return end
+  }
+
+  /** First index of the boundary-free run containing `index`. */
+  private runStart(index: number): number {
+    let start = index
+    while (start - 1 >= 0 && this.sorted[start - 1]?.kind !== 'boundary') start--
+    return start
+  }
+
+  /** Record the names every message of the run `[start, end]` carries. */
+  private assignRun(start: number, end: number, names: Map<string, readonly string[]>): void {
+    const list: string[] = []
+    for (let index = start; index <= end; index++) {
+      const entry = this.sorted[index]
+      if (entry?.kind === 'skill' && entry.name !== null && !list.includes(entry.name)) list.push(entry.name)
+    }
+    for (let index = start; index <= end; index++) {
+      const entry = this.sorted[index]
+      if (entry?.kind === 'message') names.set(entry.key, list)
+    }
+  }
+
+  /**
+   * Re-read the run(s) around one changed seq: the run holding a message or
+   * skill entry, or — for a boundary, or a seq that left the index — the runs
+   * on both sides of that position.
+   */
+  private collectAround(seq: number, names: Map<string, readonly string[]>): void {
+    const at = this.lowerBound(seq)
+    const here = this.sorted[at]
+    if (here !== undefined && here.seq === seq && here.kind !== 'boundary') {
+      this.assignRun(this.runStart(at), this.runEnd(at), names)
+      return
+    }
+    if (at - 1 >= 0 && this.sorted[at - 1]?.kind !== 'boundary') {
+      this.assignRun(this.runStart(at - 1), at - 1, names)
+    }
+    const right = here !== undefined && here.seq === seq ? at + 1 : at
+    if (right < this.sorted.length && this.sorted[right]?.kind !== 'boundary') {
+      this.assignRun(right, this.runEnd(right), names)
+    }
+  }
+}
+
 interface LegacyContribution {
   readonly anchorSeq: number
   readonly nodes: readonly ConversationNode[]
@@ -400,7 +730,7 @@ const EMPTY_CONTRIBUTION: LegacyContribution = {
 function legacyContribution(raw: ChatConversationViewNode): LegacyContribution {
   const node = raw as ChatNode
   // Content-free settled Assistants remain in the finalized compatibility
-  // stream so StatsLine preserves its pre-assembly step counts; hidden running
+  // stream so StatsPills preserves its pre-assembly step counts; hidden running
   // attempts have no final Node to contribute.
   if (raw.visibility !== 'visible' && node.kind !== 'assistant-step') return EMPTY_CONTRIBUTION
   switch (node.kind) {
@@ -472,7 +802,7 @@ function sameContribution(left: LegacyContribution | undefined, right: LegacyCon
     && sameReferences(left.nodes, right.nodes)
 }
 
-/** Incremental compatibility projection for StatsLine and legacy top-level snapshot fields. */
+/** Incremental compatibility projection for StatsPills and legacy top-level snapshot fields. */
 class LegacySliceBuilder {
   private readonly contributions = new Map<string, LegacyContribution>()
   private readonly finalizedContributions = new Map<string, LegacyContribution>()
@@ -633,6 +963,7 @@ export class ChatSnapshotBuilder implements ConversationViewBuilder<ChatConversa
   private readonly navigation = new MutableTurnNavigationIndex()
   private readonly legacy = new LegacySliceBuilder()
   private readonly referenceLabels = new ReferenceLabelProjector()
+  private readonly skillNames = new SkillNameProjector()
   private order: readonly string[] = EMPTY_KEYS
   /** Last published timeline: a Turn boundary can land without a new node. */
   private timeline: ConversationTimelineSnapshot | null = null
@@ -646,20 +977,24 @@ export class ChatSnapshotBuilder implements ConversationViewBuilder<ChatConversa
     readonly nodes: readonly ChatConversationViewNode[]
     readonly timeline: ConversationTimelineSnapshot
   }): ChatSnapshot {
-    const nodes = this.referenceLabels.replace(input.nodes)
+    const nodes = this.skillNames.replace(this.referenceLabels.replace(input.nodes))
     this.store.replace(nodes)
     this.order = orderedVisibleChatNodes(nodes).map(node => node.key)
     this.locations.rebuild(this.order, this.store)
+    this.store.replaceProcesses(this.order, this.locations)
     this.navigation.rebuild(input.timeline, this.locations, this.store)
     this.timeline = input.timeline
-    return this.snapshot(input.timeline, this.legacy.replace(nodes, input.timeline))
+    const snapshot = this.snapshot(input.timeline, this.legacy.replace(nodes, input.timeline))
+    this.store.publish()
+    return snapshot
   }
 
   apply(input: {
     readonly upserts: readonly ChatConversationViewNode[]
     readonly timeline: ConversationTimelineSnapshot
   }): ChatSnapshot {
-    const upserts = this.referenceLabels.apply(input.upserts, this.store)
+    const upserts = this.skillNames.apply(this.referenceLabels.apply(input.upserts, this.store), this.store)
+    const processTurns = new Set<number>()
     let structural = false
     const contentOnly: ChatConversationViewNode[] = []
     for (const node of upserts) {
@@ -671,6 +1006,12 @@ export class ChatSnapshotBuilder implements ConversationViewBuilder<ChatConversa
         || locationIdentity(previous.location) !== locationIdentity(node.location)
       structural ||= nodeStructural
       if (!nodeStructural) contentOnly.push(node)
+      if (processPresentationInputChanged(previous as ChatNode | undefined, node as ChatNode, nodeStructural)) {
+        const previousTurn = previous === undefined ? undefined : locationCoordinates(previous.location).turn
+        const nextTurn = locationCoordinates(node.location).turn
+        if (previousTurn !== undefined) processTurns.add(previousTurn)
+        if (nextTurn !== undefined) processTurns.add(nextTurn)
+      }
     }
     this.store.upsert(upserts)
     if (structural) {
@@ -679,13 +1020,16 @@ export class ChatSnapshotBuilder implements ConversationViewBuilder<ChatConversa
       this.locations.rebuild(this.order, this.store)
     }
     this.locations.touch(contentOnly)
+    this.store.updateProcesses(processTurns, this.locations)
     if (structural || input.timeline !== this.timeline) {
       this.navigation.rebuild(input.timeline, this.locations, this.store)
     } else {
       this.navigation.touch(turnsOf(contentOnly), this.locations, this.store)
     }
     this.timeline = input.timeline
-    return this.snapshot(input.timeline, this.legacy.apply(upserts, input.timeline))
+    const snapshot = this.snapshot(input.timeline, this.legacy.apply(upserts, input.timeline))
+    this.store.publish()
+    return snapshot
   }
 
   private snapshot(

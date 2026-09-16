@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-schedule` gives your session durable reminders: ask the model to remind you later, and the reminder comes back as an ordinary follow-up message in the same conversation. You can schedule a one-time reminder after a delay or at an absolute time, or a repeating reminder on a fixed interval, and you can list what is still pending or cancel a reminder. Reminders survive restarts: an already-live idle agent can deliver due work immediately, while a closed or cold session keeps it overdue until a future live root agent resumes the session. Delivery stays inside the session, with no email, SMS, or push notification. It is an opt-in Web capability; load the Schedule overlay to enable the reminder tools and read-only active-reminder catalog. Ordinary and search sidebar rows also show a non-interactive alarm when their best-effort list projection is known to be non-empty; the alarm does not promise a live runtime.
+Schedule lets you ask the model for durable reminders that return as ordinary follow-up messages in the same conversation. Create one-time reminders for a delay or absolute time, repeat them at fixed intervals, list pending reminders, and cancel them. Reminders survive restarts, but delivery requires a live root agent: closed sessions keep reminders overdue until resumed. Delivery never uses email, SMS, push, or browser notifications. Enable the Schedule overlay to expose the reminder tools and active-reminder catalog; sidebar alarms are best-effort indicators of known active reminders, not proof that reminder delivery is currently running.
 
 ## Table of Contents
 
@@ -94,15 +94,15 @@ The package rests on one separation and three commitments:
 | [`src/projection.ts`](src/projection.ts) | Optional seed-aware Session projection and strict checkpoint schema |
 | [`src/client.ts`](src/client.ts) | Browser-safe type-only `ScheduleRecord` export |
 | [`src/transaction.ts`](src/transaction.ts) | Agent-scoped serialization for reads and durable mutations |
-| [`src/invariant.ts`](src/invariant.ts) | `./invariant` companion applying replay policy to existing logs and candidate events |
+| [`src/invariant.ts`](src/invariant.ts) | `schedule-invariant` companion at `./invariant`, applying replay policy to existing logs and candidate events |
 
 ### Durable state and replay
 
-A normal Session folds its complete event stream. A fork folds only `session.events.slice(session.header.seedLength ?? 0)`, so a child never inherits its parent's reminders. The Schedule projection derives that boundary from the immutable `SessionHeader` passed to `init(header)` and applies the same transition function to the same owned suffix. Every create record carries a stable Session-local `ScheduleId`, the trimmed prompt, and a four-digit-year RFC 3339 UTC `scheduledAt`; an `after` record also stores `afterSeconds`, an `at` record stores no copy of its submitted offset or local fields, and an `every` record stores `everySeconds` with `scheduledAt` as the earliest creation-anchor-aligned occurrence not yet dispatched. Delete and one-shot dispatch carry only the id; an `every` dispatch adds `acceptedAt`, and replay advances directly to the first anchor-aligned target after that decision time.
+A normal Session folds its complete event stream. A fork folds only `session.ownEvents()`, so a child never inherits its parent's reminders. The Schedule projection receives the Session's exact `inheritedEventCount` from the projection registry and applies the same transition function after that cut. Every create record carries a stable Session-local `ScheduleId`, the trimmed prompt, and a four-digit-year RFC 3339 UTC `scheduledAt`; an `after` record also stores `afterSeconds`, an `at` record stores no copy of its submitted offset or local fields, and an `every` record stores `everySeconds` with `scheduledAt` as the earliest creation-anchor-aligned occurrence not yet dispatched. Delete and one-shot dispatch carry only the id; an `every` dispatch adds `acceptedAt`, and replay advances directly to the first anchor-aligned target after that decision time.
 
 ### Client projection
 
-The optional `schedule` projection checkpoints `{ seedLength, active, seenIds }` as strict plain JSON and publishes only the complete `active` array. Its schema reuses the durable Schedule decoder, rejects duplicate or inconsistent ids, and propagates corrupt durable events through the existing Session read failure instead of publishing a partial catalog. Live lazy build, event-driven build, cold restore, history reads, and detached Subagent reads all use the immutable Session header and the same owned-suffix transition.
+The optional `schedule` projection checkpoints `{ inheritedEventCount, active, seenIds }` as strict plain JSON and publishes only the complete `active` array. Its schema reuses the durable Schedule decoder, rejects duplicate or inconsistent ids, and propagates corrupt durable events through the existing Session read failure instead of publishing a partial catalog. Live lazy build, event-driven build, cold restore, history reads, and detached Subagent reads all use the exact Session cut and the same owned-suffix transition.
 
 The projection carries durable records only. It does not persist or transmit scheduled-versus-overdue status, localized text, relative time, browser-local time, sorting state, popover state, runtime liveness, or delivery receipts. [`dsh-client-ui-schedule`](../../client/ui-schedule/README.md) derives catalog presentation from the complete array and the viewing browser's clock. [`dsh-client-ui-workspace`](../../client/ui-workspace/README.md) derives only whether the list value is a non-empty array, so ordinary and search rows may briefly omit or retain the alarm when the durable projection cache is missing or stale.
 
@@ -134,9 +134,9 @@ Read these pages when the package-level contract is not enough. They move from t
 - [Session-local Schedule subsystem](../../../docs/subsystems/schedule.md) — durable record, transition, view, and delivery contracts with the exact type definitions.
 - [Generated tool catalog](../../../docs/tool-catalog.md#deepseek-aidsh-schedule) — the complete `schedule_create`, `schedule_list`, and `schedule_delete` schemas the model receives.
 - [Durable Web Schedule decision](../../../.agents/notes/implemented/feature/2026-08-05-durable-web-schedule.md) — persistence and lifecycle decisions behind the package.
-- [Conversational delivery decision](../../../.agents/notes/implemented/simplification/2026-08-09-conversational-schedule-delivery.md) — the no-receipt boundary and follow-up delivery.
+- [Conversational delivery decision](../../../.agents/notes/archived/simplification/2026-08-09-conversational-schedule-delivery.md) — the no-receipt boundary and follow-up delivery.
 - [Explicit time-zone boundary](../../../.agents/notes/implemented/simplification/2026-08-09-explicit-schedule-time-zone.md) — why the model must always pass an explicit zone.
-- [Bounded fixed-rate Schedule](../../../.agents/notes/implemented/simplification/2026-08-09-bounded-fixed-rate-schedule.md) — recurrence scope: latest-only catch-up and batch delivery.
+- [Bounded fixed-rate Schedule](../../../.agents/notes/archived/simplification/2026-08-09-bounded-fixed-rate-schedule.md) — recurrence scope: latest-only catch-up and batch delivery.
 - [Schedule user guide](../../../docs/user/guide/schedule.md) — the official configuration path for mounting this package with time-context.
 
 -----

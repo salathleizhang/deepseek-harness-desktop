@@ -109,11 +109,11 @@ export interface ShellExecSpec {
   sandboxPolicy: SandboxExecutionPolicy | undefined
 }
 
-/** The outcome of one completed (or killed) foreground run. */
+/** The outcome of a foreground run, including timeout during preparation. */
 export interface ShellRunResult {
-  /** Exit code; null when the process died from a signal. */
+  /** Exit code; null when preparation expired or the process died from a signal. */
   exitCode: number | null
-  /** Terminating signal (e.g. 'SIGTERM'); null on normal exit. */
+  /** Terminating signal, or null when none was reported, including preparation expiry. */
   signal: NodeJS.Signals | null
   /**
    * True when the executor's own timeout was the FIRST cause to cut the command
@@ -165,7 +165,10 @@ export interface ShellProcess {
   exitCode: number | null
   /** Terminating signal name, when signal-killed. */
   signal: NodeJS.Signals | null
-  /** Resolves when the underlying process closes (never rejects — a spawn failure settles as `killed` with the error on stderr). */
+  /**
+   * Resolves when the underlying process settles (never rejects — provider
+   * rejection settles as `killed` with a stage-neutral error on stderr).
+   */
   readonly done: Promise<void>
   /** Sandbox facts, stamped once a confined process settles. */
   sandbox?: ShellSandboxInfo
@@ -176,7 +179,7 @@ export interface ShellProcess {
    */
   readOutput(): ShellProcessRead
   /**
-   * Kill the process group. Returns false when it had already finished
+   * Terminate the provider-managed range. Returns false when it had already finished
    * (no-op); idempotent.
    */
   kill(): boolean

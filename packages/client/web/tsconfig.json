@@ -27,10 +27,10 @@
       "path": "../ui-primitives"
     },
     {
-      "path": "../ui-renderer"
+      "path": "../ui-dockkit"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../ui-renderer"
     }
   ],
   "exclude": [

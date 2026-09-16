@@ -55,7 +55,8 @@ export function apply(ctx: Context): void {
       const cleanup: OwnerCleanup = agent.ctx.effect(() => {
         const disposeTools = registerScheduleTools(ctx, agent.ctx, agent, () => { runtime.requestDrive() })
         const stopStatus = agent.ctx.on('agent/status', ({ status }) => {
-          if (status === 'idle' && agent.session.events.some(event => event.type === 'schedule/change')) {
+          // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+          if (status === 'idle' && agent.session.snapshotEvents().some(event => event.type === 'schedule/change')) {
             runtime.requestDrive()
           }
         })

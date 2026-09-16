@@ -7,7 +7,6 @@
   },
   "files": [
     "src/index.ts",
-    "src/invariant.ts",
     "src/remote-events.ts",
     "src/types.ts"
   ],
@@ -28,7 +27,13 @@
       "path": "../../interaction/commands"
     },
     {
+      "path": "../../interaction/permission-presets"
+    },
+    {
       "path": "../../llm/llm"
+    },
+    {
+      "path": "../../goal/goal"
     },
     {
       "path": "../../preset/agent-presets"
@@ -55,16 +60,19 @@
       "path": "../../interaction/user-questions"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../session-controller/tsconfig.host.json"
     },
     {
-      "path": "../session-controller/tsconfig.host.json"
+      "path": "../workspace-files/tsconfig.host.json"
     },
     {
       "path": "../workspace-controller/tsconfig.host.json"
     },
     {
       "path": "../../typert/protocol"
+    },
+    {
+      "path": "../terminal-controller/tsconfig.host.json"
     }
   ]
 }

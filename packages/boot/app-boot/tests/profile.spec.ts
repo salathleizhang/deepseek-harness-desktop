@@ -11,12 +11,13 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
   composeEntries,
   healProfilesModuleFallback,
   initProfile,
   loadProfile,
+  loadProfileDirectory,
   PROFILE_PATCH_FILENAME,
   PROFILE_TEMPLATES,
   readProfileManifest,
@@ -26,7 +27,16 @@ import {
   type Profile,
 } from '../src/index.ts'
 
-const tmp = (): string => mkdtempSync(join(tmpdir(), 'dsh-profile-'))
+const tempRoots: string[] = []
+afterAll(() => {
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+const tmp = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-profile-'))
+  tempRoots.push(dir)
+  return dir
+}
 
 /** Stage a fake installed app: package.json with deps and a node_modules holding bundles. */
 function stageInstallation(
@@ -154,6 +164,16 @@ describe('resolveBundleDir', () => {
 })
 
 describe('loadProfile', () => {
+  it('loads an explicitly owned profile directory outside CLI discovery', () => {
+    const anchor = stageInstallation({ 'bundle-a': { patch: '[]\n' } })
+    const dir = join(tmp(), 'managed', 'desktop')
+    initProfile(dir, ['bundle-a'])
+    const profile = loadProfileDirectory('managed app', dir, anchor)
+    expect(profile.dir).toBe(dir)
+    expect(profile.name).toBe('desktop')
+    expect(profile.layers.map(layer => layer.packageName)).toEqual(['bundle-a'])
+  })
+
   it('resolves each dsh.profile.bundles entry to its patch layer in order, plus the user layer', () => {
     const anchor = stageInstallation({
       'bundle-a': { patch: '- insert:\n    - id: a\n      name: pkg-a\n' },

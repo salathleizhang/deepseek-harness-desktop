@@ -5,7 +5,7 @@
  */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ToolCallId, ProviderRequestId, ReasoningEffortId } from './brand.ts'
 import type { Message } from './message.ts'
 
@@ -26,7 +26,7 @@ declare module '@deepseek-ai/cordis' {
 
 export type {
   AssistantMessage,
-  AssistantProvenance,
+  AssistantProviderMetadata,
   Message,
   MessageSource,
   MessageSourceMap,
@@ -48,6 +48,13 @@ export interface LlmFailure {
   readonly providerRetryAfterMs?: number
   /** Opaque provider-issued request identifier for diagnostics. */
   readonly requestId?: ProviderRequestId
+  /**
+   * With code `IMAGE_OFFLOAD_REQUIRED`: how many more of the oldest retained
+   * image occurrences the route needs offloaded before the same request fits
+   * its exact byte accounting. `dsh-compaction-image-offload` records the
+   * selected occurrences in an `image/offload` event and retries the step.
+   */
+  readonly offloadImages?: number
 }
 
 /** Plain text visible to the end user. */
@@ -72,6 +79,25 @@ export interface ImageBlock {
   type: 'image'
   /** Immutable bytes and intrinsic display metadata owned by the attachment service. */
   attachment: ImageAttachmentRef
+  /**
+   * Derived from a durable image-offload decision or preserved by a message
+   * rewrite. Every route sends placeholder text naming the image and its
+   * available read-only path instead of image bytes.
+   */
+  offloaded?: true
+}
+
+/**
+ * A durable verbatim file reference, valid in user content. Files never reach
+ * a provider natively: request assembly projects every occurrence to
+ * deterministic handle text (name, byte size, and the read-only saved path),
+ * so adapters and providers see text in its place while the durable log keeps
+ * the structured reference for presentation and authorization.
+ */
+export interface FileBlock {
+  type: 'file'
+  /** Immutable verbatim bytes and display metadata owned by the attachment service. */
+  attachment: FileAttachmentRef
 }
 
 /** A tool invocation requested by the model. */
@@ -100,6 +126,7 @@ export interface ContentBlockMap {
   'text': TextBlock
   'reasoning': ReasoningBlock
   'image': ImageBlock
+  'file': FileBlock
   'tool-call': ToolCallBlock
   'tool-result': ToolResultBlock
 }
@@ -172,10 +199,11 @@ export interface LlmImageRequestPrice {
 export interface LlmImageRequestPricing {
   /**
    * Price every image occurrence of one request projection.
-   * @param images - durable image references in request order, one entry per occurrence.
+   * @param images - surface image blocks in request order, one entry per occurrence; an `offloaded` block
+   *   is priced as its placeholder text.
    * @returns one price per occurrence, aligned by index with `images`.
    */
-  priceImages(images: readonly ImageAttachmentRef[]): readonly LlmImageRequestPrice[]
+  priceImages(images: readonly ImageBlock[]): readonly LlmImageRequestPrice[]
 }
 
 /** Display metadata for one registered provider route. */
@@ -222,6 +250,8 @@ export interface LlmConfigurableProvider {
    * from outside.
    */
   declared?: boolean
+  /** Configuration diagnostic for repair; unaffected models may remain serviceable. */
+  error?: string
 }
 
 /**
@@ -301,6 +331,26 @@ export interface LlmModelContext {
   contextWindow: number
 }
 
+/**
+ * Request-image budget one exact image-capable route enforces over the
+ * retained occurrences' exact request-version bytes; for the `base64`
+ * representation each byte count expands to its encoded length. A route whose
+ * retained occurrences exceed the budget fails the request with
+ * `IMAGE_OFFLOAD_REQUIRED` naming the additional occurrences to offload.
+ */
+export interface LlmImageRequestBudget {
+  /** Whether the route accounts raw file bytes or inline base64 length. */
+  representation: 'raw' | 'base64'
+  /** Accumulated represented image bytes the route accepts; absent leaves bytes unbounded. */
+  maxBytes?: number
+  /** Image occurrences the route accepts; absent leaves the count unbounded. */
+  maxImages?: number
+  /** Represented bytes removed as one deterministic advance step; absent removes the minimum. */
+  byteQuantum?: number
+  /** Occurrences removed as one deterministic advance step; absent removes the minimum. */
+  countQuantum?: number
+}
+
 /** Display metadata for one adapter-owned reasoning effort. */
 export interface LlmReasoningEffortInfo {
   /** Opaque stable value accepted by {@link GenerateOptions.reasoningEffort}. */
@@ -322,6 +372,14 @@ export interface LlmModelReasoningInfo {
   defaultEffort?: ReasoningEffortId
 }
 
+/**
+ * How a model applies a system prompt that changes mid-conversation.
+ * `'in-history'`: the model reads the latest `system` message at any position
+ * of `messages` as the complete effective system prompt, so a changed prompt
+ * can follow the cached history instead of rewriting message 0.
+ */
+export type SystemPromptUpdate = 'in-history'
+
 /** Exact-route model metadata resolved by its owning adapter. */
 export interface LlmResolvedModelInfo extends LlmModelInfo {
   /** Provider-owned context capacity when known. */
@@ -330,6 +388,8 @@ export interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
+  /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */
+  systemPromptUpdate?: SystemPromptUpdate
 }
 
 /**
@@ -397,12 +457,16 @@ export interface GenerateOptions {
   /** Adapter-owned reasoning effort selected for this exact model. */
   reasoningEffort?: ReasoningEffortId
   /**
-   * Ordered conversation messages, exactly as the provider sees them (after
-   * the `system` slot). A loop-built request assembles them as
-   * the derived history (dsh-agent-loop); a hand-built one-shot passes any list.
+   * Ordered conversation messages, exactly as the provider sees them. A
+   * loop-built request passes the derived history (dsh-agent-loop), whose
+   * leading system-role message carries the system prompt; a hand-built
+   * one-shot passes any list.
    */
   messages: Message[]
-  /** System prompt text (adapters map to the provider's system slot). */
+  /**
+   * System prompt text for one-shot callers; adapters map it to the provider's
+   * system slot ahead of `messages`. Loop-built requests leave it undefined.
+   */
   system?: string
   /** Tool schemas (adapters map to the provider's `tools` field). */
   tools?: ToolSchema[]

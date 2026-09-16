@@ -4,11 +4,11 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { createUserMessage, ToolCallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import { unsupportedInbox, mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import * as timeContext from '@deepseek-ai/dsh-time-context'
 import type { Config } from '@deepseek-ai/dsh-time-context'
 
@@ -38,11 +38,11 @@ async function mount(config: Config = {}) {
 }
 
 function sessionAgent(session: Session, id = 'agent'): Agent {
-  return {
+  const agent: Agent = {
     id: SessionId(id),
     options: {},
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    inbox: unsupportedInbox(),
     status: 'running',
     ctx: new Context(),
     send: () => {},
@@ -53,6 +53,7 @@ function sessionAgent(session: Session, id = 'agent'): Agent {
     runMaintenance: task => task(new AbortController().signal),
     whenIdle: () => Promise.resolve(),
   }
+  return agent
 }
 
 function openMessageTurn(session: Session, turn: number, clientTimeZone?: string): void {
@@ -67,7 +68,7 @@ function openMessageTurn(session: Session, turn: number, clientTimeZone?: string
 
 function contextTexts(session: Session): string[] {
   const texts: string[] = []
-  for (const event of session.events) {
+  for (const event of session.snapshotEvents()) {
     if (event.type === 'user/message'
       && event.data.source.kind === 'plugin'
       && event.data.source.plugin === 'time-context') {
@@ -139,7 +140,6 @@ class ScriptedAdapter extends LlmAdapter {
 async function loopHarness(adapter: ScriptedAdapter, config: Config = {}): Promise<Context> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(timeContext, config)
   ctx.llm.registerAdapter(['mock'], adapter)
@@ -168,7 +168,7 @@ describe('durable step context', () => {
       + 'Browser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\n'
       + 'Elapsed since the preceding model-visible message: 1d 1h 1m 1s.',
     ])
-    const event = session.events.at(-1)
+    const event = session.snapshotEvents().at(-1)
     expect(event?.type).toBe('user/message')
     if (event?.type !== 'user/message') throw new Error('missing time context')
     // The reading is a `snapshot`-form context: one named contribution whose
@@ -291,28 +291,28 @@ describe('durable step context', () => {
     const original = Session.create(SessionId('seed-source'))
     openMessageTurn(original, 1)
     await fire(ctx, sessionAgent(original), 1, 1)
-    const user = original.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
-    const reading = original.events.find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
+    const user = original.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+    const reading = original.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
     if (user === undefined || reading === undefined) throw new Error('missing source surface events')
     original.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'compacted history' }],
       source: { kind: 'plugin', plugin: 'compaction-basic' },
     }), {
-      surfaceOp: { op: 'replace', start: user.seq, end: reading.seq },
+      surfaceOp: { op: 'replace', startSeq: user.seq, endSeq: reading.seq },
       sourceEventSeqs: [user.seq, reading.seq],
     })
     original.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     expect(JSON.stringify(original.deriveMessages())).not.toContain('Time sampled while preparing')
 
-    const resumed = Session.create(SessionId('resumed'), [...original.events])
+    const resumed = Session.create(SessionId('resumed'), original.snapshotEvents())
     const resumedAgent = sessionAgent(resumed)
     vi.setSystemTime(BASE + 999)
     openMessageTurn(resumed, 2)
-    const beforeSkip = resumed.events.length
+    const beforeSkip = resumed.snapshotEvents().length
 
     await fire(ctx, resumedAgent, 2, 1)
 
-    expect(resumed.events).toHaveLength(beforeSkip)
+    expect(resumed.snapshotEvents()).toHaveLength(beforeSkip)
     expect(contextTexts(resumed)).toHaveLength(1)
 
     vi.setSystemTime(BASE + 1_000)
@@ -334,14 +334,14 @@ describe('durable step context', () => {
 
     vi.setSystemTime(BASE + 500)
     openMessageTurn(first, 2)
-    const beforeSkip = first.events.length
+    const beforeSkip = first.snapshotEvents().length
     await fire(ctx, firstAgent, 2, 1)
 
     const independent = Session.create(SessionId('interval-independent'))
     openMessageTurn(independent, 1)
     await fire(ctx, sessionAgent(independent, 'independent-agent'), 1, 1)
 
-    expect(first.events).toHaveLength(beforeSkip)
+    expect(first.snapshotEvents()).toHaveLength(beforeSkip)
     expect(contextTexts(first)).toHaveLength(1)
     expect(contextTexts(independent)).toHaveLength(1)
   })
@@ -453,14 +453,14 @@ describe('real agent-loop request history', () => {
       subject.cancel({ kind: 'user' })
       return next()
     })
-    const agent = ctx.agentLoop.create(SessionId(`late-${mode}`), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId(`late-${mode}`), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'start' }], source: { kind: 'user' } }))
     await agent.whenIdle()
 
     expect(contextTexts(agent.session)).toHaveLength(0)
     expect(adapter.requests).toHaveLength(0)
-    expect(agent.session.events.some(event => event.type === 'step/start')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'step/start')).toBe(false)
     await ctx.fiber.dispose()
   })
 
@@ -476,15 +476,15 @@ describe('real agent-loop request history', () => {
         return [{ type: 'text' as const, text: 'advanced' }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('loop'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('loop'), { provider: 'mock', model: 'mock' })
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'start' }], source: { kind: 'user' } }))
     await agent.whenIdle()
 
     expect(adapter.requests).toHaveLength(2)
-    const contexts = agent.session.events.filter(
+    const contexts = agent.session.snapshotEvents().filter(
       (event): event is SessionEvent<'user/message'> => event.type === 'user/message' && event.data.source.kind === 'plugin')
-    const starts = agent.session.events.filter(event => event.type === 'step/start')
+    const starts = agent.session.snapshotEvents().filter(event => event.type === 'step/start')
     expect(contexts).toHaveLength(adapter.requests.length)
     expect(starts).toHaveLength(adapter.requests.length)
     for (let index = 0; index < contexts.length; index += 1) {
@@ -503,9 +503,13 @@ describe('real agent-loop request history', () => {
     expect(secondRequestText).toContain('Time sampled while preparing turn 1, step 2:')
     expect(secondRequestText).toContain('Elapsed since the preceding step context: 1m 1s.')
 
-    for (const request of adapter.requests) expect(request.system).not.toContain('Time sampled while preparing')
-    const headers = agent.session.events.filter(event => event.type === 'request/header')
-    expect(JSON.stringify(headers)).not.toContain('Time sampled while preparing')
+    for (const request of adapter.requests) {
+      expect(request.system).toBeUndefined()
+      expect(request.messages[0]?.role).toBe('system')
+      expect(JSON.stringify(request.messages[0])).not.toContain('Time sampled while preparing')
+    }
+    const systemNodes = agent.session.snapshotEvents().filter(event => event.type === 'system/message')
+    expect(JSON.stringify(systemNodes)).not.toContain('Time sampled while preparing')
     await ctx.fiber.dispose()
   })
 })

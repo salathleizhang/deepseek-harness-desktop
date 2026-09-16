@@ -1,7 +1,8 @@
 // Web e2e scenario: message IconActions + clocks. Cold-seeds a deterministic
-// completed-turn-tail fork case (zero model calls) and pins the settled
-// conversation aria after the footers are focus-revealed — the surface package
-// jsdom tests cannot substitute for (docs/testing.md snapshot rule).
+// completed-turn-tail fork case with an unchanged resume header (zero model
+// calls) and pins the settled conversation aria after the footers are
+// focus-revealed — the surface package jsdom tests cannot substitute for
+// (docs/testing.md snapshot rule).
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +19,7 @@ import { newEnglishPage, saveFailureShot } from './support.ts'
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/message-actions', import.meta.url))
 // Borrowed read-only: this scenario needs any settled user+assistant pair, not
 // a new recording (workspace-management / sidebar-scrollbar pattern).
-const SEED = fileURLToPath(new URL('../../../snapshots/web/seeded-history/session.jsonl', import.meta.url))
+const SEED = fileURLToPath(new URL('../../../snapshots/web/seeded-history/session.v3.jsonl', import.meta.url))
 const UI_EXPECTED = join(SNAPSHOT_DIR, 'ui.expected.md')
 const FORK_EXPECTED = join(SNAPSHOT_DIR, 'fork.expected.md')
 const MODE = webSnapshotMode()
@@ -27,29 +28,55 @@ const SEED_ID = 'message-actions-web-e2e'
 const PROMPT = 'Use the read tool twice in one assistant message: read a.txt and b.txt. Then reply with the single word DONE and stop.'
 const MID_TURN_TEXT = 'I will read both files before answering.'
 const SECOND_PROMPT = 'Now give the final answer.'
+const NEXT_PROMPT = 'Keep this later input in the original conversation.'
 
 /**
  * Adapt the borrowed recording into response -> tools -> interrupted Think,
- * followed by one ordinary completed response. The first response keeps
+ * followed by two ordinary completed responses. The first response keeps
  * copy/clock but is not a legal branch point; the second is the real turn tail.
  * @param raw - Recorded seeded-history JSONL.
- * @returns A contiguous, closed two-turn fixture.
+ * @returns A contiguous, closed three-turn fixture.
  */
 function completedTailFixture(raw: string): string {
   const decoded = parseSeedFixture(raw)
-  const kept = decoded.events.filter(event => event.seq < 101).map((event) => {
-    if (event.type === 'assistant/message' && event.seq === 64) {
-      const data = event.data as unknown as { content?: unknown[] }
-      const content = data.content
-      if (!Array.isArray(content)) throw new Error('borrowed step-one assistant message has no content')
-      return {
-        ...event,
-        data: { ...data, content: [...content.slice(0, 1), { type: 'text', text: MID_TURN_TEXT }, ...content.slice(1)] },
-      }
+  const stepTwoStart = decoded.events.findIndex(event =>
+    event.type === 'step/start' && event.data.turn === 1 && event.data.step === 2)
+  if (stepTwoStart < 0) throw new Error('borrowed fixture has no step-two start')
+  const kept = decoded.events.slice(0, stepTwoStart + 1).map((event) => {
+    if (event.type !== 'assistant/message' || event.data.turn !== 1 || event.data.step !== 1) return event
+    const finish = event.data.stream.findIndex(record =>
+      record.type === 'chunk' && record.chunk.type === 'finish')
+    if (finish < 0) throw new Error('borrowed step-one Assistant message has no finish record')
+    const finishRecord = event.data.stream[finish]!
+    if (finishRecord.type !== 'chunk') throw new Error('borrowed step-one finish is not a chunk record')
+    const streamTime = finishRecord.time
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        message: {
+          ...event.data.message,
+          content: [...event.data.message.content, { type: 'text' as const, text: MID_TURN_TEXT }],
+        },
+        stream: [
+          ...event.data.stream.slice(0, finish),
+          { type: 'chunk' as const, time: streamTime, chunk: { type: 'block-start' as const, index: 3, blockType: 'text' as const } },
+          { type: 'text-chunks' as const, time0: streamTime, index: 3, dt: [], texts: [MID_TURN_TEXT] },
+          {
+            type: 'chunk' as const,
+            time: streamTime,
+            chunk: { type: 'block-end' as const, index: 3, block: { type: 'text' as const, text: MID_TURN_TEXT } },
+          },
+          ...event.data.stream.slice(finish),
+        ],
+      },
     }
-    return event
   })
-  let seq = kept.length
+  const inheritedHeader = kept.findLast(event => event.type === 'request/header')
+  if (inheritedHeader?.type !== 'request/header') {
+    throw new Error('borrowed recording has no request header')
+  }
+  let seq = (kept.at(-1)?.seq ?? -1) + 1
   let time = (kept.at(-1)?.time ?? -1) + 1
   const at = (event: Record<string, unknown>): { seq: number; time: number } & Record<string, unknown> => ({
     ...event,
@@ -57,14 +84,102 @@ function completedTailFixture(raw: string): string {
     time: time++,
   })
   const tail = [
+    at({
+      type: 'assistant/attempt',
+      data: {
+        turn: 1,
+        step: 2,
+        stream: [
+          { type: 'chunk', time, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } },
+          { type: 'reasoning-chunks', time0: time, index: 0, dt: [], texts: ['This path was interrupted.'] },
+          {
+            type: 'chunk',
+            time,
+            chunk: { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'This path was interrupted.' } },
+          },
+          { type: 'chunk', time, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+        ],
+      },
+    }),
     at({ type: 'step/end', data: { turn: 1, step: 2 } }),
-    at({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } }),
-    at({ type: 'turn/start', data: { turn: 2, trigger: { kind: 'message', source: { kind: 'user', rpcId: '{{rpcId}}' } } } }),
-    at({ type: 'user/message', data: { content: [{ type: 'text', text: SECOND_PROMPT }], source: { kind: 'user', rpcId: '{{rpcId}}' } }, surfaceOp: 'append' }),
+    at({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }),
+    at({ type: 'turn/start', data: { turn: 2 } }),
+    at({
+      type: 'user/message',
+      data: {
+        content: [{ type: 'text', text: SECOND_PROMPT }],
+        source: { kind: 'user' },
+        role: 'user',
+        id: '{{message:98}}',
+      },
+      surfaceOp: 'append',
+    }),
     at({ type: 'step/start', data: { turn: 2, step: 1 } }),
-    at({ type: 'assistant/message', data: { turn: 2, step: 1, content: [{ type: 'text', text: 'DONE' }], provenance: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }, sourceEventSeqs: [], surfaceOp: 'append' }),
+    at({ type: 'request/header', data: { header: inheritedHeader.data.header, reason: 'resume' } }),
+    at({
+      type: 'assistant/message',
+      data: {
+        turn: 2,
+        step: 1,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'DONE' }],
+          source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+          id: '{{message:99}}',
+        },
+        stream: [
+          { type: 'chunk', time: 0, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+          { type: 'text-chunks', time0: 0, index: 0, dt: [], texts: ['DONE'] },
+          { type: 'chunk', time: 0, chunk: { type: 'block-end', index: 0, block: { type: 'text', text: 'DONE' } } },
+          { type: 'chunk', time: 0, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+        ],
+      },
+      surfaceOp: 'append',
+    }),
     at({ type: 'step/end', data: { turn: 2, step: 1 } }),
     at({ type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } }),
+    at({
+      type: 'agent/inbox/spliced',
+      data: {
+        target: 'next-turn', start: 0,
+        inserted: [{
+          role: 'user', id: '{{message:100}}', source: { kind: 'user' },
+          content: [{ type: 'text', text: NEXT_PROMPT }],
+        }],
+      },
+    }),
+    at({ type: 'turn/start', data: { turn: 3 } }),
+    at({
+      type: 'agent/inbox/spliced',
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    }),
+    at({ type: 'step/start', data: { turn: 3, step: 1 } }),
+    at({
+      type: 'user/message', surfaceOp: 'append',
+      data: {
+        role: 'user', id: '{{message:100}}', source: { kind: 'user' },
+        content: [{ type: 'text', text: NEXT_PROMPT }],
+      },
+    }),
+    at({
+      type: 'assistant/message', surfaceOp: 'append',
+      data: {
+        turn: 3, step: 1,
+        message: {
+          role: 'assistant', id: '{{message:101}}',
+          source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+          content: [{ type: 'text', text: 'ORIGINAL ONLY' }],
+        },
+        stream: [
+          { type: 'chunk', time: 0, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+          { type: 'text-chunks', time0: 0, index: 0, dt: [], texts: ['ORIGINAL ONLY'] },
+          { type: 'chunk', time: 0, chunk: { type: 'block-end', index: 0, block: { type: 'text', text: 'ORIGINAL ONLY' } } },
+          { type: 'chunk', time: 0, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+        ],
+      },
+    }),
+    at({ type: 'step/end', data: { turn: 3, step: 1 } }),
+    at({ type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } }),
   ]
   return renderSeedFixture(decoded.headerLine, [...kept, ...tail])
 }
@@ -82,7 +197,10 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await writeFile(join(sessionCwd, 'a.txt'), 'alpha\n')
     await writeFile(join(sessionCwd, 'b.txt'), 'beta\n')
     const raw = completedTailFixture(await readFile(SEED, 'utf8'))
-    expect(fixtureUserPrompts(raw), 'adapted seed must carry both prompts').toEqual([PROMPT, SECOND_PROMPT])
+    expect(fixtureUserPrompts(raw), 'adapted seed must carry all prompts').toEqual([PROMPT, SECOND_PROMPT, NEXT_PROMPT])
+    expect(parseSeedFixture(raw).events.flatMap(event => event.type === 'request/header'
+      ? [event.data.reason]
+      : []), 'adapted seed must carry an unchanged resume header').toEqual(['initial', 'resume'])
     await seedSession(scaffold, raw, SEED_ID)
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
@@ -106,6 +224,10 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await sessionRow.click()
     await expect.poll(() => page.getByText(MID_TURN_TEXT, { exact: true }).count(), { timeout: 15_000 }).toBe(1)
     await expect.poll(() => page.getByText('DONE', { exact: true }).count(), { timeout: 15_000 }).toBe(1)
+    await expect.poll(
+      () => page.getByRole('button', { name: 'System prompt', exact: true }).count(),
+      { timeout: 10_000 },
+    ).toBe(2)
 
     // Focus-reveal the footers (hover:hover keeps them opacity-hidden until
     // hover/focus-within). Branch renders only under assistant answers — user
@@ -114,11 +236,11 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await expect.poll(() => copyButtons.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(4)
     await copyButtons.first().focus()
     const branchButtons = page.getByRole('button', { name: 'Branch into a new conversation' })
-    await expect.poll(() => branchButtons.count(), { timeout: 5_000 }).toBe(2)
+    await expect.poll(() => branchButtons.count(), { timeout: 5_000 }).toBe(3)
     await expect.poll(
       () => branchButtons.evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-disabled'))),
       { timeout: 5_000 },
-    ).toEqual(['true', null])
+    ).toEqual(['true', null, null])
     await branchButtons.first().focus()
     await expect.poll(() => page.getByRole('tooltip').textContent(), { timeout: 5_000 })
       .toBe('Available only on the last message of a completed turn')
@@ -140,12 +262,18 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
 
   it.skipIf(MODE === 'record')('forks through the settled-message and session-row actions', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-message-fork'))
-    // The last message action belongs to the completed second-turn assistant.
-    await page.getByRole('button', { name: 'Branch into a new conversation' }).last().click()
+    // The second answer is followed by another completed user turn in the source.
+    await page.getByRole('button', { name: 'Branch into a new conversation' }).nth(1).click()
     await expect.poll(
       () => scaffold.ctx.agents.list().find(agent => agent.session.header.parentSession === SessionId(SEED_ID)),
       { timeout: 15_000 },
     ).toBeDefined()
+    const child = scaffold.ctx.agents.list().find(agent =>
+      agent.session.header.parentSession === SessionId(SEED_ID))!
+    expect(child.inbox.nextTurn).toEqual([])
+    expect(child.session.snapshotEvents().some(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.content.some(part =>
+        part.type === 'text' && part.text === NEXT_PROMPT)))).toBe(false)
     await expect.poll(
       () => page.locator('[role="treeitem"]').count(),
       { timeout: 10_000 },
@@ -154,6 +282,10 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
       () => page.locator('[role="treeitem"][aria-selected="true"]').count(),
       { timeout: 10_000 },
     ).toBe(1)
+    await expect.poll(
+      () => page.locator('[role="treeitem"][aria-selected="true"]').textContent(),
+      { timeout: 10_000 },
+    ).toContain('Use the read tool twice (1)')
     // The row action owns a distinct ui-workspace injection from the message
     // action above, so exercise both through the loaded app before capture.
     const sourceRow = page.locator('[role="treeitem"][aria-selected="true"]')

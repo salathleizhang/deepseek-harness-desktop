@@ -221,7 +221,8 @@ function inputError(error: ScheduleInputError): ScheduleToolError {
 /** Fold only after a successful preflight, mapping corruption to a stable value. */
 function foldForTool(agent: Agent): ReturnType<typeof foldScheduleEvents> | ScheduleToolError {
   try {
-    return foldScheduleEvents(agent.session.events, agent.session.header.seedLength ?? 0)
+    // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+    return foldScheduleEvents(agent.session.ownEvents())
   } catch (error: unknown) {
     return error instanceof ScheduleLogError ? corruptLogError() : internalError()
   }

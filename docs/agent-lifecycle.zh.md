@@ -27,24 +27,33 @@ sequenceDiagram
   Note over Agent,Driver: claim pending next-step input plus one queued prompt
   Driver-->>SDK: <code>agent/inbox/spliced</code> pure deletion
   Driver-->>SDK: <code>agent/inbox/claimed</code> { message, turn } per message
+  Driver->>Prompt: <code>system-prompt/assemble</code> waterfall
   Driver->>Hooks: <code>agent/pre-step</code> waterfall
   Hooks-->>Driver: authoritative reject or enter(messages)
-  alt proposed step rejected or pre-step failed
+  alt proposed step rejected, first batch empty, or pre-step failed
     Driver-->>Driver: claimed batch stays removed, the open turn spends no step
   else enter proposed step
   Driver->>Session: <code>step/start</code>
+  Driver->>Hooks: <code>agent/request</code> waterfall
+  Driver->>LLM: prepareCall(config, signal)
+  Note over Driver,LLM: cancellation during either async phase commits neither system nor users
+  Note over Driver,Session: synchronous admission using the prepared call capability
+  Driver->>Session: <code>system/message</code> ordered per-node reconciliation
   Driver->>Session: <code>user/message</code> per entered message
-  Driver->>Prompt: <code>system-prompt/assemble</code> waterfall
-  Driver->>LLM: <code>agent/request</code> waterfall, then <code>llm/stream</code> waterfall
+  Driver->>Session: <code>request/header</code> and <code>request/context</code> as needed
+  Driver->>Driver: derive and freeze request from the log
+  Driver->>LLM: bound prepared call through <code>llm/stream</code> waterfall
   LLM-->>Driver: StreamChunk*
-  Driver->>Session: <code>assistant/chunk</code>*
-  Session-->>SDK: <code>session/event</code> <code>assistant/chunk</code>*
+  Driver-->>SDK: <code>agent/assistant-stream</code> chunk*
   alt final adapter or terminal in-band request failure
-    Driver->>Session: <code>step/end</code>
+    Driver->>Session: <code>assistant/attempt</code>
+    Driver-->>SDK: <code>agent/assistant-stream</code> committed end
     Driver->>Hooks: <code>agent/request-error</code> waterfall
     Hooks-->>Driver: return retry action or preserve the original error
+    Note over Driver,LLM: retry in the open step: prepare and reconcile the same rendered assembly without repeating pre-step or users
   else model request succeeded
   Driver->>Session: <code>assistant/message</code>
+  Driver-->>SDK: <code>agent/assistant-stream</code> committed end
   Driver->>Tools: classify pending call by executionMode
   loop barriers and bounded rolling pool, reclassify before start
     opt call starts
@@ -73,9 +82,9 @@ sequenceDiagram
   Driver-->>SDK: <code>agent/status</code> idle
 ```
 
-`assistant/message` 事件会记录每次成功的提供方调用，包括返回空内容或以 `max-tokens` 结束的调用。空内容不会进入派生历史，但该持久事件仍会保留用量，并通过 `sourceEventSeqs` 精确列出对应的 `assistant/chunk` 事件，包括显式空列表。
+`assistant/message` 事件会记录每次成功的提供方调用，包括返回空内容或以 `max-tokens` 结束的调用，并嵌入精确的紧凑带时间 stream。空内容不会进入派生历史。失败、重试、取消或 stream error attempt 到达 settlement 时，如果没有 surface message，就会把 stream 记录为 `assistant/attempt`。实时 `agent/assistant-stream` chunk frame 是瞬态数据；回放读取任一种持久 settlement，如果进程在 settlement 前硬中断，则不会留下持久 attempt stream。
 
-`dsh-compaction-basic` 在派生请求之前通过 `agent/pre-step` 处理压力，而 `agent/request-error` 仅用于规范的上下文溢出。任一触发条件满足后，系统都会先执行可选的工具结果剪枝，再选择摘要。恢复发生在失败步骤结束之后、失败轮次结束之前；只有当剪枝或摘要生成推进了 surface replacement generation 时，系统才会开启一个全新的重试轮次，否则仍以原始请求错误为准。
+`dsh-compaction-basic` 在派生请求之前通过 `agent/pre-step` 处理压力，而 `agent/request-error` 仅用于规范的上下文溢出。任一触发条件满足后，系统都会先执行可选的工具结果剪枝，再选择摘要。恢复发生在仍打开的步骤内，只有剪枝或摘要生成推进 surface replacement generation 时才重试，否则仍以原始请求错误为准。每次重试都会准备调用，并在派生请求之前协调保留的已渲染组装结果，不重复组装、pre-step 或用户消息准入。
 
 以返回的 `agent/pre-step` 决策为准；通过包装 `next()` 的监听器会保留下游消息与 `startsRequestSeries`，除非有意替换。steering（中途引导）和注入的上下文在后续的认领操作取得其下一步骤批次后，会经过同一 waterfall（瀑布式事件）。
 

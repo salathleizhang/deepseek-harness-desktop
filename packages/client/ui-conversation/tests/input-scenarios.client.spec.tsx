@@ -8,6 +8,7 @@
  * itself is not a dependency of this package; the source below is the
  * decision-table contract at the `InputTriggerSource` boundary.
  */
+import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -17,7 +18,7 @@ import type {
   ClientSessionContext, SubmitEnvelope,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type {
-  CommandClaim, PickOutcome, SubmitImageAttachment, SubmitOutcome,
+  CommandClaim, PickOutcome, SubmitAttachment, SubmitOutcome,
 } from '../src/client/contract/input.ts'
 import {
   bindSnapshotSelector, conversationSnapshot, makeTranslate, sessionSnapshot, SlotTestRuntime,
@@ -27,9 +28,13 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type { DraftAttachmentId } from '../src/client/contract/input.ts'
 import { SessionInputShell } from '../src/client/input/facade.ts'
+import { $replaceDetectSpanWithText } from '../src/client/input/editor/span-map.ts'
 import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
 import { zh } from '../src/client/locales.ts'
+
+// Every fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
+const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined })) as GlobalStandardProps['useResource']
 
 // jsdom implements no Range geometry (Lexical's scroll-into-view measures the
 // caret with one once the surface is genuinely contenteditable).
@@ -44,19 +49,20 @@ afterEach(cleanup)
 interface FakeCommand {
   name: string
   description: string
-  input?: { hint: string; images?: boolean }
+  input?: { hint: string; attachments?: boolean }
 }
 
 /** Decision-table source over an in-memory directory (menu/space/enter columns for leadingInput + execute). */
 function commandSource(
   commands: FakeCommand[],
-  execute: (line: string, images?: readonly SubmitImageAttachment[]) => Promise<SubmitOutcome>,
+  execute: (line: string, images?: readonly SubmitAttachment[]) => Promise<SubmitOutcome>,
 ) {
   const resolve = (name: string): FakeCommand | undefined => commands.find(c => c.name === name)
   const leadingClaim = (desc: FakeCommand): CommandClaim => ({
+    name: desc.name,
     token: `/${desc.name} `,
     ...(desc.input !== undefined ? { hint: desc.input.hint } : {}),
-    ...(desc.input?.images === true ? { images: true } : {}),
+    ...(desc.input?.attachments === true ? { attachments: true } : {}),
     submit: (args, _actx, images) => execute(`/${desc.name} ${args}`, images),
   })
   const executed: string[] = []
@@ -105,10 +111,10 @@ function commandSource(
 const COMMANDS: FakeCommand[] = [
   { name: 'goal', description: '设定目标', input: { hint: '目标内容' } },
   { name: 'compact', description: '压缩上下文' },
-  { name: 'vision', description: '识别图片', input: { hint: '想问什么', images: true } },
+  { name: 'vision', description: '识别图片', input: { hint: '想问什么', attachments: true } },
 ]
 
-const PNG: SubmitImageAttachment = { mediaType: 'image/png', data: 'AA==' }
+const PNG: SubmitAttachment = { type: 'image', mediaType: 'image/png', data: 'AA==' }
 
 /** Real scope bench: a Controller-owned Session scope + InputTriggerController + shell listeners. */
 async function scopedBench(register?: (inputTriggers: InputTriggerService) => void) {
@@ -125,7 +131,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
   const sink = vi.fn(() => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
   const serialize = vi.fn((ids: readonly DraftAttachmentId[]) => Promise.resolve(ids.map(() => PNG)))
   const release = vi.fn()
-  const shell = new SessionInputShell({ actx, inputTriggers: () => controller, defaultSink: sink, commandImages: { serialize, release, unsupportedNotice: (token: string) => `${token.trim()} images-unsupported` } })
+  const shell = new SessionInputShell({ actx, inputTriggers: () => controller, defaultSink: sink, commandAttachments: { serialize, release, unsupportedNotice: (token: string) => `${token.trim()} attachments-unsupported` } })
   // The hub's listener wiring, verbatim.
   actx.on('slash/input-begin-command', req => shell.beginCommand(req.claim, req.span) ? true : undefined)
   actx.on('slash/input-insert-reference', req => shell.insertReference(req.reference, req.span) ? true : undefined)
@@ -133,6 +139,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
   const wiring = shell
   const sessionStore = createSnapshotStore<SessionSnapshot>(sessionSnapshot(sessionId))
   const barProps: InputBarProps = {
+    usePanelInfo: selector => selector({ activePanelId: null }),
     sessionId,
     SessionProvider: ({ children }) => children,
     useSession: bindSnapshotSelector(sessionStore),
@@ -143,6 +150,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     useSessionPendingInteraction: bindSnapshotSelector(
       createSnapshotStore<SessionPendingInteractionSnapshot>(new Map()),
     ),
+    useResource,
     useWorkspaces: bindSnapshotSelector(createSnapshotStore({
       items: [], archivedSessionIds: [], state: 'idle', phase: 'ready', error: null,
       baselinesReady: true, recentWorkspaceId: undefined,
@@ -152,15 +160,17 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     useInput: bindSnapshotSelector(shell.state),
     inputActions: shell.actions,
     keyboard: shell,
-    addImages: () => null,
-    removeImage: () => {},
+    addFiles: () => null,
+    useFileUploads: bindSnapshotSelector(createSnapshotStore({})),
+    retryFileUpload: undefined,
+    removeAttachment: () => {},
     // Every id resolves so the bar's registry prune never drops a test image.
-    draftImages: ids => ids.map(id => ({
+    resolveDraftAttachments: ids => ids.map(id => ({
       kind: 'image' as const, id,
       file: new File([Uint8Array.of(1)], `${id}.png`, { type: 'image/png' }),
       previewUrl: `blob:${id}`,
     })),
-    resolveSubmitMode: () => 'queue',
+    useBusyEnter: bindSnapshotSelector(createSnapshotStore<'queue' | 'steer'>('queue')),
     toggleCommandMenu: (selection) => {
       const snapshot = shell.snapshot
       controller.toggleSource('command', {
@@ -176,7 +186,6 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     useMenuLauncher: bindSnapshotSelector(controller.launcher),
     renderSlot: (() => null) as InputBarProps['renderSlot'],
     stop: vi.fn(),
-    command: () => Promise.resolve(true),
     t: makeTranslate(zh, commonZh),
     variant: 'composer',
   }
@@ -272,16 +281,16 @@ describe('scenario D: execute-kind /compact', () => {
 describe('scenario: images ride an accepting command through the real pipeline', () => {
   it('adjudication reports the image count; the claim chain serializes, submits, and consumes', async () => {
     const b = await bench()
-    act(() => { b.shell.addImages(['img-1' as DraftAttachmentId]) })
+    act(() => { b.shell.addAttachments(['img-1' as DraftAttachmentId]) })
     act(() => { b.shell.setDraft('/vision 这张图是什么') })
     fireEvent.keyDown(b.textarea, { key: 'Enter' })
     await vi.waitFor(() => { expect(b.execute).toHaveBeenCalledWith('/vision 这张图是什么', [PNG]) })
     // The envelope the controller forwarded to matchEnter carried the count.
-    expect(b.envelopes).toEqual([{ images: 1 }])
+    expect(b.envelopes).toEqual([{ attachments: 1 }])
     expect(b.serialize).toHaveBeenCalledWith(['img-1'])
     await vi.waitFor(() => { expect(b.shell.snapshot.draft).toBe('') })
     expect(b.release).toHaveBeenCalledWith(['img-1'])
-    expect(b.shell.snapshot.imageIds).toEqual([])
+    expect(b.shell.snapshot.attachmentIds).toEqual([])
     expect(b.sink).not.toHaveBeenCalled()
   })
 
@@ -290,13 +299,41 @@ describe('scenario: images ride an accepting command through the real pipeline',
     act(() => { b.shell.setDraft('/goal 发布') })
     fireEvent.keyDown(b.textarea, { key: 'Enter' })
     await vi.waitFor(() => { expect(b.execute).toHaveBeenCalledWith('/goal 发布', []) })
-    expect(b.envelopes).toEqual([{ images: 0 }])
+    expect(b.envelopes).toEqual([{ attachments: 0 }])
     expect(b.serialize).not.toHaveBeenCalled()
     expect(b.release).not.toHaveBeenCalled()
   })
 })
 
 describe('scenario H: backspace breaks the token', () => {
+  it.each(['goal', '目标', 'plan', '计划', 'feedback', '反馈'])('keeps /%s claimed when its arguments and separator are deleted', async (name) => {
+    const { source } = commandSource([{ name, description: name, input: { hint: '目标内容' } }],
+      () => Promise.resolve({ kind: 'success' }))
+    const b = await scopedBench((triggers) => { triggers.registerSource(source) })
+    b.type(`/${name}`)
+    fireEvent.keyDown(b.textarea, { key: ' ', keyCode: 32 })
+    expect(b.shell.snapshot.phase).toBe('claimed')
+    b.type(`/${name} 这是目标`)
+    for (let i = 0; i < 5; i++) {
+      act(() => {
+        b.shell.editor.update(() => {
+          const end = b.shell.snapshot.draft.length
+          $replaceDetectSpanWithText({ start: end - 1, end }, '')
+        }, { discrete: true })
+      })
+    }
+    expect(b.shell.snapshot.draft).toBe(`/${name}`)
+    expect(b.shell.snapshot.phase).toBe('claimed')
+    expect(b.view.container.querySelector('[data-lexical-text][style*="warn-label"]')?.textContent).toBe(`/${name}`)
+    b.type(`/${name} `)
+    await act(async () => {})
+    expect(b.shell.snapshot.phase).toBe('claimed')
+    expect(b.shell.snapshot.draft).toBe(`/${name} `)
+    expect(b.view.container.querySelector('[data-lexical-text][style*="warn-label"]')?.textContent).toBe(`/${name} `)
+    b.type(`/${name}x`)
+    expect(b.shell.snapshot.phase).toBe('plain')
+  })
+
   it('claim releases automatically; the enter after that goes through adjudication again', async () => {
     const b = await bench()
     b.type('/goal')

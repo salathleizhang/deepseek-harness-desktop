@@ -1,5 +1,5 @@
 ---
-description: "spill 存储服务：部署方与插件作者如何保存过大的工具文本并取回可检索的定位信息。"
+description: "spill 存储服务：保存超大工具文本或已捕获的会话引用，并返回可用于取回内容的定位信息。"
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-spill` 让任何插件或工具都能通过 `ctx.spillStore` 保存过大的文本，并拿到一个不透明定位信息、精确的字节数与模型可以直接依据的取回指引。它定义 spill 后端做什么，而不规定如何存储——部署需要挂载 `dsh-spill-local` 之类的后端才能真正持久化，由 `dsh-spill-policy` 插件决定工具结果何时过大。当部署必须在不让模型上下文泛滥的前提下保留超大工具输出时，选择它。该服务只负责存储：没有保留策略、没有工具结果替换，也没有取回或搜索 API。真实存储故障会以拒绝结束，由调用方决定如何降级。
+`dsh-spill` 让插件和工具通过公开的 `ctx.spillStore` API 保存超大文本，并取得不透明定位信息、精确字节数与取回指引。当完整结果必须保持可取回、同时又不能填满模型上下文时选择它。配置 `dsh-spill-local` 可获得本地持久化；当超大工具结果应变为有界预览时，再添加 `dsh-spill-policy`。该 API 不提供保留、替换、取回或搜索操作。存储故障会使保存操作拒绝，由调用方决定保留内联内容还是让操作失败。
 
 ## 目录
 
@@ -25,11 +25,11 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-需要 spill 工具输出的组合会挂载一个 spill 后端——仅本包本身不存储任何内容——并由 `dsh-spill-policy` 插件决定何时 spill。插件与工具作者直接调用 `ctx.spillStore.saveText()`，在当前会话下持久化文本。
+保存 spill 产物的组合需要挂载一个后端——仅本包本身不存储任何内容。`dsh-spill-policy` 决定工具结果何时 spill；`dsh-session-reference` 直接保存截断后的会话引用 transcript（文本记录），不需要该策略。调用方使用 `ctx.spillStore.saveText()` 并明确指定归属；可选消费方通过 `ctx.get("spillStore")` 获取后端。
 
 ### 何时选择
 
-当部署需要在模型只看到有界预览之后仍可检索超大的工具输出时，选择 spill 存储——例如模型稍后可能想读取或搜索的抓取页面正文。当组合中没有工具会产生大到值得处理的输出，或部署没有模型工具可读取的本地文件系统时，你不需要本包；此时需要的是一个在该环境中定位信息有明确含义的后端。
+当部署需要在模型看到有界预览后仍能取回全文时，选择 spill 存储，例如抓取的页面正文或已捕获的会话引用 transcript。前提是后端的定位信息与取回指引在部署环境中可用；该服务不要求本地文件系统访问。
 
 ### 最小可用组合
 
@@ -49,21 +49,21 @@ kind: "package-reference"
 ```text
 const ref = await ctx.spillStore.saveText({
   owner: { sessionId: 'session-1' },
-  source: { toolName: 'web_fetch', callId: 'call-1', label: 'result' },
+  source: { kind: 'tool', toolName: 'web_fetch', callId: 'call-1', label: 'result' },
   suggestedName: 'web_fetch.txt',
   content: fullText,
 })
 ```
 
-返回的 `SpillRef` 携带三个字段：`locator`，后端产生的不透明模型面向句柄（对 `dsh-spill-local` 是本地文件路径，对其他后端可能是 URI 或键）；`bytes`，写入的精确 UTF-8 字节数；`retrievalHint`，消费方展示给模型的指引——对本地后端而言是读取或搜索该路径。消费方按指引渲染定位信息，绝不自行解析定位信息。
+返回的 `SpillRef` 携带三个字段：`locator`，后端产生的面向模型的不透明句柄（对 `dsh-spill-local` 是本地文件路径，对其他后端可能是 URI 或键）；`bytes`，写入的精确 UTF-8 字节数；`retrievalHint`，消费方展示给模型的指引——对本地后端而言是读取或搜索该路径。消费方将定位信息与指引一同呈现，绝不自行解析定位信息。
 
 ### 归属与边界
 
-存储按所属会话分组：fork 后的会话从种子日志继承既有定位信息，无需复制或更改归属，fork 后新产生的 spill 使用子会话 id。`suggestedName` 只是提示——后端会把它清理成单个安全路径段，绝不把它当作可信路径。该服务刻意排除其他包负责的内容：保留与预览决策（`dsh-output-retention`）、何时 spill（`dsh-spill-policy`），以及取回或搜索（后端的 `retrievalHint` 会告诉模型如何处理定位信息）。
+存储按所属会话分组：fork 后的会话从种子日志继承既有定位信息，无需复制或更改归属，fork 后新产生的 spill 使用子会话 id。会话引用产物归接收上下文的目标会话所有，而不是被引用的源会话。`suggestedName` 只是提示——后端会把它清理成单个安全路径段，绝不把它当作可信路径。预览与 spill 决策由消费方负责；存储与产物过期由后端负责。
 
 ### 故障与恢复
 
-`saveText` 只在真实存储故障时拒绝——权限不足、磁盘已满或后端不可用。由调用方决定如何降级：随附策略把拒绝当作尽力而为处理，记录警告并保留原始内联结果，因此 spill 失败绝不会把成功的工具调用变成错误或隐藏内容。如果没有挂载后端，就没有可保存的目标；请在组合中加载 `dsh-spill-local` 或其他后端。
+`saveText` 只在真实存储故障时拒绝——权限不足、磁盘已满或后端不可用。由调用方决定如何降级：已交付的策略把拒绝当作尽力而为处理，记录警告并保留原始内联结果，因此 spill 失败绝不会把成功的工具调用变成错误或隐藏内容。如果没有挂载后端，就没有可保存的目标；请在组合中加载 `dsh-spill-local` 或其他后端。
 
 -----
 
@@ -89,15 +89,15 @@ const ref = await ctx.spillStore.saveText({
 |---|---|
 | [`src/index.ts`](src/index.ts) | 插件入口：抽象 `SpillStore` 服务及其 `saveText` 约定 |
 | [`src/types.ts`](src/types.ts) | 词汇：`SaveTextSpill`、`SpillRef`、带品牌类型 `SpillLocator`、`SpillOwner`、`SpillSource` |
-| [`src/invariant.ts`](src/invariant.ts) | 不变式伴生插件（无运行时不变式；约定在 seam 处强制执行） |
+| — | 不发布运行时不变式伴生入口；除归属 seam 强制执行的约定外，本包不暴露独立的事件序列或可变数据关系。 |
 
 ### 数据模型
 
-`SaveTextSpill`（owner、source、suggestedName、content）是请求；`SpillRef`（locator、bytes、retrievalHint）是结果。`SpillLocator` 是带品牌类型的字符串，消费方无法在未获后端意图的情况下把它当作路径；`SpillOwner.sessionId` 是保存时存储命名空间，`SpillSource` 记录产生 spill 的工具、调用 id 与标签，用于可读文件名——仅作描述，绝非访问控制。
+`SaveTextSpill` 将存储归属与描述性来源信息分开。`SpillSource` 接受工具来源 `{ kind: "tool", toolName, callId, label }` 或 `{ kind: "session-reference", sessionId, label }`，后者的 id 标识被捕获的源会话。会话引用绝不伪造工具调用 id。来源信息与归属命名空间都不授予读取权限。消费方把返回的定位信息视为不透明值，并与取回指引一同展示。
 
 ### 生命周期
 
-后端继承 `SpillStore` 并以插件方式加载，注册为 `ctx.spillStore`；每个上下文只有一个实现，第二次加载会失败。dispose 会释放该服务。抽象类本身不注册任何内容——本包只提供约定与词汇。
+后端继承 `SpillStore` 并以插件方式加载，注册为 `ctx.spillStore`；每个上下文只有一个实现，第二次加载会失败。执行 dispose（资源释放）时会释放该服务。抽象类本身不注册任何内容——本包只提供约定与词汇。
 
 </details>
 
@@ -120,11 +120,11 @@ const ref = await ctx.spillStore.saveText({
 <a id="model-experience"></a>
 ## 模型体验
 
-间接地，通过把后端定位信息与取回指引渲染给模型的 spill 消费方。
+spill 消费方将后端的定位信息与取回指引渲染给模型，从而间接影响模型体验。
 
 #### KV Cache 影响
 
-无直接失效；请求前缀变更由上述消费方负责。
+不会直接导致 KV Cache 失效；请求前缀变更由上述消费方负责。
 
 ## 已知限制与延期工作
 
@@ -150,6 +150,6 @@ const ref = await ctx.spillStore.saveText({
 
 #### 未来：非本地后端与清理
 
-面向 ACP 或远程环境的远程或数据库后端，以及旧 spill 文件的清理或保留策略（很可能与会话清理挂钩），仍是开放问题。可预测且任何用户均可读取的 spill 根目录会让其他本地用户读到 spill 工具输出，这正是已交付后端把文件保持私有的原因。
+远程或数据库后端仍是开放方向。本地后端执行其[启动清理策略](../spill-local/README.zh.md#startup-cleanup)；该服务未定义按会话清理或刷新定位信息的 API。
 
 </details>

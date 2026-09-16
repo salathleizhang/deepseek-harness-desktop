@@ -8,7 +8,7 @@ English | [中文](2026-07-30-session-end-seed-log-boundary.zh.md)
 
 A plugin that owns a standalone open/close bracket in the session log cannot tell a dead marker from a live one. `compaction/start` … `compaction/end` is the shipped case: on picking up a log whose last compaction event is an unmatched `compaction/start`, "the previous writer died mid-compaction" and "a compaction is running right now" are byte-identical stored history. The owner must either refuse to compact a log that is actually free (wedging the session) or proceed over one that is genuinely busy.
 
-Nothing in the log marked where inherited history ended. `session/created`, `session/disposed`, and `session/flush` are cordis runtime signals, not log events; `agent/session-start` is emit-only. `Session.firstLiveSeq` already held the answer exactly — the seq of this lifecycle's first own write — but only in memory, so a consumer reading stored bytes could not see it.
+Nothing in the log marked where inherited history ended. `session/created`, `session/disposed`, and `session/flush` are cordis runtime signals, not log events; `agent/created` is also a non-durable runtime event. `Session.firstLiveSeq` already held the answer exactly — the seq of this lifecycle's first own write — but only in memory, so a consumer reading stored bytes could not see it.
 
 Crash repair does not close the gap and must not: `interruptedTurnClosers` synthesizes turn, step, and tool boundaries because core owns that vocabulary, and `compaction/*` belongs to the compaction seam. A core repair pass that closed plugin brackets would put every plugin's bracket semantics in core.
 
@@ -40,7 +40,7 @@ The predicate holds for a bracket *this* session inherited, not as a liveness si
 
 **A boundary appended at loop start.** The loop calls `resumeWith`, so it covers the resume paths, but it misses `fork()` and `adopt()` entirely, and the event would have to fire on `'startup'` — the source a fork child publishes — so `SessionStartSource` would stop discriminating. It also publishes the session before the marker is appended, so a `session/created` listener could observe a seeded log with no boundary.
 
-**Reusing `header.seedLength`.** It is the durable *fork-lineage* boundary and deliberately keeps the original fork value across a resume, where the constructor seed is the whole stored log. The two facts differ and conflating them would lose both.
+**Reusing `Session.inheritedEventCount`.** It is the durable *fork-lineage* cut and deliberately keeps the original fork value across a resume, where the constructor seed is the whole stored log. The two facts differ and conflating them would lose both.
 
 **Crash repair closing `compaction/*` alongside turn boundaries.** Rejected: it moves every plugin's bracket semantics into core's repair pass, and core cannot know what closing another package's bracket should record.
 
@@ -48,8 +48,8 @@ The predicate holds for a bracket *this* session inherited, not as a liveness si
 
 Bought: one boundary, written in one place, correct for all six seeded-start paths — including the fork gap the persistence-layer version could not reach. The persistence packages keep a pure read path. `firstLiveSeq` gains a durable twin rather than a second, competing notion of the same boundary.
 
-Cost: a seeded session's log is one event longer, including an empty resumed log. Seq expectations move with that boundary. Two updates are load-bearing rather than mechanical: telemetry's adoption tests assert the boundary IS exported, because it is this lifecycle's own write, and the property suite's replay invariant is "seed reproduced verbatim, plus one log-only boundary" with idempotence as its own property.
+Cost: a seeded session's log is one event longer, including an empty resumed log. Seq expectations move with that boundary. Two updates are load-bearing rather than mechanical: telemetry's adoption tests assert that capture begins with the current lifecycle's newly appended boundary and excludes the constructor seed, and the property suite's replay invariant is "seed reproduced verbatim, plus one log-only boundary" with idempotence as its own property.
 
-`session/end-seed` joins the on-disk vocabulary. Under the pre-release stance (`SESSION_FORMAT_VERSION` pinned at `0`, no compatibility promise) older logs simply lack it, and a log without a boundary correctly classifies nothing as constructor-seed history.
+`session/end-seed` joins the on-disk vocabulary. The current format requires the validated marker semantics owned by Session; the frozen v0 codec and migration edge own which historical v0 seed layouts remain admissible. The exact inherited cut stays separate from the logical header and is available after a body read.
 
 The [queued manual compaction decision](../feature/2026-07-30-queued-manual-compaction.md) now supplies the first consumer. Its tail scan independently finds the unmatched `compaction/start` and newest end-seed, treats only a start after that boundary as live, and clears the invariant trace on the same replay transition. The predicate remains in the compaction package rather than becoming a generic core helper.

@@ -8,17 +8,24 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import { normalizeSessionSnapshot, type NormalizeContext } from '@deepseek-ai/dsh-session-snapshot'
+import {
+  fixtureContext,
+  normalizeSessionSnapshot,
+  normalizeSessionSnapshots,
+  type NormalizeContext,
+} from '@deepseek-ai/dsh-session-snapshot'
 import { LOADER_SMOKE_TEST_TIMEOUT_MS, runLoaderSmoke } from '@deepseek-ai/dsh-loader-smoke'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import SessionStore, {
+import { createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import {
   SESSION_FORMAT_VERSION,
   SessionId,
+  SessionSeq,
   type SessionEvent,
   type SessionHeader,
 } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import { renderWorkspaceContext } from '@deepseek-ai/dsh-agent-instructions'
+import { logPath } from '../../../../../../packages/session/session-persistence-jsonl/src/format.ts'
+import { renderAgentInstructions } from '@deepseek-ai/dsh-agent-instructions'
 import { resolveConfig, workspaceBaselineIdentity } from '@deepseek-ai/dsh-agent-instructions/src/config.ts'
 import { describe, expect, it } from 'vitest'
 
@@ -35,6 +42,16 @@ const refreshing = process.env.DSH_SNAPSHOT === 'refresh'
 const oldInstruction = 'Old workspace instruction.'
 const newInstruction = 'New workspace instruction after offline edit.'
 
+/** Compare one current normalized Session with its generation-aware committed fixture. */
+async function expectSession(actual: string, expectedPath: string): Promise<void> {
+  const expected = await readFile(expectedPath, 'utf8')
+  const parse = (content: string): Record<string, unknown>[] => content.split('\n')
+    .filter(line => line.trim().length > 0)
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+  expect(normalizeSessionSnapshots([actual], fixtureContext(actual)).map(parse))
+    .toEqual(normalizeSessionSnapshots([expected], fixtureContext(expected)).map(parse))
+}
+
 interface SeedBaselineOptions {
   files?: Array<{ name: string; content: string }>
   instructionFileCandidates?: string[]
@@ -46,17 +63,17 @@ async function seedVisibleBaseline(
   options: SeedBaselineOptions = {},
 ): Promise<string> {
   const ctx = new Context()
-  await ctx.plugin(SessionStore)
   await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
   const meta: SessionHeader = {
     version: SESSION_FORMAT_VERSION,
     id: sessionId,
     createdAt: 1,
     cwd,
+    isSeeded: false,
     delegationDepth: 0,
   }
   const files = options.files ?? [{ name: 'AGENTS.md', content: oldInstruction }]
-  const baseline = renderWorkspaceContext(files.map(file => ({
+  const baseline = renderAgentInstructions(files.map(file => ({
     absolutePath: join(cwd, file.name),
     displayPath: file.name,
     content: file.content,
@@ -69,18 +86,24 @@ async function seedVisibleBaseline(
       : { instructionFileCandidates: options.instructionFileCandidates },
   })
   const events: SessionEvent[] = [
-    { type: 'turn/start', seq: 0, time: 10, data: { turn: 1 } },
+    { type: 'turn/start', seq: SessionSeq(0), time: 10, data: { turn: 1 } },
+    { type: 'step/start', seq: SessionSeq(1), time: 11, data: { turn: 1, step: 1 } },
+    {
+      type: 'system/message', seq: SessionSeq(2), time: 12,
+      data: { turn: 1, step: 1, message: createMessage({ role: 'system', content: [], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } }) },
+      surfaceOp: 'append',
+    },
     {
       type: 'user/message',
-      seq: 1,
-      time: 11,
+      seq: SessionSeq(3),
+      time: 13,
       data: createUserMessage({ content: [{ type: 'text', text: 'Remember the workspace instruction.' }], source: { kind: 'user' } }),
       surfaceOp: 'append',
     },
     {
       type: 'user/message',
-      seq: 2,
-      time: 12,
+      seq: SessionSeq(4),
+      time: 14,
       data: createUserMessage({
         content: [{ type: 'text', text: baseline.text }],
         source: {
@@ -98,14 +121,14 @@ async function seedVisibleBaseline(
       }),
       surfaceOp: 'append',
     },
-    { type: 'turn/end', seq: 3, time: 13, data: { turn: 1, reason: { kind: 'completed' } } },
+    { type: 'step/end', seq: SessionSeq(5), time: 15, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: SessionSeq(6), time: 16, data: { turn: 1, reason: { kind: 'completed' } } },
   ]
   try {
-    await ctx.sessionPersistence.create(meta)
-    await ctx.sessionPersistence.append(sessionId, events)
-    const location = ctx.sessionPersistence.locate(meta)
-    if (location === undefined) throw new Error('JSONL backend did not locate the seeded session')
-    return location.path
+    const handle = await ctx.sessionPersistence.create(meta)
+    await handle.append(events)
+    await handle.close()
+    return logPath(root, meta.cwd, meta.id, 'none')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -137,7 +160,7 @@ describe('agent-instructions resume snapshot', () => {
         const normalization: NormalizeContext = { sessionIds: [sessionId], cwd }
         const session = normalizeSessionSnapshot(await readFile(sessionPath, 'utf8'), normalization)
         if (refreshing) await writeFile(sessionExpected, session)
-        expect(session).toBe(await readFile(sessionExpected, 'utf8'))
+        await expectSession(session, sessionExpected)
 
         const records = session.trimEnd().split('\n').map(line => JSON.parse(line) as {
           type?: string
@@ -204,7 +227,7 @@ describe('agent-instructions resume snapshot', () => {
           await mkdir(dirname(precedenceExpected), { recursive: true })
           await writeFile(precedenceExpected, session)
         }
-        expect(session).toBe(await readFile(precedenceExpected, 'utf8'))
+        await expectSession(session, precedenceExpected)
 
         const records = session.trimEnd().split('\n').map(line => JSON.parse(line) as {
           type?: string

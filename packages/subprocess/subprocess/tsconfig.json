@@ -15,7 +15,10 @@
       "path": "../../../vendor/cordis"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../util/http-proxy"
+    },
+    {
+      "path": "../../util/launch-environment"
     }
   ]
 }

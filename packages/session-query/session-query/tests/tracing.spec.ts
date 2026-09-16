@@ -1,10 +1,20 @@
 import { createUserMessage, createMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionLogOffset, SessionSeq, SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Session, SessionEvent, SessionHeader, SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
-import SessionPersistence from '@deepseek-ai/dsh-session-persistence'
+import SessionPersistence, {
+  SessionPersistenceNotFoundError,
+  SessionPersistenceRevision,
+  SessionReadOnlyError,
+} from '@deepseek-ai/dsh-session-persistence'
+import type {
+  SessionAccess,
+  SessionHandle,
+  SessionHandleReadResult,
+  SessionPersistenceSnapshot,
+} from '@deepseek-ai/dsh-session-persistence'
 import { type SessionQueryErrorCode } from '@deepseek-ai/dsh-session-query'
 import { TestSessionQueryEngine } from './test-service.ts'
 
@@ -16,88 +26,104 @@ function mutableHeader(value: SessionHeader): MutableSessionHeader {
 }
 
 function header(id: string, createdAt = 1, extra: Partial<SessionHeader> = {}): SessionHeader {
-  return { version: SESSION_FORMAT_VERSION, id: SessionId(id), createdAt, ...extra }
+  return { version: SESSION_FORMAT_VERSION, id: SessionId(id), createdAt, isSeeded: false, ...extra }
 }
 
-function appendEvent(seq: number, sources?: number[]): SessionEvent {
+function appendEvent(seq: number, sources?: readonly number[]): SessionEvent {
   return {
     type: 'user/message',
-    seq,
+    seq: SessionSeq(seq),
     time: seq + 1,
     data: createUserMessage({
       content: [{ type: 'text', text: `event ${seq}` }], source: { kind: 'user' },
     }),
     surfaceOp: 'append',
-    ...sources === undefined ? {} : { sourceEventSeqs: sources },
+    ...sources === undefined ? {} : { sourceEventSeqs: sources as unknown as SessionSeq[] },
+  }
+}
+
+class TraceHandle implements SessionHandle {
+  readonly inheritedEventCount = SessionLogOffset(0)
+  constructor(
+    readonly id: SessionIdType,
+    readonly header: SessionHeader,
+    readonly access: SessionAccess,
+  ) {}
+
+  read(): Promise<SessionHandleReadResult> {
+    TracePersistence.readCalls += 1
+    if (TracePersistence.readFailure !== undefined) return Promise.reject(TracePersistence.readFailure)
+    const entry = TracePersistence.entries.get(this.id)
+    if (entry === undefined) return Promise.reject(new SessionPersistenceNotFoundError(this.id))
+    return Promise.resolve({ eventState: 'detached', events: structuredClone(entry.events) })
+  }
+
+  append(): Promise<void> {
+    return Promise.reject(new SessionReadOnlyError(this.id, 'append'))
+  }
+
+  flush(): Promise<void> {
+    return Promise.reject(new SessionReadOnlyError(this.id, 'flush'))
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close()
   }
 }
 
 class TracePersistence extends SessionPersistence {
-  override readonly supportsRawArtifacts = false
-
   static entries = new Map<SessionIdType, { meta: SessionHeader; events: SessionEvent[] }>()
   static listCalls = 0
-  static inspectCalls = 0
+  static readCalls = 0
   static listFailure: Error | undefined
-  static inspectFailure: Error | undefined
+  static readFailure: Error | undefined
   static afterList: (() => void) | undefined
 
   static reset(entries: readonly { meta: SessionHeader; events: SessionEvent[] }[] = []): void {
     this.entries = new Map(entries.map(entry => [entry.meta.id, structuredClone(entry)]))
     this.listCalls = 0
-    this.inspectCalls = 0
+    this.readCalls = 0
     this.listFailure = undefined
-    this.inspectFailure = undefined
+    this.readFailure = undefined
     this.afterList = undefined
   }
 
-  locate(_meta: SessionHeader): undefined {
-    return undefined
+  create(header: SessionHeader): Promise<SessionHandle> {
+    TracePersistence.entries.set(header.id, { meta: structuredClone(header), events: [] })
+    return Promise.resolve(new TraceHandle(header.id, structuredClone(header), 'write'))
   }
 
-  borrowSession(_id: SessionIdType, _signal?: AbortSignal): ReturnType<SessionPersistence['borrowSession']> {
-    return Promise.reject(new Error('not used'))
-  }
+  // Appends are durable on resolution here; nothing buffers, so the service-wide flush is a no-op.
+  async flush(): Promise<void> {}
 
-  create(meta: SessionHeader): Promise<void> {
-    TracePersistence.entries.set(meta.id, { meta: structuredClone(meta), events: [] })
-    return Promise.resolve()
-  }
-
-  append(id: SessionIdType, events: readonly SessionEvent[]): Promise<void> {
+  open(id: SessionIdType, access: SessionAccess): Promise<SessionHandle> {
     const entry = TracePersistence.entries.get(id)
-    if (entry === undefined) return Promise.reject(new Error('missing test session'))
-    entry.events.push(...structuredClone(events))
-    return Promise.resolve()
+    if (entry === undefined) return Promise.reject(new SessionPersistenceNotFoundError(id))
+    return Promise.resolve(new TraceHandle(id, structuredClone(entry.meta), access))
   }
 
-  load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
-    return this.inspect(id)
-  }
-
-  inspect(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
-    TracePersistence.inspectCalls += 1
-    if (TracePersistence.inspectFailure !== undefined) return Promise.reject(TracePersistence.inspectFailure)
+  stat(id: SessionIdType): Promise<SessionPersistenceSnapshot | undefined> {
     const entry = TracePersistence.entries.get(id)
-    if (entry === undefined) return Promise.reject(new Error('missing test session'))
-    return Promise.resolve(structuredClone(entry))
+    if (entry === undefined) return Promise.resolve(undefined)
+    return Promise.resolve({
+      header: structuredClone(entry.meta),
+      revision: SessionPersistenceRevision(`events:${entry.events.length}`),
+    })
   }
 
-  async readFrom(id: SessionIdType, fromSeq: number): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
-    const whole = await this.inspect(id)
-    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
-  }
-
-  list(): Promise<SessionHeader[]> {
+  list(): Promise<readonly SessionPersistenceSnapshot[]> {
     TracePersistence.listCalls += 1
     if (TracePersistence.listFailure !== undefined) return Promise.reject(TracePersistence.listFailure)
-    const result = [...TracePersistence.entries.values()].map(entry => structuredClone(entry.meta))
+    const result = [...TracePersistence.entries.values()].map(entry => ({
+      header: structuredClone(entry.meta),
+      revision: SessionPersistenceRevision(`events:${entry.events.length}`),
+    }))
     TracePersistence.afterList?.()
     return Promise.resolve(result)
-  }
-
-  listSnapshots(): Promise<never[]> {
-    return Promise.resolve([])
   }
 }
 
@@ -116,32 +142,28 @@ function expectCode(code: SessionQueryErrorCode): Error {
 function appendTraceEvents(session: Session): void {
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
-  session.append('assistant/chunk', {
+  session.append('assistant/attempt', {
     turn: 1,
     step: 1,
-    chunk: { type: 'text-delta', index: 0, text: 'draft' },
+    stream: [{ type: 'text-chunks', time0: 0, index: 0, dt: [], texts: ['draft'] }],
   })
   session.append(
     'user/message',
     createUserMessage({
       content: [{ type: 'text', text: 'original' }], source: { kind: 'user' },
     }),
-    { surfaceOp: 'append', sourceEventSeqs: [2] },
+    { surfaceOp: 'append', sourceEventSeqs: [SessionSeq(2)] },
   )
   session.append(
-    'assistant/message',
+    'user/message',
+    createUserMessage({
+      content: [{ type: 'text', text: 'summary one' }],
+      source: { kind: 'plugin', plugin: 'test' },
+    }),
     {
-      turn: 1, step: 1,
-      message: createMessage({
-        role: 'assistant',
-        content: [{ type: 'text', text: 'summary one' }],
-        source: {
-          kind: 'model',
-          ...{ provider: 'mock', model: 'mock' },
-        },
-      }),
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(3), endSeq: SessionSeq(3) },
+      sourceEventSeqs: [SessionSeq(3), SessionSeq(2)],
     },
-    { surfaceOp: { op: 'replace', start: 3, end: 3 }, sourceEventSeqs: [3, 2] },
   )
   session.append(
     'user/message',
@@ -153,19 +175,15 @@ function appendTraceEvents(session: Session): void {
   session.append('step/end', { turn: 1, step: 1 })
   session.append('step/start', { turn: 1, step: 2 })
   session.append(
-    'assistant/message',
+    'user/message',
+    createUserMessage({
+      content: [{ type: 'text', text: 'summary two' }],
+      source: { kind: 'plugin', plugin: 'test' },
+    }),
     {
-      turn: 1, step: 2,
-      message: createMessage({
-        role: 'assistant',
-        content: [{ type: 'text', text: 'summary two' }],
-        source: {
-          kind: 'model',
-          ...{ provider: 'mock', model: 'mock' },
-        },
-      }),
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(4), endSeq: SessionSeq(4) },
+      sourceEventSeqs: [SessionSeq(2), SessionSeq(4)],
     },
-    { surfaceOp: { op: 'replace', start: 4, end: 4 }, sourceEventSeqs: [2, 4] },
   )
 }
 
@@ -253,7 +271,7 @@ describe('session lineage tracing', () => {
       complete: true,
     })
     expect(TracePersistence.listCalls).toBe(1)
-    expect(TracePersistence.inspectCalls).toBe(0)
+    expect(TracePersistence.readCalls).toBe(0)
 
     TracePersistence.listFailure = new Error('unavailable')
     await expect(ctx.sessionQuery.traceSession(durable.id))
@@ -288,10 +306,10 @@ describe('session event tracing', () => {
     const session = ctx.sessions.create(SessionId('trace'))
     appendTraceEvents(session)
 
-    const original = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 3 })
+    const original = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(3) })
     expect(original.target).toMatchObject({
       sessionId: session.id,
-      seq: 3,
+      seq: SessionSeq(3),
       type: 'user/message',
       surface: 'shadowed',
     })
@@ -302,7 +320,7 @@ describe('session event tracing', () => {
       sourceEventSeqs: [2],
       derivedEventSeqs: [4],
     })
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 4 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(4) }))
       .resolves.toMatchObject({
         replacedBy: 8,
         replacementChain: [8],
@@ -310,14 +328,14 @@ describe('session event tracing', () => {
         sourceEventSeqs: [3, 2],
         derivedEventSeqs: [8],
       })
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 2 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(2) }))
       .resolves.toMatchObject({
         target: { surface: 'log-only' },
         replacementChain: [],
         sourceEventSeqs: [],
         derivedEventSeqs: [3, 4, 8],
       })
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 8 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(8) }))
       .resolves.toMatchObject({
         replacementChain: [],
         replacedEventSeqs: [4],
@@ -331,13 +349,13 @@ describe('session event tracing', () => {
     const session = ctx.sessions.create(SessionId('detached'))
     appendTraceEvents(session)
 
-    const first = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 4 })
+    const first = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(4) })
     first.target.time = -1
-    first.replacementChain.push(99)
-    first.replacedEventSeqs.push(99)
-    first.sourceEventSeqs.push(99)
-    first.derivedEventSeqs.push(99)
-    const repeated = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: 4 })
+    first.replacementChain.push(SessionSeq(99))
+    first.replacedEventSeqs.push(SessionSeq(99))
+    first.sourceEventSeqs.push(SessionSeq(99))
+    first.derivedEventSeqs.push(SessionSeq(99))
+    const repeated = await ctx.sessionQuery.traceEvent({ sessionId: session.id, seq: SessionSeq(4) })
     expect(repeated.target.time).not.toBe(-1)
     expect(repeated.replacementChain).toEqual([8])
     expect(repeated.replacedEventSeqs).toEqual([3])
@@ -351,9 +369,9 @@ describe('session event tracing', () => {
     const ctx = await queryContext()
     await ctx.plugin(TracePersistence)
 
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .resolves.toMatchObject({ target: { type: 'user/message', surface: 'current' } })
-    expect([TracePersistence.listCalls, TracePersistence.inspectCalls]).toEqual([1, 1])
+    expect([TracePersistence.listCalls, TracePersistence.readCalls]).toEqual([1, 1])
 
     const live = ctx.sessions.create(durable.id, { meta: { createdAt: 1, cwd: '/same' } })
     live.append('turn/start', { turn: 1 })
@@ -365,26 +383,26 @@ describe('session event tracing', () => {
       { surfaceOp: 'append' },
     )
     TracePersistence.listFailure = new Error('list unavailable')
-    TracePersistence.inspectFailure = new Error('inspect unavailable')
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 1 }))
+    TracePersistence.readFailure = new Error('inspect unavailable')
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(1) }))
       .resolves.toMatchObject({ target: { type: 'user/message' } })
-    expect([TracePersistence.listCalls, TracePersistence.inspectCalls]).toEqual([1, 1])
+    expect([TracePersistence.listCalls, TracePersistence.readCalls]).toEqual([1, 1])
 
     TracePersistence.reset([{ meta: durable, events: [appendEvent(0)] }])
     const failedCtx = await queryContext()
     await failedCtx.plugin(TracePersistence)
     TracePersistence.listFailure = new Error('list unavailable')
-    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
     TracePersistence.listFailure = undefined
-    TracePersistence.inspectFailure = new Error('inspect unavailable')
-    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    TracePersistence.readFailure = new Error('inspect unavailable')
+    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
-    TracePersistence.inspectFailure = undefined
+    TracePersistence.readFailure = undefined
     TracePersistence.afterList = () => {
       mutableHeader(TracePersistence.entries.get(durable.id)!.meta).cwd = '/changed'
     }
-    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    await expect(failedCtx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_SOURCE_CONFLICT'))
   })
 
@@ -392,9 +410,10 @@ describe('session event tracing', () => {
     const bad = header('bad-target')
     const malformed: SessionEvent[] = [appendEvent(0), {
       type: 'assistant/message',
-      seq: 1,
+      seq: SessionSeq(1),
       time: 2,
       data: {
+        stream: [],
         turn: 1, step: 1,
         message: createMessage({
           role: 'assistant',
@@ -405,22 +424,21 @@ describe('session event tracing', () => {
           },
         }),
       },
-      surfaceOp: { op: 'replace', start: 9, end: 9 },
-      sourceEventSeqs: [],
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(9), endSeq: SessionSeq(9) },
     }]
     TracePersistence.reset([{ meta: bad, events: malformed }])
     const ctx = await queryContext()
     await ctx.plugin(TracePersistence)
 
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: bad.id, seq: 9 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: bad.id, seq: SessionSeq(9) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_EVENT_NOT_FOUND'))
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: bad.id, seq: 0 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: bad.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_INVALID_SURFACE'))
   })
 
   it.each([
     ['non-surface sources', [
-      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 }, sourceEventSeqs: [0] },
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 }, sourceEventSeqs: [0] },
     ]],
     ['invalid source array', [
       { ...appendEvent(0), sourceEventSeqs: 'invalid' },
@@ -445,21 +463,27 @@ describe('session event tracing', () => {
     ]],
     ['replacement without sources', [
       appendEvent(0),
-      { ...appendEvent(1), surfaceOp: { op: 'replace', start: 0, end: 0 } },
+      { ...appendEvent(1), surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 } },
     ]],
     ['replacement missing a shadowed source', [
-      { type: 'assistant/chunk', seq: 0, time: 1, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'draft' } } },
-      appendEvent(1),
-      { ...appendEvent(2, [0]), surfaceOp: { op: 'replace', start: 1, end: 1 } },
+      {
+        type: 'assistant/attempt', seq: 0, time: 1,
+        data: {
+          turn: 1, step: 1,
+          stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['draft'] }],
+        },
+      },
+      appendEvent(SessionSeq(1)),
+      { ...appendEvent(SessionSeq(2), [0]), surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 } },
     ]],
   ] as const)('rejects an invalid surface log: %s', async (_name, rawEvents) => {
-    const durable = header('invalid-provenance')
+    const durable = header('invalid-source-reference')
     const events = structuredClone(rawEvents) as unknown as SessionEvent[]
     TracePersistence.reset([{ meta: durable, events }])
     const ctx = await queryContext()
     await ctx.plugin(TracePersistence)
 
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_INVALID_SURFACE'))
   })
 
@@ -467,7 +491,7 @@ describe('session event tracing', () => {
     const durable = header('invalid-non-surface-op')
     const events = [{
       type: 'turn/start',
-      seq: 0,
+      seq: SessionSeq(0),
       time: 1,
       data: { turn: 1 },
       surfaceOp: 'append',
@@ -476,7 +500,7 @@ describe('session event tracing', () => {
     const ctx = await queryContext()
     await ctx.plugin(TracePersistence)
 
-    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: 0 }))
+    await expect(ctx.sessionQuery.traceEvent({ sessionId: durable.id, seq: SessionSeq(0) }))
       .rejects.toThrow(expectCode('SESSION_QUERY_INVALID_SURFACE'))
   })
 

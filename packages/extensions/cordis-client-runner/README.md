@@ -51,7 +51,7 @@ This section explains the design behind the browser half; the observable behavio
 
 ### Design philosophy
 
-The browser half is built on one principle: a dynamic package must ride the same activation gating, fiber-effect cleanup, and status projection as a static one. The evaluated plugin is seated in the module table and mounted through `loader.create`; unload is entry removal plus factory invalidation plus style removal. The guard is a whitelist — lifecycle verbs plus declared services — that mirrors the host-side sandbox facade, so a package author meets one contract on both halves. One observer feeds two outlets: the slot registry's entry-error seam is watched only here, and a crash belonging to a package this runner seated goes upstream to the host for the model and onto this package's own `renderFailures` for the panel.
+The browser half is built on one principle: a dynamic package must ride the same activation gating, fiber-effect cleanup, and status projection as a static one. The evaluated plugin is seated in the module table and mounted through `loader.create`; unload removes the entry, waits for its fiber's cleanup, then invalidates its factory and removes its styles. The guard is a whitelist — lifecycle verbs plus declared services — that mirrors the host-side sandbox facade, so a package author meets one contract on both halves. One observer feeds two outlets: the slot registry's entry-error seam is watched only here, and a crash belonging to a package this runner seated goes upstream to the host for the model and onto this package's own `renderFailures` for the panel.
 
 ### Source map
 
@@ -83,7 +83,6 @@ Read these pages when the package-level contract is not enough. They move from t
 - [Tool package](../tool-cordis/README.md) — the model-facing tools whose run requests reach this page.
 - [UI package](../ui-cordis/README.md) — the panel and cards that operate this face.
 - [Extensions subsystem](../../../docs/subsystems/extensions.md) — the generated `ctx.dynamicCordisRunner` API and `cordis/*` events.
-- [Dynamic client render and attachment ownership Agent Note](../../../.agents/notes/implemented/architecture/2026-08-17-dynamic-client-render-and-attachment-ownership.md) — how browser plugins own their rendering and CSS.
 - [Client shells and dynamic packages Agent Note](../../../.agents/notes/implemented/architecture/2026-08-15-client-shells-and-dynamic-packages.md) — package placement and build faces for the client halves.
 
 -----
@@ -140,3 +139,5 @@ These limits define where the browser half needs special care. They are current 
 None.
 
 </details>
+
+**Runtime invariant:** No companion is published. The owned relation (a live Plugin's loader entry exists exactly while one Plugin Run ID is live) is browser-only state reachable through the client half's service, which the node-plane companion cannot observe. The relation is asserted by the package's own load/teardown coverage instead.

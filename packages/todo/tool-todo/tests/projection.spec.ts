@@ -30,14 +30,14 @@ interface Bench {
 async function harness(withTodoTool: boolean): Promise<Bench> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SystemPrompt, { persona: '' })
+  await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(UserQuestionService)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SessionProjectionRegistry)
   if (withTodoTool) await ctx.plugin(ToolTodo, { allowParallelInProgress: true })
   const session = ctx.sessions.create()
-  ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
+  await ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
   return {
     ctx,
     session,

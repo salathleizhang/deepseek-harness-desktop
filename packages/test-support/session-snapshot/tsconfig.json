@@ -15,10 +15,16 @@
       "path": "../loader-smoke"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../llm-replay"
     },
     {
       "path": "../../core/session"
+    },
+    {
+      "path": "../../session/session-format"
+    },
+    {
+      "path": "../../util/http-proxy"
     }
   ]
 }

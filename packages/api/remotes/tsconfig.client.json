@@ -21,8 +21,10 @@
       "path": "../../client/connection/tsconfig.client.json"
     },
     {
+      "path": "../../client/file-upload/tsconfig.client.json"
+    },
+    {
       "path": "../../credentials/credentials"
-
     },
     {
       "path": "../../context/file-reference"
@@ -46,6 +48,9 @@
       "path": "../../interaction/commands"
     },
     {
+      "path": "../../interaction/permission-presets"
+    },
+    {
       "path": "../../llm/llm"
     },
     {
@@ -67,6 +72,9 @@
       "path": "../session-controller/tsconfig.client.json"
     },
     {
+      "path": "../workspace-files/tsconfig.client.json"
+    },
+    {
       "path": "../settings-controller"
     },
     {
@@ -74,6 +82,12 @@
     },
     {
       "path": "../../typert/protocol"
+    },
+    {
+      "path": "../../feedback/command-feedback"
+    },
+    {
+      "path": "../terminal-controller/tsconfig.client.json"
     }
   ]
 }

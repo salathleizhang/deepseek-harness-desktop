@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { useSyncExternalStore } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -10,7 +11,12 @@ import { en, zh } from '../src/client/locales.ts'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 
+// Every session-scope fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
+const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined, reload: () => {} })) as GlobalStandardProps['useResource']
+const usePanelInfo: GlobalStandardProps['usePanelInfo'] = selector => selector({ activePanelId: null })
+
 afterEach(cleanup)
+
 
 const SID = 's1' as SessionId
 
@@ -63,9 +69,15 @@ const conversationState: ConversationState = {
   activeTargets: new Set(),
 }
 const emptyKeys: readonly string[] = []
+const emptyNodeSource = { getSnapshot: () => undefined, subscribe: () => () => {} }
 const chatState: ChatState = {
   order: emptyKeys,
-  nodes: { get: () => undefined, values: () => [] },
+  nodes: {
+    get: () => undefined,
+    source: () => emptyNodeSource,
+    processSource: () => emptyNodeSource,
+    values: () => [],
+  },
   locations: { getTurn: () => emptyKeys, getStep: () => emptyKeys },
   navigation: { items: () => [] },
   timeline: { turnOrder: [], turns: new Map() },
@@ -87,7 +99,7 @@ const trajectoryState: TrajectoryState = {
 }
 const inputState: InputState = {
   draft: '',
-  imageIds: [],
+  attachmentIds: [],
   draftRev: 0,
   phase: 'plain',
   occurrences: [],
@@ -103,6 +115,7 @@ const kitBase: Omit<QuestionComposerProps, 'matched' | 'useStore' | 'actions'> =
   pendingInteraction: undefined,
   useSession: selector => selector(sessionState),
   useSessions: selector => selector(sessionList),
+  usePanelInfo, useResource,
   useSessionPendingInteraction: selector => selector(attentionState),
   useWorkspaces: selector => selector(workspaceState),
   useConversation: selector => selector(conversationState),
@@ -112,9 +125,9 @@ const kitBase: Omit<QuestionComposerProps, 'matched' | 'useStore' | 'actions'> =
   useInput: selector => selector(inputState),
   inputActions: {
     setDraft: () => { throw new Error('unused') },
-    addImages: () => { throw new Error('unused') },
-    removeImage: () => { throw new Error('unused') },
-    pruneImages: () => { throw new Error('unused') },
+    addAttachments: () => { throw new Error('unused') },
+    removeAttachment: () => { throw new Error('unused') },
+    pruneAttachments: () => { throw new Error('unused') },
     submit: () => { throw new Error('unused') },
   },
   // The seat's key domain is question ∪ common.
@@ -234,9 +247,9 @@ describe('QuestionComposer', () => {
     expect((screen.getByText('下一题').closest('button') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByRole('radio', { name: '研究潜力型' }))
     expect(screen.getByText('2 / 3')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '跳过本题' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳过' }))
     expect(screen.getByText('3 / 3')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '跳过本题' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳过' }))
 
     expect(answer).toHaveBeenCalledWith(answerBatch([
       { id: 'profile', selected: ['研究潜力型'] },
@@ -333,7 +346,7 @@ describe('QuestionComposer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '放弃整组问题' }))
     expect(await screen.findByText('第一次取消失败')).toBeTruthy()
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '跳过本题' }).disabled).toBe(false)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '跳过' }).disabled).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: '放弃整组问题' }))
     expect(await screen.findByText('第二次取消失败')).toBeTruthy()
@@ -374,7 +387,7 @@ describe('QuestionComposer', () => {
     const { carrier } = wait([{ id: 'detail', question: '补充你的要求' }])
     render(<QuestionComposer matched={carrier} {...kit} t={seatOver(en, commonEn)} />)
     expect(screen.getByLabelText('Dismiss all questions')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Skip this question' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeTruthy()
     expect(screen.getByPlaceholderText('Type your answer')).toBeTruthy()
   })
 

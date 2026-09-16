@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SubagentPromptRequestId } from '@deepseek-ai/dsh-subagent'
 
 export const name = 'subagent-durability-failure'
 export const inject = ['agents', 'sessionPersistence', 'subagents']
@@ -12,8 +13,11 @@ export const inject = ['agents', 'sessionPersistence', 'subagents']
  *
  *  - `PLACEHOLDER_CHILD_ID` in a scripted `send_message` is remapped to the real
  *    child so both follow-ups queue onto the same live inbox in FIFO order.
+ *  - Under `DSH_SNAPSHOT_HUMAN_STEER`, a browser-authored prompt steers the
+ *    continuable child before its first step, recording the shared next-step
+ *    inbox path without adding a model tool.
  *  - The unknown-id `send_message` (`UNKNOWN_CHILD_ID`) resolves through a
- *    persistence load fenced behind both accepted follow-ups, so the transcript
+ *    persistence stat fenced behind both accepted follow-ups, so the transcript
  *    records the same order on every runner.
  *  - The child's final continuation turn fails its durability checkpoint with a
  *    fixed message, so the scenario proves child-first disposal survives a failed
@@ -34,8 +38,9 @@ export function apply(ctx: Context): void {
   const parentTurnClosed = Promise.withResolvers<undefined>()
   let parentClosed = false
   const publishedFailure = process.env.DSH_SUBAGENT_PUBLISHED_FAILURE === '1'
+  const humanSteer = process.env.DSH_SNAPSHOT_HUMAN_STEER === '1'
   const persistence = ctx.sessionPersistence
-  const load = persistence.load.bind(persistence)
+  const stat = persistence.stat.bind(persistence)
   const agents = ctx.agents
   const create = agents.create.bind(agents)
 
@@ -56,13 +61,13 @@ export function apply(ctx: Context): void {
 
   // The unavailable-child lookup is real asynchronous I/O. Fence it behind both
   // authored follow-ups so runner speed cannot reorder the exact log.
-  persistence.load = async (id) => {
+  persistence.stat = async (id, options) => {
     if (id === UNKNOWN_CHILD_ID) await followupsAccepted.promise
-    return load.call(persistence, id)
+    return stat(id, options)
   }
   ctx.effect(() => () => {
     agents.create = create
-    persistence.load = load
+    persistence.stat = stat
     followupsAccepted.resolve(undefined)
     parentTurnClosed.resolve(undefined)
   }, 'subagent snapshot ordering')
@@ -86,10 +91,18 @@ export function apply(ctx: Context): void {
   // never reach the live inbox.
   let realChildId: string | undefined
   const subagents = ctx.subagents as unknown as {
-    followup: (authority: unknown, childId: SessionId, content: unknown, options: unknown) => Promise<unknown>
+    sendMessage: (authority: unknown, childId: SessionId, content: unknown, options: unknown) => Promise<unknown>
+    prompt: (request: {
+      requestId: SubagentPromptRequestId
+      parentSessionId: SessionId
+      childSessionId: SessionId
+      mode: 'continuable'
+      delivery: 'steer'
+      content: readonly [{ readonly type: 'text'; readonly text: string }]
+    }, signal: AbortSignal) => Promise<unknown>
   }
-  const deliver = subagents.followup.bind(subagents)
-  subagents.followup = (authority, childId, content, options) => {
+  const deliver = subagents.sendMessage.bind(subagents)
+  subagents.sendMessage = (authority, childId, content, options) => {
     const mapped = childId === PLACEHOLDER_CHILD_ID && realChildId !== undefined
       ? SessionId(realChildId)
       : childId
@@ -106,9 +119,21 @@ export function apply(ctx: Context): void {
     accepted += 1
     if (accepted >= 3) followupsAccepted.resolve(undefined)
   })
+  let steering = false
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     if (agent.session.header.parentSession === undefined) return next()
     await followupsAccepted.promise
+    if (humanSteer && !steering) {
+      steering = true
+      await subagents.prompt({
+        requestId: 'snapshot-human-steer' as SubagentPromptRequestId,
+        parentSessionId: agent.session.header.parentSession,
+        childSessionId: SessionId(agent.session.header.id),
+        mode: 'continuable',
+        delivery: 'steer',
+        content: [{ type: 'text', text: 'Human priority: keep the requested exact reply.' }],
+      }, new AbortController().signal)
+    }
     // The published-failure variant's child never reaches a step (its follow-up
     // throws), and its parent turn awaits that child, so only the continuable
     // scenario takes the settlement fence.

@@ -22,14 +22,14 @@ interface Bench {
 async function harness(withPlanMode: boolean): Promise<Bench> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SystemPrompt, { persona: '' })
+  await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(UserQuestionService)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SessionProjectionRegistry)
   if (withPlanMode) await ctx.plugin(PlanModeController, { section: 'plan policy' })
   const session = ctx.sessions.create()
-  ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
+  await ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
   return {
     ctx,
     session,
@@ -64,7 +64,7 @@ function commitPlanMode(session: Session, active: boolean, turn: number): void {
 describe('plan projection unit', () => {
   it('serves inactive/not-pending for the empty log', async () => {
     const bench = await harness(true)
-    expect(bench.values()).toEqual({ plan: { active: false, pending: false } })
+    expect(bench.values().plan).toEqual({ active: false, pending: false })
   })
 
   it('a logged /plan selection reads pending until plan/mode records it', async () => {
@@ -155,7 +155,7 @@ describe('plan projection unit', () => {
     // A second registry over the same log (the cold-read shape): no service
     // memory involved, the fold alone answers {active:false, pending:true}.
     const cold = await harness(true)
-    for (const event of bench.session.events) {
+    for (const event of bench.session.snapshotEvents()) {
       if (event.type === 'command/run' || event.type === 'command/done' || event.type === 'plan/mode') {
         cold.session.append(event.type, event.data)
       }

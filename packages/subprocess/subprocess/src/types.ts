@@ -1,13 +1,13 @@
 /**
  * Vocabulary for the subprocess Service Definition: fully-specified spawn requests with
  * Node-shaped per-stream stdio modes, bounded collected output with spill
- * recovery, raw piped streams, and tree-scoped termination. Command
+ * recovery, raw piped streams, and managed-range termination. Command
  * defaulting, shell semantics, protocol framing, and presentation belong to
  * consumers such as the bash executor seam.
  * @module dsh-subprocess/types
  */
 
-import type { Readable, Writable } from 'node:stream'
+import type { Duplex, Readable, Writable } from 'node:stream'
 
 /** Namespace prefix reserved for DeepSeek Harness-managed child environment facts. */
 export const DSH_ENV_PREFIX = 'DSH_' as const
@@ -64,6 +64,8 @@ export interface SubprocessStdio {
   stdin: SubprocessStdinMode
   stdout: SubprocessOutputMode
   stderr: SubprocessOutputMode
+  /** Request a separate byte-mode duplex channel; omission creates none. */
+  control?: 'pipe'
 }
 
 /**
@@ -81,14 +83,15 @@ export interface SubprocessSpawnSpec {
   stdio: SubprocessStdio
   /**
    * Positive finite grace period in milliseconds, no greater than
-   * `MAX_TIMER_DELAY_MS`, for the {@link SubprocessHandle.terminate} escalation
-   * and for draining still-open collected pipes after the process exits (an
-   * inherited descriptor held by a surviving descendant cannot hold the
-   * outcome open indefinitely).
+   * `MAX_TIMER_DELAY_MS`, available to the provider's termination procedure
+   * and used for draining still-open collected pipes after the process exits
+   * (an inherited descriptor held by a survivor cannot hold the outcome open
+   * indefinitely). Providers document whether range termination is staged or
+   * immediate.
    */
   graceMs: number
   /**
-   * Abort signal — starts the terminate escalation on the process tree when
+   * Abort signal — starts the terminate escalation on the managed range when
    * it fires. The caller owns deadlines and cause classification; this seam
    * only reacts to the abort.
    */
@@ -156,39 +159,38 @@ export interface SubprocessCollectedOutputs {
 }
 
 /**
- * A live child process rooted in its own process tree. Collected output
+ * A live subprocess and its provider-managed process range. Collected output
  * remains readable after exit; piped streams belong to the caller.
  *
- * Termination is tree-scoped everywhere: POSIX signals the detached process
- * group (falling back to the direct child when the group is gone), Windows
- * terminates the tree via `taskkill /T`, so helper processes cannot outlive
- * the handle unnoticed.
+ * Termination and {@link SubprocessHandle.waitForExit} use the same managed
+ * range. Each provider documents the range it can observe and its signalling
+ * and observation limits.
  */
 export interface SubprocessHandle {
-  /** Process id (tree root); -1 when the spawn itself failed. */
-  readonly pid: number
   /** The child's stdin, present iff spawned with `stdin: 'pipe'`. */
   readonly stdin: Writable | undefined
   /** The child's raw stdout, present iff spawned with `stdout: 'pipe'`. */
   readonly stdout: Readable | undefined
   /** The child's raw stderr, present iff spawned with `stderr: 'pipe'`. */
   readonly stderr: Readable | undefined
+  /** Separate caller-owned byte channel when requested; native startup failure may leave it absent. */
+  readonly control: Duplex | undefined
   /** Offset-based readers for collect-mode streams (also readable after exit). */
   readonly collected: SubprocessCollectedOutputs
-  /** Resolves at process close with exit facts; rejects only for spawn-level failures. */
+  /** Resolves with spawned-command exit facts; rejects for spawn or provider failures. */
   readonly done: Promise<SubprocessOutcome>
   /**
-   * Begin the SIGTERM → `graceMs` → SIGKILL escalation on the process tree
-   * (Windows force-terminates immediately) — the seam's only termination
-   * verb. Idempotent, a no-op once the tree is gone (the pid may be reused),
-   * and also triggered by the spec's abort signal.
+   * Begin the provider's documented termination procedure on the managed range
+   * — the seam's only termination verb. Idempotent, a no-op once that range is
+   * gone, and also triggered by the spec's abort signal.
    */
   terminate(): void
   /**
-   * Wait until the process tree has exited — the tree, not just the direct
-   * child, so a still-running helper is observable before teardown returns.
+   * Wait until the same managed range is empty — not just until the spawned
+   * command reports its outcome, so surviving work remains observable.
    * @param signal - optional bound for the wait.
-   * @returns `true` when the tree exited, `false` when the signal aborted first.
+   * @returns `true` when the managed range is empty, `false` when the signal aborted first.
+   * @throws when the selected provider can no longer observe its managed range.
    */
   waitForExit(signal?: AbortSignal): Promise<boolean>
 }
@@ -199,6 +201,14 @@ export interface SubprocessHandle {
  * change both together.
  */
 export type SubprocessTerminalSignal = 'SIGINT' | 'SIGTERM' | 'SIGKILL' | 'SIGTSTP' | 'SIGHUP'
+
+/** Shell-selection facts from the subprocess provider's execution environment. */
+export interface SubprocessTerminalEnvironment {
+  /** Operating-system family that interprets executable paths and shell arguments. */
+  platform: 'posix' | 'windows'
+  /** Login or environment-selected shell, when the provider can resolve one. */
+  defaultShell?: string
+}
 
 /** A fully specified terminal-process spawn. */
 export interface SubprocessTerminalSpawnSpec {
@@ -212,6 +222,8 @@ export interface SubprocessTerminalSpawnSpec {
   rows: number
   /** Initial terminal column count. */
   cols: number
+  /** Terminal emulation advertised to the child through TERM. */
+  terminalType: string
   /** TERM-to-KILL cleanup grace for the complete terminal session. */
   graceMs: number
   /** Cancellation of terminal allocation; a published handle owns its later lifetime. */
@@ -228,7 +240,7 @@ export interface SubprocessTerminalForeground {
 
 /**
  * One live terminal process and its owned OS session. Terminal allocation,
- * foreground-group inspection/signalling, and session-tree cleanup are one
+ * foreground-group inspection/signalling, and whole-session quiescence are one
  * deep subprocess primitive because none can be reconstructed from ordinary
  * piped stdio without substrate-specific process control.
  */
@@ -237,13 +249,19 @@ export interface SubprocessTerminalHandle {
   readonly pid: number
   /** UTF-8 terminal output bytes in delivery order; ends after queued output when the terminal exits. */
   readonly output: Readable
-  /** Resolves when the top-level process exits; rejects only for a live transport failure. */
+  /** Resolves when the top-level process exits; rejects for a terminal startup, provider, or live transport failure. */
   readonly done: Promise<SubprocessOutcome>
   /**
    * Write text to the terminal input.
    * @param data - text to deliver without implicit newline conversion.
    */
   write(data: string): Promise<void>
+  /**
+   * Change the terminal dimensions and notify its foreground application.
+   * @param cols - positive terminal column count.
+   * @param rows - positive terminal row count.
+   */
+  resize(cols: number, rows: number): Promise<void>
   /**
    * Inspect the current foreground process group.
    * @returns its id and input-wait fact, or undefined when no foreground group can be resolved.

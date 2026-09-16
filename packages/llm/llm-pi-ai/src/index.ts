@@ -68,6 +68,7 @@ import { catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
+import type { StoredModelDiscoveryProfile } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
 
 export { PiAiAdapter } from './adapter.ts'
@@ -122,7 +123,7 @@ function directoryEntries(
 ): LlmConfigurableProvider[] {
   const catalog = new Set(catalogProviderIds())
   const entries = new Map<string, LlmConfigurableProvider>()
-  const declare = (provider: string, displayName: string): void => {
+  const declare = (provider: string, displayName: string, error?: string): void => {
     entries.set(provider, {
       provider,
       displayName,
@@ -132,10 +133,11 @@ function directoryEntries(
       // narrowing a shipped provider's models stores a profile too, and that
       // route is still one pi-ai knows.
       declared: !catalog.has(provider),
+      ...error === undefined ? {} : { error },
     })
   }
   for (const provider of catalog) declare(provider, provider)
-  for (const [provider, profile] of profiles) declare(provider, profile.displayName)
+  for (const [provider, profile] of profiles) declare(provider, profile.displayName, profile.catalogError)
   return [...entries.values()]
 }
 
@@ -149,16 +151,14 @@ export function apply(ctx: Context, config: Config): void {
    * snapshot's identity — which is also what makes the adapter's own snapshot
    * stable across operations that observe no change.
    *
-   * No fallback for an unserviceable snapshot lives here: the section schema
-   * resolves the whole profile set, so a write that could not be served is
-   * refused where it is written, and the settings seam keeps a namespace's
-   * last good value for a stored section that fails. Anything reaching this
-   * point has already resolved once.
+   * Catalog diagnostics stay in the snapshot beside serviceable models, so
+   * stored configuration remains visible after an installed catalog changes.
+   * Scalar configuration errors still reject resolution.
    */
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const raw = current()
     if (raw === lastRaw && memoized !== undefined) return memoized
-    const next = resolveProfiles(raw.providers)
+    const next = resolveProfiles(raw.providers, 'deferred')
     lastRaw = raw
     memoized = next
     return next
@@ -239,28 +239,27 @@ export function apply(ctx: Context, config: Config): void {
     directoryFacts = entries
   }
   ensureDirectory()
-  /**
-   * The credential a named route already resolves, for an interrogation whose
-   * draft carries none. A route being declared for the first time names no
-   * profile yet, and a profile that names no credential defers to pi-ai's own
-   * discovery, so both answer `undefined` and the endpoint is asked
-   * unauthenticated — the same posture a request to that route would take.
-   */
-  const storedApiKey = async (provider: string | undefined): Promise<string | undefined> => {
+  /** Host-owned request inputs for discovery of one configured route. */
+  const storedDiscoveryProfile = (
+    provider: string | undefined,
+  ): StoredModelDiscoveryProfile | undefined => {
     if (provider === undefined) return undefined
     const profile = profiles().get(provider)
     if (profile === undefined) return undefined
-    return resolveApiKey(provider, profile)
+    return {
+      headers: profile.headers,
+      resolveApiKey: () => resolveApiKey(provider, profile),
+    }
   }
   // Interrogating an endpoint is a configuration-time action over a draft, so
   // it is offered for the whole namespace rather than per route: the provider
   // a surface is adding does not exist yet. The draft is the whole request
-  // except the credential: a configuration surface edits a redacted descriptor
-  // and never holds a stored secret, so an already-configured route supplies
-  // its own here rather than being interrogated unauthenticated.
+  // except the stored credential and deployment-owned headers: the curated UI
+  // accepts neither, so an already-configured route supplies both inside the
+  // Host rather than widening the discovery request.
   ctx.llm.registerModelDiscovery(NS, (request, signal) => discoverModels(
     { ...request, ...signal === undefined ? {} : { signal } },
-    () => storedApiKey(request.provider),
+    () => storedDiscoveryProfile(request.provider),
   ))
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below. A bare
@@ -294,11 +293,16 @@ export function apply(ctx: Context, config: Config): void {
   ensureRegistrationFacts()
 
   ctx.inject(['settings'], (settingsCtx) => {
+    let registering = true
     settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      // Refuse an unserviceable section where it is written: without this a
-      // schema-valid profile the adapter cannot serve would be stored and then
-      // silently disable every route in this namespace.
-      validate: assertServiceable,
+      validate: (value) => {
+        // Stored catalog drift must not prevent registration of the repair UI.
+        if (registering) {
+          resolveProfiles(value.providers, 'deferred')
+        } else {
+          assertServiceable(value, current())
+        }
+      },
       setSource: (source) => {
         current = source
       },
@@ -328,5 +332,6 @@ export function apply(ctx: Context, config: Config): void {
         }
       },
     })
+    registering = false
   })
 }

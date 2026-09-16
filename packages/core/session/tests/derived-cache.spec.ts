@@ -16,7 +16,7 @@ function userText(session: Session, text: string): void {
 
 /** From-scratch oracle: replay the log into a fresh session and derive. */
 function scratch(session: Session): unknown {
-  return Session.create(SessionId(`${session.id}-scratch-${session.seq}`), [...session.events]).deriveMessages()
+  return Session.create(SessionId(`${session.id}-scratch-${session.seq}`), session.snapshotEvents()).deriveMessages()
 }
 
 describe('derived-message cache', () => {
@@ -27,6 +27,7 @@ describe('derived-message cache', () => {
     expect(session.deriveMessages()).toEqual(scratch(session))
     userText(session, 'two')
     session.append('assistant/message', {
+      stream: [],
       turn: 1, step: 1,
       message: createMessage({
         role: 'assistant',
@@ -39,6 +40,7 @@ describe('derived-message cache', () => {
     }, { surfaceOp: 'append' })
     expect(session.deriveMessages()).toEqual(scratch(session))
     session.append('assistant/message', {
+      stream: [],
       turn: 1, step: 2,
       message: createMessage({
         role: 'assistant',
@@ -64,7 +66,7 @@ describe('derived-message cache', () => {
     const nodes = session.surface.nodes
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'summary' }], source: { kind: 'plugin', plugin: 'compact' },
-    }), { surfaceOp: { op: 'replace', start: nodes[0]!, end: nodes[1]! }, sourceEventSeqs: [nodes[0]!, nodes[1]!] })
+    }), { surfaceOp: { op: 'replace', startSeq: nodes[0]!, endSeq: nodes[1]! }, sourceEventSeqs: [nodes[0]!, nodes[1]!] })
 
     expect(session.deriveMessages()).toHaveLength(1)
     expect(session.deriveMessages()).toEqual(scratch(session))
@@ -118,6 +120,7 @@ describe('Session.deriveEventMessage — the per-event projection', () => {
     const boundary = session.append('step/start', { turn: 1, step: 1 })
     expect(session.deriveEventMessage(boundary)).toBeNull()
     const empty = session.append('assistant/message', {
+      stream: [],
       turn: 1, step: 1,
       message: createMessage({
         role: 'assistant',

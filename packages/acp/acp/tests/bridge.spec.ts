@@ -6,10 +6,17 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import { ToolCallId, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionHeader } from '@deepseek-ai/dsh-session'
+import { SessionPersistenceRevision, type SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 import { startHttpMcpFixture } from '../../../mcp/mcp-client/tests/http-fixture.ts'
+
+/** Wrap a bare header as the snapshot shape `SessionPersistence.list` now returns. */
+function snapshotOf(header: SessionHeader): SessionPersistenceSnapshot {
+  return { header, revision: SessionPersistenceRevision(`test-${header.id}`) }
+}
 
 function oneToolCall(): StreamChunk[] {
   return [
@@ -164,11 +171,16 @@ describe('automation-only ACP bridge', () => {
     await harness.client.closeSession({ sessionId: created.sessionId })
     const updatesBeforeResume = harness.updates.length
 
+    const statSpy = vi.spyOn(harness.ctx.sessionPersistence, 'stat')
+    const listSpy = vi.spyOn(harness.ctx.sessionPersistence, 'list')
     const resumed = await harness.client.resumeSession({
       sessionId: created.sessionId,
       cwd: process.cwd(),
       mcpServers: [],
     })
+    // Resume authorizes one known id through a point stat, never a corpus scan.
+    expect(statSpy).toHaveBeenCalledWith(SessionId(created.sessionId), expect.anything())
+    expect(listSpy).not.toHaveBeenCalled()
     expect(Array.isArray(resumed.configOptions)).toBe(true)
     expect(harness.updates).toHaveLength(updatesBeforeResume)
     await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'second prompt' }] })
@@ -249,12 +261,13 @@ describe('automation-only ACP bridge', () => {
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     const sessionId = SessionId('other-frontend-live')
     harness.ctx.sessions.create(sessionId, { meta: { cwd: process.cwd() } })
-    vi.spyOn(harness.ctx.sessionPersistence, 'list').mockResolvedValue([{
-      version: 0,
+    vi.spyOn(harness.ctx.sessionPersistence, 'list').mockResolvedValue([snapshotOf({
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
+      isSeeded: false,
       cwd: process.cwd(),
-    }])
+    })])
     const resume = vi.spyOn(harness.ctx.agents, 'resume')
 
     await expect(harness.client.listSessions({})).resolves.toEqual({ sessions: [] })
@@ -362,16 +375,20 @@ describe('automation-only ACP bridge', () => {
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     const active = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     const persistence = harness.ctx.get('sessionPersistence')!
-    vi.spyOn(persistence, 'list').mockResolvedValue([
-      { version: 0, id: SessionId(active.sessionId), createdAt: 9, cwd: process.cwd() },
-      { version: 0, id: SessionId('subagent'), createdAt: 8, cwd: '/missing/filter', origin: 'subagent' },
-      { version: 0, id: SessionId('fork'), createdAt: 7, cwd: '/missing/filter', parentSession: SessionId('parent') },
-      { version: 0, id: SessionId('no-cwd'), createdAt: 6 },
-      { version: 0, id: SessionId('relative'), createdAt: 5, cwd: 'relative' },
-      { version: 0, id: SessionId('other'), createdAt: 4, cwd: '/missing/other' },
-      { version: 0, id: SessionId('valid-b'), createdAt: 3, cwd: '/missing/filter' },
-      { version: 0, id: SessionId('valid-a'), createdAt: 3, cwd: '/missing/filter' },
-    ])
+    vi.spyOn(persistence, 'list').mockResolvedValue(([
+      { version: SESSION_FORMAT_VERSION, id: SessionId(active.sessionId), createdAt: 9, isSeeded: false, cwd: process.cwd() },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('subagent'), createdAt: 8, isSeeded: false, cwd: '/missing/filter', origin: 'subagent' },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('fork'), createdAt: 7, isSeeded: false, cwd: '/missing/filter', parentSession: SessionId('parent') },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('no-cwd'), createdAt: 6, isSeeded: false },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('relative'), createdAt: 5, isSeeded: false, cwd: 'relative' },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('other'), createdAt: 4, isSeeded: false, cwd: '/missing/other' },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('valid-b'), createdAt: 3, isSeeded: false, cwd: '/missing/filter' },
+      { version: SESSION_FORMAT_VERSION, id: SessionId('valid-a'), createdAt: 3, isSeeded: false, cwd: '/missing/filter' },
+    ] satisfies SessionHeader[]).map(snapshotOf))
+    // Resume authorizes through a point stat, not the list scan mocked above.
+    vi.spyOn(persistence, 'stat').mockImplementation(async id => (id === SessionId('no-cwd')
+      ? snapshotOf({ version: SESSION_FORMAT_VERSION, id: SessionId('no-cwd'), createdAt: 6, isSeeded: false })
+      : undefined))
 
     await expect(harness.client.listSessions({ cwd: 'relative' })).rejects.toThrow(/absolute path/)
     await expect(harness.client.listSessions({ cwd: '/missing/filter' })).resolves.toEqual({
@@ -422,7 +439,10 @@ describe('automation-only ACP bridge', () => {
     await expect(harness.client.newSession({ cwd: process.cwd(), mcpServers: [] }))
       .rejects.toThrow(/Internal error/)
     expect(harness.ctx.agents.list()).toHaveLength(0)
-    await expect(harness.ctx.sessionPersistence.list()).resolves.toEqual([])
+    // The loop seeds the log through its write handle before activation fails,
+    // so the rolled-back session's durable log remains; only the live agent and
+    // the bridge record are rolled back.
+    await expect(harness.ctx.sessionPersistence.list()).resolves.toHaveLength(1)
 
     const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     await harness.client.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'persist' }] })
@@ -882,7 +902,7 @@ describe('automation-only ACP bridge', () => {
     expect(secondImage.attachment.mediaType).toBe('image/jpeg')
     expect(secondImage.attachment.bytes).toBe(1)
     const agent = harness.ctx.agents.get(SessionId(sessionId))
-    expect(JSON.stringify(agent?.session.events)).not.toContain('AQ==')
+    expect(JSON.stringify(agent?.session.snapshotEvents())).not.toContain('AQ==')
   })
 
   it('rejects a malformed image batch atomically and frees the prompt slot', async () => {
@@ -922,7 +942,9 @@ describe('automation-only ACP bridge', () => {
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     await harness.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'go' }] })
-    expect(harness.adapter.requests[0]?.system).toContain(`Automation persona for mock in ${process.cwd()}.`)
+    const head = harness.adapter.requests[0]?.messages[0]
+    expect(head?.role).toBe('system')
+    expect(head?.content).toContainEqual({ type: 'text', text: expect.stringContaining(`Automation persona for mock in ${process.cwd()}.`) as unknown })
   })
 
   it('requires one absolute primary workspace', async () => {
@@ -953,7 +975,7 @@ describe('automation-only ACP bridge', () => {
       sessionId,
       prompt: [{ type: 'image', data: '', mimeType: 'image/png' }],
     })).rejects.toThrow(/inline image prompts were not advertised/)
-    expect(harness.ctx.agents.get(SessionId(sessionId))?.session.events.some(event => event.type === 'turn/start')).toBe(false)
+    expect(harness.ctx.agents.get(SessionId(sessionId))?.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
   })
 
   it('renders baseline resource links as textual references in the user message', async () => {

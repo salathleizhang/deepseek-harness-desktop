@@ -8,7 +8,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent, ToolResultMessage } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionSeq, ToolResultMessage } from '@deepseek-ai/dsh-session'
 // Type-only: the `compaction/*` SessionEventMap merges (the shadow-price event).
 import type {} from '@deepseek-ai/dsh-compaction'
 // Type-only: the `ctx.tokenMeter` Context merge for the declared injection.
@@ -36,7 +36,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 interface SnapshotCandidate {
-  readonly seq: number
+  readonly seq: SessionSeq
   readonly event: SessionEvent<'tool/result'>
 }
 
@@ -136,7 +136,8 @@ export class ToolResultPruner extends Service {
   pruneSession(session: Session): PruneResult {
     const candidates: SnapshotCandidate[] = []
     for (const seq of [...session.surface.nodes]) {
-      const event = session.events[seq]
+      // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+      const event = session.eventAt(seq)
       /* v8 ignore next -- surface seqs are validated contiguous log references. */
       if (event?.type === 'tool/result') candidates.push({ seq, event })
     }
@@ -144,13 +145,14 @@ export class ToolResultPruner extends Service {
     const pruned: PrunedEntry[] = []
     let charsRemoved = 0
     for (const { seq, event } of candidates) {
-      const result = event.data.message.content[0]
+      const original = session.deriveEventMessage(event) as ToolResultMessage
+      const result = original.content[0]
       const content = this.pruneContent(result.content)
       if (content === null) continue
       const charsBefore = this.measureContent(result.content)
       const charsAfter = this.measureContent(content)
       const message = freezeMessage<ToolResultMessage>({
-        ...event.data.message,
+        ...original,
         content: [{
           ...result,
           content,
@@ -162,13 +164,13 @@ export class ToolResultPruner extends Service {
       session.append('compaction/prune', {
         shadowedRange: { start: seq, end: seq },
         shadowedSeqs: [seq],
-        shadowedTokenCount: this.ctx.tokenMeter.estimateMessage(event.data.message),
+        shadowedTokenCount: this.ctx.tokenMeter.estimateMessage(original),
       })
       const replacement = session.append('tool/result', {
         ...event.data,
         message,
       }, {
-        surfaceOp: { op: 'replace', start: seq, end: seq },
+        surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq },
         sourceEventSeqs: [seq],
       })
       pruned.push({

@@ -1,7 +1,8 @@
 /** Target-neutral Conversation slot declarations and composed component props. */
 import type { ReactNode, RefObject } from 'react'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {
   MaybeSnapshotSelectorHook, ObservableSnapshot, SnapshotSelectorHook,
@@ -14,16 +15,18 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import type { ComposerBlock } from './composer-blocks.ts'
-import type {
-  ComposerKeyboard, DraftAttachmentId, EditSelection, InputActions, InputNotice, InputState,
-} from './input.ts'
+import type { DraftAttachmentId, InputActions, InputNotice, InputState } from './input.ts'
+import type { ComposerKeyboard, EditSelection } from './draft-editor.ts'
 import type { createConversationStore } from '../stores.ts'
-import type { ComposerSubmitGesture, InputSubmitMode } from './composer-submission.ts'
+import type { BusyEnterBehavior } from './composer-submission.ts'
 import type { ConversationSnapshot } from './snapshot.ts'
 import type { ViewTab } from './views.ts'
 
-/** Browser-owned image that has not crossed the durable Host boundary. */
-export interface ComposerAttachment {
+/** Browser-owned draft attachment that has not crossed the durable Host boundary. */
+export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment
+
+/** Browser-owned image, base64-encoded into the prompt at send time. */
+export interface ComposerImageAttachment {
   kind: 'image'
   id: DraftAttachmentId
   file: File
@@ -34,16 +37,36 @@ export interface ComposerAttachment {
   height?: number
 }
 
+/** Browser-owned generic file whose bytes upload to the Host as soon as it is picked. */
+export interface ComposerFileAttachment {
+  kind: 'file'
+  id: DraftAttachmentId
+  file: File
+}
+
+/** Upload lifecycle of one picked file draft (files upload on pick, not on send). */
+export type DraftFileUpload =
+  | { readonly status: 'uploading'; readonly loaded: number; readonly total?: number }
+  | { readonly status: 'ready'; readonly receiptId: FileUploadReceiptId; readonly file: FileAttachmentRef }
+  | { readonly status: 'error'; readonly message: string }
+
+/** Per-draft upload states keyed by draft attachment id. */
+export type DraftFileUploads = Readonly<Record<string, DraftFileUpload>>
+
 /** Input state handed to the optional attachment presentation plugin. */
 export interface ComposerAttachmentsOwnerProps {
-  /** Browser-owned draft images in input order. */
+  /** Browser-owned draft attachments in input order. */
   attachments: readonly ComposerAttachment[]
-  /** Whether a document-level file drop may add images now. */
+  /** Whether a document-level file drop may add attachments now. */
   canAcceptDrop: boolean
   /** Add one dropped batch through the composer's validation path. */
-  onAddImages: (files: readonly File[]) => void
-  /** Remove one draft image through the Conversation service. */
-  onRemoveImage: (id: DraftAttachmentId) => void
+  onAddFiles: (files: readonly File[]) => void
+  /** Remove one draft attachment through the Conversation service. */
+  onRemoveAttachment: (id: DraftAttachmentId) => void
+  /** Current per-draft upload states for file-kind attachments. */
+  uploads: DraftFileUploads
+  /** Restart one failed file upload. */
+  onRetryFile: (id: DraftAttachmentId) => void
   /** Display-ready limits for the drop invitation. */
   dropLimits?: { readonly count: number; readonly size: string } | undefined
 }
@@ -79,6 +102,8 @@ export interface MessageImagesOwnerProps {
   loadImage: MessageImageLoader
   /** Horizontal placement inside the owning record. */
   align: 'start' | 'end'
+  /** Force every image into the compact message-attachment tile size. */
+  compact?: boolean
 }
 
 /** Slot-backed renderer used by Conversation targets without importing an attachment implementation. */
@@ -91,6 +116,8 @@ export type UseConversationViews = SnapshotSelectorHook<readonly ViewTab[]>
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Conversation shell beneath its root-scoped main-panel entry. */
+    'main.conversation': { kind: 'single'; scope: 'session-maybe' }
     /** Strict per-Session Conversation body. */
     'conversation.session': { kind: 'single'; scope: 'session' }
     /** Strict per-Session title, actions, and View navigation. */
@@ -113,6 +140,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       scope: 'session'
       owner: ConversationHeaderActionOwnerProps
     }
+    /**
+     * The header's far-right corner, past the utilities' edge and into the
+     * header's own padding, for one control. The corner is laid out only while
+     * its occupant renders something; an occupant with nothing to show renders
+     * nothing, and the utilities take the header's edge.
+     */
+    'conversation.session.header.corner': {
+      kind: 'single'
+      scope: 'session'
+      owner: ConversationHeaderCornerOwnerProps
+    }
     /** Registered Conversation target Views, rendered one at a time. */
     'conversation.view': { kind: 'list'; scope: 'session'; owner: ConvViewOwnerProps }
     /** Selector-routed replacements for the current Session's resident composer. */
@@ -128,14 +166,14 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /** Floating entries rendered inside the resident composer card. */
     'conversation.input.overlay': { kind: 'list'; scope: 'session' }
     /** Ambient entries below the composer card. */
-    'conversation.composer.dock': { kind: 'list'; scope: 'session'; owner: InputZone }
+    'conversation.composer.dock': { kind: 'list'; scope: 'session' }
     /** Compact controls at the left of the composer tool row. */
-    'conversation.input.left': { kind: 'list'; scope: 'session'; owner: InputZone }
+    'conversation.input.left': { kind: 'list'; scope: 'session' }
     /** Compact controls before the composer submit action. */
-    'conversation.input.right': { kind: 'list'; scope: 'session'; owner: InputZone }
+    'conversation.input.right': { kind: 'list'; scope: 'session' }
     /** Resident composer body, including the no-Session inert state. */
     'conversation.composer.bar': { kind: 'single'; scope: 'session-maybe'; owner: ComposerBarOwnerProps }
-    /** Optional draft-image rail and drop target. */
+    /** Optional draft-attachment rail and drop target. */
     'conversation.input.attachments': {
       kind: 'single'
       scope: 'session-maybe'
@@ -143,6 +181,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     }
     /** Plan control inside the composer tool row. */
     'conversation.input.plan': { kind: 'single'; scope: 'session'; owner: InputControlOwnerProps }
+    /** Current-session permission control inside the composer tool row. */
+    'conversation.input.permission': { kind: 'single'; scope: 'session'; owner: InputControlOwnerProps }
     /** Model selector inside the composer tool row. */
     'conversation.input.model': { kind: 'single'; scope: 'session'; owner: InputControlOwnerProps }
   }
@@ -180,6 +220,12 @@ export interface HeroAgentPresetOwnerProps {
 /** Header actions derive their state from standard Session props. */
 export interface ConversationHeaderActionOwnerProps {
   /** Marker field: entries receive no owner-specific values. */
+  children?: never
+}
+
+/** The header corner's occupant derives its state from standard Session props. */
+export interface ConversationHeaderCornerOwnerProps {
+  /** Marker field: the occupant receives no owner-specific values. */
   children?: never
 }
 
@@ -255,38 +301,33 @@ export interface ComposerBarOwnerProps {
   placeholder?: string
   /** Optional content rendered above the composer surface. */
   accessory?: ReactNode
-  /** Floating overlay content rendered inside the composer card. */
-  overlay?: ReactNode
-  /** Left-side input controls. */
-  leftItems?: ReactNode
-  /** Right-side input controls. */
-  rightItems?: ReactNode
-  /** Ambient content below the card. */
-  footer?: ReactNode
 }
 
 /** Package-private operations injected into the resident composer bar. */
 export interface ComposerBarInjected {
   keyboard: ComposerKeyboard | undefined
-  addImages: ((files: readonly File[]) => string | null) | undefined
-  removeImage: ((id: DraftAttachmentId) => void) | undefined
-  draftImages: ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined
-  resolveSubmitMode: (
-    running: boolean,
-    gesture: ComposerSubmitGesture,
-    steeringAvailable: boolean,
-  ) => InputSubmitMode
+  addFiles: ((files: readonly File[]) => string | null) | undefined
+  removeAttachment: ((id: DraftAttachmentId) => void) | undefined
+  resolveDraftAttachments: ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined
+  /** Restart one failed file upload; absent without a session. */
+  retryFileUpload: ((id: DraftAttachmentId) => void) | undefined
   toggleCommandMenu: ((selection: EditSelection) => void) | undefined
   stop: (() => void) | undefined
-  command: ((line: string) => Promise<boolean>) | undefined
   hooks: {
+    /**
+     * Live busy-state submission preference: the delivery mode plain Enter
+     * and the primary Send button use while the addressed agent is busy.
+     */
+    busyEnter: ObservableSnapshot<BusyEnterBehavior>
+    /** Live per-draft upload states for file-kind drafts. */
+    fileUploads: ObservableSnapshot<DraftFileUploads>
     notices: ObservableSnapshot<InputNotice | null>
     lexicon: ObservableSnapshot<ReadonlyMap<'/' | '@', readonly string[]>>
     menuLauncher: ObservableSnapshot<string | null>
   }
 }
 
-/** Owner share of the named plan and model controls. */
+/** Owner share of the named plan, permission, and model controls. */
 export interface InputControlOwnerProps {
   /** Whether the composer currently refuses interaction. */
   locked: boolean
@@ -296,7 +337,11 @@ export interface InputControlOwnerProps {
 export type ComposerBarProps =
   PropsRuntime<'conversation.composer.bar'>
   & PropsRenderSlots<
-    'conversation.input.attachments' | 'conversation.input.plan' | 'conversation.input.model'
+    | 'conversation.input.attachments' | 'conversation.input.overlay'
+    | 'conversation.input.permission'
+    | 'conversation.input.left' | 'conversation.input.plan'
+    | 'conversation.input.right' | 'conversation.input.model'
+    | 'conversation.composer.dock'
   >
   & InjectFace<ComposerBarInjected>
   & PropsLocale<'conversation'>
@@ -321,13 +366,11 @@ export interface HeroBrandMarkOwnerProps {
 
 /** Full props of the resident optional-Session Conversation shell. */
 export type ConversationSlotProps =
-  PropsRuntime<'conversation'>
+  PropsRuntime<'main.conversation'>
   & PropsRenderSlots<
     | 'conversation.session' | 'conversation.session.header'
     | 'conversation.composer' | 'conversation.composer.bar'
-    | 'conversation.input.overlay'
-    | 'conversation.input.dock' | 'conversation.composer.dock'
-    | 'conversation.input.left' | 'conversation.input.right'
+    | 'conversation.input.dock'
     | 'conversation.hero.brand.mark'
     | 'conversation.hero.workspace'
     | 'conversation.hero.agentPreset'
@@ -352,12 +395,13 @@ export type ConversationSessionHeaderSlotProps =
     'conversation.session.header.lineage'
     | 'conversation.session.header.actions'
     | 'conversation.session.header.utilities'
+    | 'conversation.session.header.corner'
   >
   & PropsStore<ConversationStore>
   & InjectFace<ConversationSessionHeaderInjected>
   & PropsLocale<'conversation'>
 
-/** Full props of the draft-image attachment renderer. */
+/** Full props of the draft-attachment renderer. */
 export type ComposerAttachmentsProps =
   PropsRuntime<'conversation.input.attachments'> & PropsLocale<'conversation'>
 

@@ -9,16 +9,19 @@
     "src/api-path.ts",
     "src/client/api.ts",
     "src/client/connection.ts",
-    "src/client/fixture.ts",
     "src/client/index.ts",
     "src/client/random-uuid.ts",
     "src/client/rpc.ts",
     "src/loopback-hostname.ts",
+    "src/recovery-config.ts",
     "src/rpc.ts"
   ],
   "references": [
     {
       "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../../../vendor/schemastery"
     },
     {
       "path": "../../attachment/attachment"
@@ -27,28 +30,10 @@
       "path": "../../core/session"
     },
     {
-      "path": "../../todo/tool-todo"
-    },
-    {
-      "path": "../../core/tools"
-    },
-    {
       "path": "../../credentials/credentials"
     },
     {
-      "path": "../../settings/settings"
-    },
-    {
-      "path": "../../host/directory-picker"
-    },
-    {
-      "path": "../../interaction/commands"
-    },
-    {
       "path": "../../llm/llm"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     },
     {
       "path": "../../util/brand"

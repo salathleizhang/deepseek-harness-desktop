@@ -41,6 +41,7 @@ function mathFixture(): string {
   })
   session.append('step/start', { turn: 1, step: 1 })
   session.append('assistant/message', {
+    stream: [],
     turn: 1,
     step: 1,
     message: createMessage({
@@ -76,8 +77,10 @@ function mathFixture(): string {
       id: '{{sessionId}}',
       createdAt: 0,
       cwd: '{{cwd}}',
+      isSeeded: false,
+      delegationDepth: 0,
     }),
-    ...session.events.map(event => JSON.stringify({
+    ...session.snapshotEvents().map(event => JSON.stringify({
       ...event,
       time: eventTimeOrigin + event.seq * 1_000,
     })),
@@ -120,7 +123,7 @@ describe('web e2e: settled Markdown math rendering', () => {
     await expect.poll(() => page.locator('.katex-display').count(), { timeout: 10_000 }).toBe(2)
     expect(await page.locator('.katex-error').count()).toBe(0)
     await expect.poll(
-      () => page.getByText('1 turns · 1 steps', { exact: false }).count(),
+      () => page.getByText('1 turns 1 steps', { exact: false }).count(),
       { timeout: 10_000 },
     ).toBe(1)
 

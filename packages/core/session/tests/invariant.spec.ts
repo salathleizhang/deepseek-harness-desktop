@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope, scopeTarget } from '@deepseek-ai/dsh-scope'
-import { createUserMessage, ToolCallId, createMessage, createToolResultMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId, TOOL_NOT_STARTED } from '@deepseek-ai/dsh-session'
+import { createSystemMessage, createUserMessage, ToolCallId, createMessage, createToolResultMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
+import SessionStore, { SessionId, SessionSeq, TOOL_NOT_STARTED } from '@deepseek-ai/dsh-session'
 import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
 import InvariantRegistry, { InvariantError } from '@deepseek-ai/dsh-invariants'
 
@@ -40,8 +40,12 @@ describe('session-log invariants', () => {
         content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' },
       }), { surfaceOp: 'append' })
       session.append('step/start', { turn: 1, step: 1 })
-      session.append('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'h' } })
+      session.append('assistant/attempt', {
+        turn: 1, step: 1,
+        stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['h'] }],
+      })
       session.append('assistant/message', {
+        stream: [],
         turn: 1,
         step: 1,
         message: createMessage({
@@ -79,7 +83,7 @@ describe('session-log invariants', () => {
     expect(() => session.append('turn/start', {
       turn: 1,
     })).toThrow('later dispatch veto')
-    expect(session.events).toEqual([])
+    expect(session.snapshotEvents()).toEqual([])
     expect(() => {
       session.append('turn/start', { turn: 1 })
       session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
@@ -181,6 +185,7 @@ describe('session-log invariants', () => {
       .toThrow(/while step 1 is still open/)
     expect(() => nested.append('step/end', { turn: 1, step: 2 })).toThrow(/open is turn 1\/step 1/)
     expect(() => nested.append('assistant/message', {
+      stream: [],
       turn: 1,
       step: 2,
       message: createMessage({
@@ -209,10 +214,10 @@ describe('session-log invariants', () => {
   it('requires step-scoped stream and tool events to name the open step', async () => {
     const chunk = (await setup()).ctx.sessions.create()
     chunk.append('turn/start', { turn: 1 })
-    expect(() => chunk.append('assistant/chunk', {
+    expect(() => chunk.append('assistant/attempt', {
       turn: 1,
       step: 1,
-      chunk: { type: 'text-delta', index: 0, text: 'x' },
+      stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['x'] }],
     })).toThrow(/open is turn 1\/step null/)
 
     const tool = (await setup()).ctx.sessions.create()
@@ -227,6 +232,16 @@ describe('session-log invariants', () => {
         isError: false,
       }),
     }, { surfaceOp: 'append' })).toThrow(/no prior tool\/call/)
+  })
+
+  it('requires a system/message to name the open step', async () => {
+    const session = (await setup()).ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    const message = createSystemMessage('You are terse.', '@deepseek-ai/dsh-system-prompt')
+    expect(() => session.append('system/message', { turn: 1, step: 1, message }, { surfaceOp: 'append' }))
+      .toThrow(/open is turn 1\/step null/)
+    session.append('step/start', { turn: 1, step: 1 })
+    expect(() => session.append('system/message', { turn: 1, step: 1, message }, { surfaceOp: 'append' })).not.toThrow()
   })
 
   it('keeps fresh tool-result appends open-step checked', async () => {
@@ -279,7 +294,7 @@ describe('session-log invariants', () => {
         }] satisfies typeof original.data.message.content,
       }),
     }, {
-      surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
+      surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
       sourceEventSeqs: [original.seq],
     })).not.toThrow()
   })
@@ -318,7 +333,7 @@ describe('session-log invariants', () => {
         }] satisfies typeof original.data.message.content,
       }),
     }, {
-      surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
+      surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
       sourceEventSeqs: [original.seq],
     })).toThrow(/outside any open turn/)
   })
@@ -374,8 +389,8 @@ describe('session-log invariants', () => {
   it('replays seeded sessions and tracks each session independently', async () => {
     const { ctx } = await setup()
     const badSeed = [
-      { type: 'turn/start' as const, seq: 0, time: 0, data: { turn: 1 } },
-      { type: 'turn/start' as const, seq: 1, time: 0, data: { turn: 2 } },
+      { type: 'turn/start' as const, seq: SessionSeq(0), time: 0, data: { turn: 1 } },
+      { type: 'turn/start' as const, seq: SessionSeq(1), time: 0, data: { turn: 2 } },
     ]
     expect(() => ctx.sessions.create(undefined, { seed: badSeed })).toThrow(InvariantError)
 
@@ -393,10 +408,10 @@ describe('session-log invariants', () => {
     session.append('step/start', { turn: 1, step: 1 })
     await fiber.dispose()
     await ctx.plugin(SessionInvariant)
-    expect(() => session.append('assistant/chunk', {
+    expect(() => session.append('assistant/attempt', {
       turn: 1,
       step: 1,
-      chunk: { type: 'text-delta', index: 0, text: 'h' },
+      stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['h'] }],
     })).not.toThrow()
     expect(() => session.append('turn/start', { turn: 2 }))
       .toThrow(/turn 1 is still open/)
@@ -406,14 +421,14 @@ describe('session-log invariants', () => {
     const { ctx } = await setup()
     // Balanced seed: between turns.
     expect(() => ctx.sessions.create(SessionId('inherited-between-turns'), { seed: [
-      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
-      { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: SessionSeq(1), time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
     ] })).not.toThrow()
     // Unbalanced seed: inside the open turn, which the relation permits.
     const open = ctx.sessions.create(SessionId('inherited-inside-open-turn'), { seed: [
-      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 } },
     ] })
-    expect(open.events.map(event => event.type)).toEqual(['turn/start', 'session/end-seed'])
+    expect(open.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'session/end-seed'])
     // Still open afterwards: the boundary moves no cursor.
     expect(() => open.append('turn/start', { turn: 2 }))
       .toThrow(/turn 1 is still open/)

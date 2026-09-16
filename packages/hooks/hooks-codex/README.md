@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-hooks-codex` runs the hooks from your existing Codex config — a `hooks.json` — during agent runs, so the behavior you already wrote keeps working without rewriting it. Five of Codex's hook points fire at the matching moments: when a session starts, when a prompt is submitted, before and after a tool runs, and when the run is about to stop. A hook can block a prompt or tool call with a message the model sees, attach extra context to the conversation, or force the run to continue. Choose it when you have Codex command hooks and want them to work in the harness as-is; behavior with no Codex equivalent belongs in a native plugin.
+`dsh-hooks-codex` runs command hooks from an existing Codex `hooks.json` during agent runs, so prompt and tool gates work without being rewritten. It supports five Codex hook points: session start, prompt submission, before and after tool execution, and stop. Hooks can block prompts or tool calls with model-visible reasons, add conversation context, or force another agent step. Choose this package to reuse Codex command hooks in the harness; use a native plugin for behavior outside this supported subset.
 
 ## Table of Contents
 
@@ -80,11 +80,11 @@ This section explains the design decisions behind the bridge and points at the c
 
 ### Hook point mapping
 
-Each supported event programs against one harness extension point: `SessionStart` emits context into the new session (`agent/session-start`), `UserPromptSubmit` and `PreToolUse` are waterfalls that can reject the incoming action (`agent/pre-step`, `tools/pre-execute`), `PostToolUse` is a waterfall that can block with feedback or add context to the downstream decision (`tools/post-execute`), and `Stop` is a serial listener whose blocking result forces another step through `steer()` (`agent/turn-stopping`). Context-only hooks always delegate via `next()` before folding a sourced message into the downstream decision, so a later listener can still reject or rewrite; blocking decisions map to `deny` (`PreToolUse` has no `allow` or `ask`). The per-event wiring lives in [`src/index.ts`](src/index.ts).
+Each supported event programs against one harness extension point: `SessionStart` adds context through awaited `agent/created` initialization before the first turn, `UserPromptSubmit` and `PreToolUse` are waterfalls that can reject the incoming action (`agent/pre-step`, `tools/pre-execute`), `PostToolUse` is a waterfall that can block with feedback or add context to the downstream decision (`tools/post-execute`), and `Stop` is a serial listener whose blocking result forces another step through `steer()` (`agent/turn-stopping`). Context-only hooks always delegate via `next()` before folding a sourced message into the downstream decision, so a later listener can still reject or rewrite; blocking decisions map to `deny` (`PreToolUse` has no `allow` or `ask`). The per-event wiring lives in [`src/index.ts`](src/index.ts).
 
 ### Payloads and environment
 
-Payloads are Codex-shaped: snake_case with `turn_id` on turn-scoped events, `model` and `permission_mode: "default"` on every event, and stdin written without a trailing newline. A tool call's payload carries the real `tool_name` and the `tool_input: { command }` shape (the `command` argument when present, else `''`), so non-shell tool arguments are not faithfully exposed. The base payload carries `session_id` and `transcript_path`; the latter resolves through `ctx.sessionPersistence.locate(session.header)` when available and otherwise is `null`, preserving the Codex `string | null` shape — lookup never creates or flushes the artifact. Codex performs no command substitution and injects no plugin environment.
+Payloads are Codex-shaped: snake_case with `turn_id` on turn-scoped events, `model` and `permission_mode: "default"` on every event, and stdin written without a trailing newline. A tool call's payload carries the real `tool_name` and the `tool_input: { command }` shape (the `command` argument when present, else `''`), so non-shell tool arguments are not faithfully exposed. The base payload carries `session_id` and `transcript_path`; the latter keeps the Codex `string | null` shape but is always `null` — the persistence seam exposes no artifact paths, and the default-zstd session log is not readable by hook scripts. Codex performs no command substitution and injects no plugin environment.
 
 ### Matcher subjects and serial execution
 
@@ -102,7 +102,7 @@ The matcher subject is the tool name (`PreToolUse` / `PostToolUse`) or the sessi
 - **Dispose reaches quiescence.** Detached runs are tracked and drained on disposal so no hook process or late callback outlives the fiber.
 - **Dialect-shaped, not maximal.** Payloads stay snake_case with `turn_id` / `model`, stdin carries no trailing newline, and the bridge implements no pre-tool approval or rewrite path — the protocol's shape is preserved even where the harness could do more.
 
-The [hook-bridges Agent Note](../../../.agents/notes/implemented/feature/2026-06-30-hook-bridges.md) records the bridge design and the deferred gaps; the [hook-protocol-lib Agent Note](../../../.agents/notes/implemented/feature/2026-06-30-hook-protocol-lib.md) records the shared-versus-per-dialect split.
+The [hook-bridges Agent Note](../../../.agents/notes/archived/feature/2026-06-30-hook-bridges.md) records the bridge design and the deferred gaps; the [hook-protocol-lib Agent Note](../../../.agents/notes/archived/feature/2026-06-30-hook-protocol-lib.md) records the shared-versus-per-dialect split.
 
 ### Source map
 
@@ -110,7 +110,7 @@ The [hook-bridges Agent Note](../../../.agents/notes/implemented/feature/2026-06
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: config validation, listener registration, per-event payloads, decision mapping |
 | [`src/config.ts`](src/config.ts) | Codex config parsing: the five supported events, matcher validation, skip reasons |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; the `hook/*` pairing checks live in `dsh-hook-protocol`) |
+| — | No runtime invariant companion is published; this bridge publishes hook-protocol session events, whose companion owns which invocation event each result cites. |
 
 </details>
 
@@ -123,7 +123,7 @@ Read these pages when the package-level contract is not enough. They move from t
 
 - [Hooks group map](../README.md) — the sibling group page and its package table.
 - [Hook protocol library](../hook-protocol/README.md) — the shared hook rules this bridge applies.
-- [Hook bridges Agent Note](../../../.agents/notes/implemented/feature/2026-06-30-hook-bridges.md) — the bridge design, decision mapping, and deferred gaps.
+- [Hook bridges Agent Note](../../../.agents/notes/archived/feature/2026-06-30-hook-bridges.md) — the bridge design, decision mapping, and deferred gaps.
 - [Interception extension-points Agent Note](../../../.agents/notes/implemented/feature/2026-06-30-interception-extension-points.md) — the typed-Decision surface the bridge maps onto.
 - [Generated configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-hooks-codex) — every accepted config field and its source declaration.
 
@@ -173,7 +173,7 @@ These limits describe what your Codex hooks cannot do through this bridge yet, a
 - **`PreToolUse` is partial** — blocking works, but `additionalContext`, `permissionDecision: "allow"`, and `updatedInput` are ignored. Every tool is represented as `tool_input: { command }`, so non-shell tool arguments are not faithfully exposed to the hook.
 - **`PostToolUse` is partial** — blocking feedback and JSON `additionalContext` work, but `{"continue": false}` is not enforced, non-shell tool arguments are reduced to `{ command }`, and structured tool output is flattened to text in `tool_response`.
 - **`Stop` is partial** — blocking forces another model turn, but `stop_hook_active` is always `false`, `last_assistant_message` is always `null`, and `{"continue": false}` is not enforced. An unconditionally blocking hook therefore force-continues every step unless it self-limits.
-- **Common payload and output fields are partial** — every mapped event reports the statically configured `model` and `permission_mode: "default"` instead of current Codex runtime values. `systemMessage` is logged + warned but not surfaced, and `{"continue": false}` is recorded but does not apply Codex's event-specific stop behavior.
+- **Common payload and output fields are partial** — every mapped event reports the statically configured `model` and `permission_mode: "default"` instead of current Codex runtime values, and `transcript_path` is never populated: it is always `null`, because the persistence seam exposes no artifact paths and the default-zstd session log is not readable by hook scripts. `systemMessage` is logged + warned but not surfaced, and `{"continue": false}` is recorded but does not apply Codex's event-specific stop behavior.
 - **Config loading and execution are partial** — one process-level `configPath` is parsed at load; Codex's active user, project, session, system/managed, and plugin layers, trust controls, and inline `config.toml` hook form are not implemented. Only synchronous `command` handlers run, current metadata such as `statusMessage` and `commandWindows` is ignored, and matching handlers run serially rather than with Codex's concurrent launch semantics.
 
 <a id="dev-note"></a>

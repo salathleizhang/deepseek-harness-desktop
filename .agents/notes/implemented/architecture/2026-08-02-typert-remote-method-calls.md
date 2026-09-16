@@ -147,7 +147,7 @@ The strict generator writes `scope` only when a direct method has exactly one lo
 
 Parameter order comes from the method signature. HTTP fields come from parameter names or lookup declarations. A cancellation descriptor reserves only the final `signal` position and keeps it outside named `args`; Connection or a direct Gateway caller supplies the actual signal. The Gateway does not infer optional fields, Context types, lookup types, or missing arguments from request contents, and it does not synthesize business defaults.
 
-A LIB codec contains a Zod schema and a canonical `typeSymbol` consisting of "package + public subpath + export name." An SRC codec is marked only as `src-json`. When the Host and consumer run in different JavaScript realms, each holds its own Zod instances, but both sets are generated from the same Typert model and symbol keys.
+A LIB codec contains a success-cached Zod schema factory and a canonical `typeSymbol` consisting of "package + public subpath + export name." Host and Client gateways invoke the factory only when that boundary first encodes or decodes a value. An SRC codec is marked only as `src-json`. When the Host and consumer run in different JavaScript realms, each holds its own Zod instances, but both sets are generated from the same Typert model and symbol keys.
 
 Descriptors exist only in the local registry on each side. The wire carries only the `/api` channel, endpoint, and `{ args }` payload. The Host uses its descriptor to decode and invoke the method, while the Client uses its corresponding descriptor to encode arguments and validate the result.
 

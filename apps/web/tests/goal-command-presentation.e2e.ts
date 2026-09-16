@@ -51,7 +51,7 @@ describe('web e2e: /goal human transcript presentation', () => {
     const input = page.locator('[data-composer-input]').first()
     await input.fill('/go')
     const menu = page.getByRole('listbox', { name: 'Trigger suggestions' })
-    await menu.getByRole('option', { name: 'goal set or view the goal for a long-running task' })
+    await menu.getByRole('option', { name: 'Goal Set or view the goal for a long-running task' })
       .waitFor({ timeout: 10_000 })
     await input.press('Tab')
     await expect.poll(() => input.textContent()).toBe('/goal ')
@@ -67,17 +67,26 @@ describe('web e2e: /goal human transcript presentation', () => {
     const typography = await commandInput.evaluate((element) => {
       const bubble = element.firstElementChild?.firstElementChild
       if (!(bubble instanceof HTMLElement)) throw new Error('command input bubble is missing')
+      const chip = bubble.querySelector('[data-ref-chip="command"]')
+      if (!(chip instanceof HTMLElement)) throw new Error('command chip is missing')
       const rootStyle = getComputedStyle(element)
       const bubbleStyle = getComputedStyle(bubble)
+      const chipStyle = getComputedStyle(chip)
       return {
         fontFamily: bubbleStyle.fontFamily,
         parentFontFamily: rootStyle.fontFamily,
         fontSize: bubbleStyle.fontSize,
         lineHeight: bubbleStyle.lineHeight,
+        chipText: chip.textContent,
+        chipFontFamily: chipStyle.fontFamily,
+        chipFontSize: chipStyle.fontSize,
       }
     })
-    expect(typography).toMatchObject({ fontSize: '14px', lineHeight: '22px' })
-    expect(typography.fontFamily).not.toBe(typography.parentFontFamily)
+    expect(typography).toMatchObject({ fontSize: '14px', lineHeight: '22px', chipText: '/goal', chipFontSize: '14px' })
+    // The bubble reads in the body face like a user bubble; only the command
+    // chip carries the code face that marks the echoed token as a command.
+    expect(typography.fontFamily).toBe(typography.parentFontFamily)
+    expect(typography.chipFontFamily).not.toBe(typography.fontFamily)
     const resultRow = page.locator('[data-variant="others"]').filter({ hasText: 'No goal is currently set.' })
     await expect.poll(() => resultRow.count(), { timeout: 10_000 }).toBe(1)
     expect(await resultRow.getByText('goal', { exact: true }).count()).toBe(1)
@@ -95,6 +104,8 @@ describe('web e2e: /goal human transcript presentation', () => {
     expect(events.some(event => event.type === 'step/start')).toBe(false)
     expect(events.some(event => event.type === 'request/header')).toBe(false)
 
+    // The command result can arrive before Lexical clears the submitted claim.
+    await expect.poll(() => input.textContent(), { timeout: 10_000 }).toBe('')
     const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)
     await compareOrRefreshGolden(UI_EXPECTED, snapshot, MODE)
   }, 60_000)
@@ -113,7 +124,7 @@ describe('web e2e: /goal human transcript presentation', () => {
 
     const sessions = scaffold.ctx.sessions.list()
     expect(sessions).toHaveLength(1)
-    const persisted = sessions[0]?.events ?? []
+    const persisted = sessions[0]?.snapshotEvents() ?? []
     expect(persisted.filter(event => event.type === 'command/run' || event.type === 'command/done')
       .map(event => event.type)).toEqual(['command/run', 'command/done'])
     expect(persisted.some(event => event.type === 'user/message')).toBe(false)

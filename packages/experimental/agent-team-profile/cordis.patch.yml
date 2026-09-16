@@ -1,6 +1,5 @@
-# Private Agent Teams profile layer. Apply after dsh-base so these replacements
-# remove the global continuable-child controls before the scoped Team tools
-# register the overlapping list_agents, send_message, and interrupt_agent names.
+# Experimental Agent Teams profile layer. Apply after dsh-base so these replacements
+# keep direct delegation and coordination on the Team tools.
 
 - id: tool-subagent-control
   disabled: true
@@ -8,20 +7,11 @@
 - id: tool-subagent-list-agents
   disabled: true
 
-- id: tool-subagent-report
+- id: tool-subagent
   disabled: true
 
-- id: tool-subagent
-  config:
-    provider: spawn
-    toolName: subagent
-    backgroundMode: one-shot
-
 - id: tool-subagent-fork
-  config:
-    provider: fork
-    toolName: subagent_fork
-    backgroundMode: one-shot
+  disabled: true
 
 - insert:
     - id: agent-team

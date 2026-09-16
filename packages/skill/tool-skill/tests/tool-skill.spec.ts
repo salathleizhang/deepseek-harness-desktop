@@ -1,22 +1,33 @@
-import { describe, expect, it } from 'vitest'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ToolCallId, type Message } from '@deepseek-ai/dsh-llm'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
-import { Session, SessionId, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-session'
+import {
+  SESSION_FORMAT_VERSION, Session, SessionId, type SessionEvent, type UserMessage,
+} from '@deepseek-ai/dsh-session'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
-import AgentRegistry, { agentEvents, Inbox, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import * as toolSkill from '@deepseek-ai/dsh-tool-skill'
+import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 
 const testToolSignal = new AbortController().signal
 
+/** Every temp dir created by this file, removed after each test. */
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
+
 async function tempDir(name: string): Promise<string> {
-  return await import('node:fs/promises').then(fs => fs.mkdtemp(join(tmpdir(), `dsh-${name}-`)))
+  const dir = await import('node:fs/promises').then(fs => fs.mkdtemp(join(tmpdir(), `dsh-${name}-`)))
+  tempDirs.push(dir)
+  return dir
 }
 
 async function writeSkill(root: string, name: string, description: string, body: string): Promise<void> {
@@ -38,13 +49,15 @@ async function setup(home: string, config: toolSkill.Config = {}): Promise<Conte
 
 function agentForCwd(cwd: string): Agent {
   const id = SessionId(`tool-skill-${cwd}`)
-  const session = Session.create(id, [], { version: 0, id, createdAt: 0, cwd })
+  const session = Session.create(id, [], {
+    version: SESSION_FORMAT_VERSION, id, createdAt: 0, cwd, isSeeded: false,
+  })
   return {
     ctx: new Context(),
     id,
     options: {},
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    inbox: unsupportedInbox(),
     status: 'idle',
     send: () => {},
     followup: () => {},
@@ -57,11 +70,11 @@ function agentForCwd(cwd: string): Agent {
 }
 
 function sessionAgent(session: Session, id = 'tool-skill-agent'): Agent {
-  return {
+  const agent: Agent = {
     id: SessionId(id),
     options: {},
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    inbox: unsupportedInbox(),
     status: 'running',
     ctx: new Context(),
     send: () => {},
@@ -72,6 +85,7 @@ function sessionAgent(session: Session, id = 'tool-skill-agent'): Agent {
     runMaintenance: task => task(new AbortController().signal),
     whenIdle: () => Promise.resolve(),
   }
+  return agent
 }
 
 function openMessageTurn(session: Session, turn = 1): void {
@@ -110,7 +124,7 @@ async function proposeStep(
 }
 
 function catalogMessages(session: Session): Extract<SessionEvent, { type: 'user/message' }>[] {
-  return session.events.filter((event): event is Extract<SessionEvent, { type: 'user/message' }> => event.type === 'user/message'
+  return session.snapshotEvents().filter((event): event is Extract<SessionEvent, { type: 'user/message' }> => event.type === 'user/message'
     && event.data.source.kind === 'skill-catalog')
 }
 
@@ -544,7 +558,7 @@ describe('dsh-tool-skill', () => {
   })
 
   it('treats a malformed durable catalog as unrecognizable instead of failing the step', async () => {
-    // Seeds reach `agent.session.events` from persistence on resume or fork,
+    // Seeds reach `agent.session.snapshotEvents()` from persistence on resume or fork,
     // and seed validation only guarantees a source object with a non-empty
     // `kind`. A catalog whose entries are missing or wrongly shaped must be
     // skipped like any foreign record; throwing here would fail every later
@@ -585,6 +599,18 @@ describe('dsh-tool-skill', () => {
     expect(JSON.stringify(published[0]?.data.content)).toContain('live-skill')
   })
 
+  it('rejects a missing event below the current Session length', async () => {
+    const home = await tempDir('tool-catalog-missing-event')
+    const ctx = await setup(home)
+    const session = Session.create(SessionId('catalog-missing-event'))
+    const agent = sessionAgent(session)
+    openMessageTurn(session)
+    Object.defineProperty(session, 'eventAt', { value: () => undefined })
+
+    await expect(fireStep(ctx, agent, 1, 1))
+      .rejects.toThrow('skill catalog cannot read seq 1 below the current Session length')
+  })
+
   it('re-establishes the current catalog after compaction hides its durable message', async () => {
     const home = await tempDir('tool-catalog-compaction')
     const ctx = await setup(home)
@@ -604,7 +630,7 @@ describe('dsh-tool-skill', () => {
       content: [{ type: 'text', text: 'compacted history' }],
       source: { kind: 'plugin', plugin: 'compact' },
     }), {
-      surfaceOp: { op: 'replace', start: initial.seq, end: initial.seq },
+      surfaceOp: { op: 'replace', startSeq: initial.seq, endSeq: initial.seq },
       sourceEventSeqs: [initial.seq],
     })
 

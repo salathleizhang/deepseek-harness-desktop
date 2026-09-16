@@ -1,19 +1,24 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {
+  ContextMessageNode, ConversationNodeDefinition, SteeringMessageNode, UserMessageNode,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
-import type { ContextMessageNode, SteeringMessageNode, UserMessageNode } from '../contract/snapshot.ts'
 import type { InboxState } from './inbox.ts'
 import { chatNode } from './common.ts'
-import { contextForm, contextProvenance } from './event-projection.ts'
+import { contextForm, contextProducer } from './event-projection.ts'
 
 interface ReferencedUserMessageNode extends UserMessageNode {
   /** Labels cited by the immediately following session-reference context. */
   readonly referenceLabels?: readonly string[]
+  /** Skill names the same step's `skill-invocation` injections loaded. */
+  readonly skillNames?: readonly string[]
 }
 
 interface ReferencedSteeringMessageNode extends SteeringMessageNode {
   /** Labels cited by the immediately following session-reference context. */
   readonly referenceLabels?: readonly string[]
+  /** Skill names the same step's `skill-invocation` injections loaded. */
+  readonly skillNames?: readonly string[]
 }
 
 type MessageNode = ReferencedUserMessageNode | ReferencedSteeringMessageNode | ContextMessageNode
@@ -54,7 +59,7 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
         time: event.time,
         content: event.data.content,
         source: event.data.source,
-        provenance: contextProvenance(event.data.source),
+        producer: contextProducer(event.data.source),
         form: contextForm(event.data.source),
       }
     }

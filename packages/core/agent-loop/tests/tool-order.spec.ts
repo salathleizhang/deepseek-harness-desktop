@@ -25,7 +25,7 @@ async function harness(adapter: MockAdapter, toolOrder?: SystemPromptConfig['too
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(SystemPrompt, { persona: 'stable base', ...toolOrder !== undefined ? { toolOrder } : {} })
+  await ctx.plugin(SystemPrompt, { personaPrefix: 'stable base', ...toolOrder !== undefined ? { toolOrder } : {} })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
@@ -60,7 +60,7 @@ async function runTurn(registrationOrder: string[], toolOrder?: SystemPromptConf
   const adapter = new MockAdapter([textResponse('done')])
   const ctx = await harness(adapter, toolOrder)
   for (const name of registrationOrder) registerNamed(ctx, name)
-  const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+  const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
   agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
   await waitForIdle(ctx, agent)
   return { ctx, agent, adapter }
@@ -69,7 +69,7 @@ async function runTurn(registrationOrder: string[], toolOrder?: SystemPromptConf
 describe('loop-level canonical tool order', () => {
   it('logs the request/header with tools in canonical order, not registration order', async () => {
     const { agent, adapter } = await runTurn(['zulu', 'alpha', 'mike'])
-    const header = foldRequestHeader(agent.session.events)
+    const header = foldRequestHeader(agent.session.snapshotEvents())
     expect(header?.tools?.map(tool => tool.name)).toEqual(['alpha', 'mike', 'zulu'])
     // The dispatched request is built FROM the logged header (whose tools the
     // assembly already canonicalized) and reaches the adapter deep-frozen —
@@ -82,14 +82,14 @@ describe('loop-level canonical tool order', () => {
   it('produces the same header order for any registration order', async () => {
     const first = await runTurn(['alpha', 'mike', 'zulu'])
     const second = await runTurn(['zulu', 'mike', 'alpha'])
-    const names = (run: typeof first) => foldRequestHeader(run.agent.session.events)?.tools?.map(tool => tool.name)
+    const names = (run: typeof first) => foldRequestHeader(run.agent.session.snapshotEvents())?.tools?.map(tool => tool.name)
     expect(names(first)).toEqual(['alpha', 'mike', 'zulu'])
     expect(names(second)).toEqual(names(first))
   })
 
   it('honors a configured toolOrder in the logged header and the dispatched request', async () => {
     const { agent, adapter } = await runTurn(['alpha', 'zulu', 'mike'], ['zulu', TOOL_ORDER_REST])
-    const header = foldRequestHeader(agent.session.events)
+    const header = foldRequestHeader(agent.session.snapshotEvents())
     expect(header?.tools?.map(tool => tool.name)).toEqual(['zulu', 'alpha', 'mike'])
     expect(adapter.requests[0]?.tools?.map(tool => tool.name)).toEqual(['zulu', 'alpha', 'mike'])
     expect(Object.isFrozen(adapter.requests[0])).toBe(true)
@@ -99,14 +99,14 @@ describe('loop-level canonical tool order', () => {
     const adapter = new MockAdapter([textResponse('never sent')])
     const ctx = await harness(adapter, ['ghost', TOOL_ORDER_REST])
     registerNamed(ctx, 'alpha')
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(0)
-    expect(foldRequestHeader(agent.session.events)).toBeUndefined()
-    expect(agent.session.events.some(e => e.type === 'turn/start')).toBe(true)
-    expect(agent.session.events.some(e => e.type === 'turn/end')).toBe(true)
-    expect(agent.session.events.some(e => e.type === 'step/start')).toBe(false)
-    expect(agent.session.events.some(e => e.type === 'step/end')).toBe(false)
+    expect(foldRequestHeader(agent.session.snapshotEvents())).toBeUndefined()
+    expect(agent.session.snapshotEvents().some(e => e.type === 'turn/start')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'turn/end')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'step/start')).toBe(false)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'step/end')).toBe(false)
   })
 })

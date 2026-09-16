@@ -21,7 +21,7 @@
       "path": "../webserver"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../util/launch-environment"
     }
   ]
 }

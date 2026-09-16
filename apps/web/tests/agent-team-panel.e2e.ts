@@ -1,4 +1,4 @@
-// Keyless assembled-browser coverage for the private Agent Teams Web profiles
+// Keyless assembled-browser coverage for the opt-in Agent Teams Web profiles
 // over the real Host Typert Remote flow.
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -64,6 +64,7 @@ describe('web e2e: Agent Teams panel', () => {
     }), { surfaceOp: 'append' })
     agent.session.append('step/start', { turn: 1, step: 1 })
     agent.session.append('assistant/message', {
+      stream: [],
       turn: 1,
       step: 1,
       message: createMessage({

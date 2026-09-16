@@ -11,7 +11,8 @@ import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
@@ -182,7 +183,10 @@ export interface ResolvedConfig {
 /** Process-local activation state crossing the synchronous append boundary. */
 interface GoalRuntimeState {
   activation: GoalActivation
-  pendingActivation: { readonly seq: number; readonly activation: GoalActivation } | undefined
+  pendingActivation: {
+    readonly offset: SessionLogOffset
+    readonly activation: GoalActivation
+  } | undefined
 }
 
 /** Validated create input with every deployment default materialized. */
@@ -248,16 +252,18 @@ export class GoalService extends TypertRemoteService {
     this.resolved = {
       defaultMaxGoalRounds: resolveMaxGoalRounds(config.defaultMaxGoalRounds ?? 256),
     }
-    ctx.on('agent/session-start', ({ agent }) => {
-      this.runtimeState(agent.session).activation = 'disarmed'
+    ctx.on('agent/created', ({ agent }) => {
+      this.setActivation(agent.session, 'disarmed')
     })
     ctx.sessionProjections.register(goalProjectionDefinition)
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'goal/change') return
       const runtime = this.runtimeState(session)
-      runtime.activation = runtime.pendingActivation?.seq === event.seq
+      const activation = runtime.pendingActivation !== undefined
+        && SessionSeq(runtime.pendingActivation.offset) === event.seq
         ? runtime.pendingActivation.activation
         : 'disarmed'
+      this.setActivation(session, activation)
     })
   }
 
@@ -267,6 +273,7 @@ export class GoalService extends TypertRemoteService {
    * @returns a fresh view or `undefined` when no goal is current.
    * @throws {@link GoalError} when the agent is not the registry's live instance.
    */
+  @Remote('get')
   get(agent: Agent): GoalView | undefined {
     this.assertLive(agent)
     return this.view(this.state(agent.session), this.runtimeState(agent.session))
@@ -281,8 +288,8 @@ export class GoalService extends TypertRemoteService {
    */
   disarm(agent: Agent): GoalView | undefined {
     this.assertLive(agent)
+    this.setActivation(agent.session, 'disarmed')
     const runtime = this.runtimeState(agent.session)
-    runtime.activation = 'disarmed'
     return this.view(this.state(agent.session), runtime)
   }
 
@@ -485,6 +492,28 @@ export class GoalService extends TypertRemoteService {
     return runtime
   }
 
+  /** Publish one process-local activation edge when it actually changes. */
+  private setActivation(session: Session, activation: GoalActivation): void {
+    const runtime = this.runtimeState(session)
+    if (runtime.activation === activation) return
+    runtime.activation = activation
+    const state = this.ctx.sessionProjections.stateOf(session, 'goal')
+    /* v8 ignore next -- static inject requires the projection registry before this service activates. */
+    if (state === undefined) return
+    if (state.failure !== null) return
+    const goal = this.view(state.current, runtime)
+    this.ctx.emit('goal/activation-changed', {
+      sessionId: session.id,
+      ...goal === undefined ? {} : {
+        goal: {
+          id: goal.id,
+          revision: goal.revision,
+          activation: goal.activation,
+        },
+      },
+    })
+  }
+
   /** Build a new revision with one replacement phase. */
   private withPhase(current: GoalSnapshot, phase: GoalPhase): GoalSnapshot {
     return {
@@ -579,11 +608,11 @@ export class GoalService extends TypertRemoteService {
   /** Commit one mutation into the goal log and live event stream. */
   private commit(agent: Agent, runtime: GoalRuntimeState, change: GoalChangeMeta, activation: GoalActivation): void {
     const ref = goalChangeRef(change)
-    runtime.pendingActivation = { seq: agent.session.seq, activation }
+    runtime.pendingActivation = { offset: agent.session.seq, activation }
     try {
       const event = agent.session.append('goal/change', change)
       /* v8 ignore next -- Session.append returns the event committed at the pre-append seq. */
-      if (runtime.pendingActivation.seq === event.seq) runtime.activation = activation
+      if (SessionSeq(runtime.pendingActivation.offset) === event.seq) runtime.activation = activation
     } finally {
       runtime.pendingActivation = undefined
     }

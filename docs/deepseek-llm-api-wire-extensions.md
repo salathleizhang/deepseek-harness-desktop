@@ -2,7 +2,7 @@
 
 English | [中文](deepseek-llm-api-wire-extensions.zh.md)
 
-This reference defines every DeepSeek Harness-specific HTTP header and additive JSON field sent by [`@deepseek-ai/dsh-llm-deepseek`](../packages/llm/llm-deepseek/README.md) on `deepseek-official` chat-completion requests. It does not redefine fields owned by the upstream DeepSeek API. The provider-neutral LLM interface and `llm-pi-ai` do not implement these additions.
+This reference defines every DeepSeek Harness-specific HTTP header and additive JSON field sent by [`@deepseek-ai/dsh-llm-deepseek`](../packages/llm/llm-deepseek/README.md) on `deepseek-official` Messages and Chat Completions requests. It does not redefine fields owned by the upstream DeepSeek API. The provider-neutral LLM interface and `llm-pi-ai` do not implement these additions.
 
 The adapter sends the additions to its resolved `baseURL`, including a configured gateway. They remain outside `messages`, system prompts, and tool schemas, so they do not add model-input tokens or alter the model-visible prefix.
 
@@ -24,9 +24,9 @@ The [`DeepSeekLlmApiExtensionRegistry`](../packages/llm/deepseek-llm-api-extensi
 | Header | Presence | Value |
 |---|---|---|
 | `user-agent` | Every provider HTTP request, including Files API operations | Application identity in `product/version (+url)` form; the default product is `deepseek-harness` |
-| `x-deepseek-harness-user-id` | Every authorized chat-completion request | The stable anonymous UUID for the resolved Harness home |
-| `x-deepseek-harness-session-id` | Chat-completion requests carrying a Session id | The exact request `sessionId` string |
-| `x-deepseek-harness-compact` | Chat-completion requests whose purpose is `compaction` | The literal string `1` |
+| `x-deepseek-harness-user-id` | Every authorized model request | The stable anonymous UUID for the resolved Harness home |
+| `x-deepseek-harness-session-id` | Model requests carrying a Session id | The exact request `sessionId` string |
+| `x-deepseek-harness-compact` | Model requests whose purpose is `compaction` | The literal string `1` |
 
 Credential failure happens before anonymous-user-id resolution, so an unauthorized request neither sends these headers nor creates the identity file. A direct request without a Session omits `x-deepseek-harness-session-id`. Session-title requests have no additional purpose header; the ordinary Session-id rule still applies when one carries a `sessionId`.
 
@@ -67,20 +67,21 @@ Every request re-reads active non-group Loader entries from the host tree and, w
 
 The sender deduplicates exact `(name, version)` pairs and sorts first by `name`, then by `version`, with a locale-independent text comparison. Simultaneously active versions of one package remain separate entries. Receivers must not collapse the array by package name or infer package activation from array order.
 
-Disabled, pending, failed, unloading, disposed, and structural Loader entries are absent. Ordinary dependencies, loose modules without a named owning package, programmatically mounted child fibers, and in-memory dynamic plugins are also absent because they have no authoritative Loader package provenance.
+Disabled, pending, failed, unloading, disposed, and structural Loader entries are absent. Ordinary dependencies, loose modules without a named owning package, programmatically mounted child fibers, and in-memory dynamic plugins are also absent because they have no authoritative Loader-backed package identity.
 
 An enabled inventory with no qualifying entries sends `packages: []`; disabling the contributor omits the entire `dsh_plugin_packages` field. Package identities are provider metadata and never enter model input.
 
 ## `dsh_session_log`
 
-[`@deepseek-ai/dsh-session-log-deepseek`](../packages/session/session-log-deepseek/README.md) contributes one contiguous suffix of the canonical Session log. The field is disabled by default. When enabled, it applies to a request with a live Session and at least one event; a direct request, a stale Session id, or an empty log omits the field.
+[`@deepseek-ai/dsh-session-log-deepseek`](../packages/session/session-log-deepseek/README.md) contributes one contiguous suffix of the canonical Session log. The field is enabled by default. It applies to a request with a live Session and at least one event; a direct request, a stale Session id, or an empty log omits the field, and a composition disables it with `enabled: false`. The examples below use logical Session format 2 only to illustrate the wire fields; they do not identify the [current writer format](session-format-status.md).
 
 ```json
 {
   "dsh_session_log": {
     "version": 1,
+    "sessionFormatVersion": 2,
     "session": {
-      "version": 0,
+      "version": 2,
       "id": "session-id",
       "createdAt": 1780000000000
     },
@@ -103,32 +104,33 @@ An enabled inventory with no qualifying entries sends `packages: []`; disabling 
 | Member | Type | Meaning |
 |---|---|---|
 | `version` | `1` | Schema version for `dsh_session_log` |
-| `session` | object | Immutable canonical `SessionHeader` |
+| `sessionFormatVersion` | non-negative integer | Session format generation represented by this suffix |
+| `session` | object | Immutable wire projection of the current Session header |
 | `afterSeq` | integer | Greatest sequence recorded as accepted before this request, or `-1` |
 | `throughSeq` | non-negative integer | Greatest sequence represented by this request |
 | `events` | array | Contiguous events from `afterSeq + 1` through `throughSeq` |
 
 The first upload uses `afterSeq: -1` and carries the complete current log. Each later upload starts after the greatest accepted watermark for the same Session id. The sender snapshots the event array once per request; appends after that snapshot belong to a later request.
 
-### Session header
+### Wire Session header
 
-The `session` member is the exact `Session.header`, not a complete runtime Session. The outer `dsh_session_log.version` selects this extension schema, while `session.version` selects the canonical on-disk Session format; the two version values evolve independently.
+The `session` member projects logical Session metadata to raw JSON primitives. A seeded Session sends its exact `Session.inheritedEventCount` as `seedLength`; an unseeded Session omits that field. The logical `isSeeded` flag does not appear on this wire. The outer `dsh_session_log.version` selects this extension schema, while `session.version` selects the logical Session format. Changing the Session header projection requires an extension-schema bump even when the embedded logical format also changes.
 
 | Member | Presence | Meaning |
 |---|---|---|
-| `version` | required | Canonical Session format version; currently `0` |
+| `version` | required | Logical Session format version from `Session.header`; see [format status](session-format-status.md) |
 | `id` | required | Exact Session id |
 | `createdAt` | required | Non-negative safe-integer Unix epoch milliseconds |
 | `cwd` | optional | Absolute working directory recorded at Session creation |
 | `parentSession` | optional | Parent Session id for a fork |
-| `seedLength` | optional | Number of leading events inherited through the seed |
+| `seedLength` | seeded Sessions only | Exact inherited event count, including zero for an empty inherited prefix |
 | `origin` | optional | Literal `subagent` for a subagent child |
 | `delegationDepth` | optional | Non-negative persisted subagent delegation depth |
 | `agentPreset` | optional | Agent preset id used to compose this Session |
 
 ### Canonical event envelopes
 
-Each `events` item is a complete canonical `SessionEvent`, independent of every other request field. An event always carries `type`, `seq`, `time`, and `data`; it may carry `ignorable: true`, and surface events may additionally carry `sourceEventSeqs` and `surfaceOp`. The sender copies every present member without projection, redaction, or reconstruction.
+Each `events` item carries a canonical event as raw JSON primitives, independently of every other request field. Every event includes `type`, numeric `seq`, `time`, and `data`, with `ignorable: true` preserved when present. Surface events require `surfaceOp`; replacement ranges use numeric `startSeq` and `endSeq`, and system, user, and tool events may also carry numeric `sourceEventSeqs`. Assistant provider metadata remains in its embedded stream. Known log-only events omit surface metadata; restored unknown ignorable records preserve opaque metadata without treating it as a surface operation.
 
 ### Acceptance watermark and at-least-once delivery
 
@@ -141,19 +143,20 @@ After the endpoint returns HTTP 2xx, the contribution appends this canonical eve
   "time": 1780000000002,
   "data": {
     "sessionId": "session-id",
+    "sessionFormatVersion": 2,
     "throughSeq": 7
   }
 }
 ```
 
-`delivery-accepted` means that the configured endpoint returned HTTP 2xx for the containing LLM request. It does not assert SSE completion or remote persistence. The event's `throughSeq` must identify an earlier event, and its `sessionId` identifies the Session whose suffix was sent.
+`delivery-accepted` means that the configured endpoint returned HTTP 2xx for the containing LLM request. It does not assert SSE completion or remote persistence. The event's `throughSeq` must identify an earlier event, its `sessionId` identifies the Session whose suffix was sent, and `sessionFormatVersion` binds the watermark to that exact logical generation. Absence means historical format v0.
 
-The sender folds the greatest matching `throughSeq`, so concurrent accepted requests cannot move the cursor backward. A resumed process rebuilds the cursor from the durable log. A fork ignores inherited watermarks that name its parent, and therefore sends its own complete inherited prefix before advancing under the child id. The watermark event itself belongs to the next unsent suffix.
+The sender folds the greatest matching `throughSeq` for the current Session id and format generation, so concurrent accepted requests cannot move the cursor backward and a watermark from another generation cannot authorize the current suffix. A resumed process rebuilds the cursor from the durable log. A fork ignores inherited watermarks that name another Session, and therefore sends its own complete inherited prefix before advancing under the child id. The watermark event itself belongs to the next unsent suffix.
 
 Transport and non-2xx failures append no watermark. A crash after endpoint acceptance but before local persistence may resend an already accepted range; uncertainty produces duplicates, never a sequence gap. There is no independent upload store, size cap, or truncation path.
 
 ## Exposure and receiver requirements
 
-The request headers expose the Harness application version, one anonymous Harness-home identity, and an optional Session identity. `dsh_plugin_packages` exposes active npm package names and versions. When enabled, `dsh_session_log` may expose the Session working directory, system-prompt snapshots, user and assistant content, raw assistant chunks, tool arguments and results, compaction summaries, feedback, and plugin-owned events. Adapter API keys are not Session events and therefore do not enter the field. A gateway selected through `baseURL` receives the same values as the official endpoint.
+The request headers expose the Harness application version, one anonymous Harness-home identity, and an optional Session identity. `dsh_plugin_packages` exposes active npm package names and versions. Unless a composition disables it, `dsh_session_log` may expose the Session working directory, system-prompt snapshots, user and Assistant content, embedded Assistant streams, failed-attempt output, tool arguments and results, compaction summaries, feedback, and plugin-owned events. Adapter API keys are not Session events and therefore do not enter the field. A gateway selected through `baseURL` receives the same values as the official endpoint.
 
 Receivers address extension fields by name, dispatch each field by its own `version`, preserve distinct package versions, and ignore JSON member ordering. A session-log receiver validates the contiguous sequence range before interpreting event types. An unrecognized canonical event without `ignorable: true` prevents lossless reconstruction. The base request remains usable without either the registry or a particular contribution; field absence means that contribution did not apply to that request.

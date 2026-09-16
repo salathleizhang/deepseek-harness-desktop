@@ -4,9 +4,9 @@
 // or the live adapter (record). Drive steps run in every mode and wait only
 // on generic completion (whenTurnSettled — never model-content selectors, so
 // record cannot hang on a live model answering differently); assertion steps
-// run in replay/refresh only. Settled states only — streaming incrementality
-// is asserted from the persisted assistant/chunk events, not transient DOM.
-// Record: DSH_SNAPSHOT=record rewrites session.jsonl, then a keyless
+// run in replay/refresh only. Settled states only — streaming fidelity is
+// asserted from the durable embedded Assistant stream, not transient DOM.
+// Record: DSH_SNAPSHOT=record writes session.v3.jsonl, then a keyless
 // DSH_SNAPSHOT=refresh regenerates ui.expected.md.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url'
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import { ToolCallId, expandAssistantStream } from '@deepseek-ai/dsh-llm'
+import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import {
   assertFixtureInventory, captureExpandedTurnProcessAria, captureStableAria,
   compareOrRefreshGolden, fixtureUserPrompts,
@@ -26,7 +26,7 @@ import {
 } from './support.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip', import.meta.url))
-const FIXTURE = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip/session.jsonl', import.meta.url))
+const FIXTURE = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip/session.v3.jsonl', import.meta.url))
 const UI_EXPECTED = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip/ui.expected.md', import.meta.url))
 const ECHO_EXPECTED = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip/submission-echo.expected.md', import.meta.url))
 const UI_EXPANDED_EXPECTED = fileURLToPath(
@@ -39,6 +39,12 @@ const MODE = webSnapshotMode()
 // committed fixture recorded exactly it, so drive script and fixture cannot
 // drift apart.
 const PROMPT = 'Use the bash tool to run exactly: echo WEB_E2E_OK. Then reply with the single word DONE and stop.'
+
+/** Rendered text of the system prompt surface node, or undefined when the surface carries none. */
+function systemPromptText(session: Session): string | undefined {
+  const message = session.deriveMessages().find(candidate => candidate.role === 'system')
+  return message?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')
+}
 
 describe('web e2e: fresh round trip through the real assembly', () => {
   let scaffold: WebScaffold
@@ -101,17 +107,22 @@ describe('web e2e: fresh round trip through the real assembly', () => {
     }
   }, 200_000)
 
-  it('records the Web surface, source checkout, and session cwd in the request header', async () => {
+  it('ends the system prompt with the source checkout, Web surface, and session cwd', async () => {
     if (settledSessionId === undefined) throw new Error('the drive turn did not publish a session id')
     const agent = scaffold.ctx.agents.get(settledSessionId)
     if (agent === undefined) throw new Error(`the settled Web agent ${settledSessionId} is no longer live`)
-    const system = agent.session.requestHeader()?.system
+    const system = systemPromptText(agent.session)
     if (system === undefined) throw new Error('the settled Web request has no system prompt')
-    const prefix = system.split('\n\n').slice(0, 4).join('\n\n')
+    const paragraphs = system.split('\n\n')
+    expect(paragraphs.slice(0, 2)).toEqual([
+      'You are an AI agent powered by DeepSeek Harness.',
+      'You are a coding agent powered by the deepseek-v4-flash model.',
+    ])
+    const suffix = paragraphs.slice(-3).join('\n\n')
       .split(REPO_ROOT).join('{{sourceRoot}}')
       .split(join(scaffold.workspaceCwd, 'workspace')).join('{{cwd}}')
       .split(scaffold.baseUrl).join('{{webUrl}}')
-    await compareOrRefreshGolden(WEB_CONTEXT_EXPECTED, prefix, MODE)
+    await compareOrRefreshGolden(WEB_CONTEXT_EXPECTED, suffix, MODE)
   })
 
   it('exposes the assembled Web URL to the real bash tool', async () => {
@@ -154,8 +165,10 @@ describe('web e2e: fresh round trip through the real assembly', () => {
     const turnEnds = sessionEvents.filter(e => e.type === 'turn/end')
     expect(turnEnds.length).toBe(1)
     expect((turnEnds[0] as SessionEvent & { data: { reason: { kind: string } } }).data.reason.kind).toBe('completed')
-    // The persisted chunk events are the authoritative incrementality proof.
-    expect(sessionEvents.filter(e => e.type === 'assistant/chunk').length).toBeGreaterThan(10)
+    // Embedded stream members are the authoritative incrementality proof.
+    expect(sessionEvents.flatMap(e => e.type === 'assistant/message' || e.type === 'assistant/attempt'
+      ? expandAssistantStream(e.data.stream)
+      : []).length).toBeGreaterThan(10)
   }, 60_000)
 
   it.skipIf(MODE === 'record')('matches the conversation aria golden with stable anchors', async () => {
@@ -200,7 +213,7 @@ describe('web e2e: fresh round trip through the real assembly', () => {
   it.skipIf(MODE === 'record')('expands and collapses the reasoning fold from its click target', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-round-trip-think'))
     // Interaction over the REAL wire-delivered transcript (the fixture-client
-    // tier pins the same gesture against the fixture Connection RPC; this one runs on
+    // tier pins the same gesture against RemoteMock; this one runs on
     // follow-stream-fed state). Runs after the golden capture so the committed
     // aria surface stays the untouched settled state.
     await expandTurnProcesses(page)
@@ -216,7 +229,7 @@ describe('web e2e: fresh round trip through the real assembly', () => {
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])
     await assertFixtureInventory(SNAPSHOT_DIR, [
-      'session.jsonl',
+      'session.v3.jsonl',
       'submission-echo.expected.md',
       'system-prompt.expected.md',
       'tool-schemas.expected.json',

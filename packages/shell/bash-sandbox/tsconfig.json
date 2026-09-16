@@ -15,7 +15,7 @@
       "path": "../../../vendor/cordis"
     },
     {
-      "path": "../../../native/landlock-run/packages/entry"
+      "path": "../../../native/system/packages/entry"
     },
     {
       "path": "../../util/brand"
@@ -34,9 +34,6 @@
     },
     {
       "path": "../../shell/bash-local"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     }
   ]
 }

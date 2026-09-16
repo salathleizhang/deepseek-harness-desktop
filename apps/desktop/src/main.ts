@@ -1,789 +1,525 @@
+/** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+
+import { readFile, writeFile } from 'node:fs/promises'
+import { extname, join, normalize, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   app,
   BrowserWindow,
   dialog,
   ipcMain,
   Menu,
-  nativeImage,
-  Notification,
-  session,
-  shell,
-  Tray,
-  type MenuItemConstructorOptions,
-  type NativeImage,
+  protocol,
+  type IpcMainInvokeEvent,
 } from 'electron'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { HarnessSupervisor } from './harness.ts'
-import { resolveDesktopEnv, type DesktopEnv } from './env.ts'
-import { UpdateController } from './update.ts'
-import type { UpdateStatus } from './update-status.ts'
-import { createDesktopLifecycle, type DesktopLifecycle } from './window-lifecycle.ts'
-import { HIDDEN_LAUNCH_ARG, shouldStartHidden, type LoginItemController } from './autolaunch.ts'
-import {
-  createNotificationThrottle,
-  RECOVERED_KEY,
-  RECOVERED_NOTIFICATION,
-  restartNotificationFor,
-  type NotificationSink,
-} from './notifications.ts'
-import {
-  createPreferencesStore,
-  DEFAULT_PREFERENCES,
-  type CloseBehavior,
-  type PreferencesStore,
-} from './preferences.ts'
-import {
-  detectConnectingLocale,
-  renderConnectingPage,
-  type ConnectingLocale,
-} from './connecting-page.ts'
-import { revealLogFile, type LogRevealShell } from './log.ts'
+import { resolveDesktopPaths } from './paths.ts'
+import { DesktopProjectManager, type DesktopProjectHooks } from './project-manager.ts'
+import { DesktopHostProcess } from './host-process.ts'
+import { DesktopBackendController, type DesktopBackendState } from './backend-controller.ts'
+import { DESKTOP_IPC, type DesktopUpdateState } from './ipc.ts'
+import { formatDesktopMessage, resolveDesktopLocale } from './locale.ts'
+import { claimDesktopSingleInstance } from './single-instance.ts'
+import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+import { desktopErrorState } from './startup-error.ts'
+import { startupFailureDocument } from './startup-document.ts'
 
-const APP_NAME = 'DeepSeek Harness'
-
-/** Deep-link scheme the shell forwards to the renderer untouched. */
-const DEEP_LINK_PREFIX = 'dsh://'
-
-/** IPC channel the connecting page uses to ask the main process to reveal `harness.log`. */
-const OPEN_LOG_CHANNEL = 'dsh:open-log'
-
-/**
- * Wrap Electron's `shell` into the {@link LogRevealShell} shape the pure
- * `revealLogFile` helper expects, so production code and tests share the
- * same call site.
- */
-const logRevealShell: LogRevealShell = {
-  showItemInFolder: (path) => { shell.showItemInFolder(path) },
-  openPath: path => shell.openPath(path),
+const SCHEME = 'dsh-app'
+let focusPrimaryWindow = (): void => {}
+type RecoveryAction = 'restart' | 'plugins' | 'reset'
+let profileRecoveryAvailable = (): boolean => false
+const emergencyPages = new WeakMap<BrowserWindow, { url: string; message: string; busy: boolean }>()
+let recoverApplication = (action: RecoveryAction): Promise<void> => {
+  if (action !== 'restart') return Promise.reject(new Error('Desktop recovery could not initialize; reinstall the application'))
+  app.relaunch()
+  app.quit()
+  return Promise.resolve()
 }
 
+async function showEmergencyDocument(window: BrowserWindow, message: string): Promise<void> {
+  const document = startupFailureDocument(resolveDesktopLocale(app.getLocale()), message, profileRecoveryAvailable())
+  const url = `data:text/html;charset=utf-8,${encodeURIComponent(document)}`
+  emergencyPages.set(window, { url, message, busy: false })
+  await window.loadURL(url)
+}
 
-/**
- * Frameless Windows caption + minimal drag chrome.
- * A wide mid-header drag overlay previously swallowed clicks on "子代理"
- * and the Files/Changes tabs. Keep only a thin top edge + left brand strip,
- * paint visible caption buttons, and show grab cursor on drag regions.
- */
-const WINDOW_DRAG_CSS = `
-body { -webkit-app-region: no-drag; }
-/* Hairline along the very top — safe to drag without covering controls. */
-#dsh-desktop-drag-edge {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 138px;
-  height: 6px;
-  z-index: 2147483646;
-  -webkit-app-region: drag;
-  -webkit-user-select: none;
-  user-select: none;
-  cursor: grab;
-}
-#dsh-desktop-drag-edge:active { cursor: grabbing; }
-/* Left brand gutter only — does not cover center header or right panel tabs. */
-#dsh-desktop-drag {
-  position: fixed;
-  top: 6px;
-  left: 0;
-  width: 168px;
-  height: 34px;
-  z-index: 2147483645;
-  -webkit-app-region: drag;
-  -webkit-user-select: none;
-  user-select: none;
-  cursor: grab;
-}
-#dsh-desktop-drag:active { cursor: grabbing; }
-[data-skin-chrome="titlebar"] { -webkit-app-region: no-drag; }
-[data-skin-chrome="titlebar"] > span:not([class*="TitlebarBtn"]):not([data-dsh-caption]) {
-  -webkit-app-region: drag;
-  -webkit-user-select: none;
-  user-select: none;
-  cursor: grab;
-}
-[data-skin-chrome="titlebar"] [class*="TitlebarBtn"],
-[data-skin-chrome="titlebar"] [data-dsh-caption],
-#dsh-desktop-caption,
-#dsh-desktop-caption * {
-  -webkit-app-region: no-drag !important;
-  pointer-events: auto !important;
-  -webkit-user-select: none;
-  user-select: none;
-  cursor: pointer;
-}
-#dsh-desktop-caption {
-  position: fixed;
-  top: 0;
-  right: 0;
-  z-index: 2147483647;
-  height: 40px;
-  display: flex;
-  align-items: stretch;
-  margin: 0;
-  padding: 0;
-  gap: 0;
-  box-sizing: border-box;
-  -webkit-app-region: no-drag;
-}
-#dsh-desktop-caption button {
-  width: 46px;
-  height: 40px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: #3c4043;
-  font: 16px/40px "Segoe UI Symbol", "Segoe UI", sans-serif;
-  cursor: pointer;
-  -webkit-app-region: no-drag !important;
-}
-#dsh-desktop-caption button:hover { background: #00000014; }
-#dsh-desktop-caption button[data-dsh-caption="close"]:hover {
-  background: #e81123;
-  color: #fff;
-}
-#dsh-desktop-caption[data-mode="overlay"] button {
-  color: transparent;
-  background: transparent;
-  font-size: 0;
-}
-#dsh-desktop-caption[data-mode="overlay"] button:hover {
-  background: #ffffff33;
-  color: transparent;
-}
-#dsh-desktop-caption[data-mode="overlay"] button[data-dsh-caption="close"]:hover {
-  background: #e81123;
-}
-button, a, input, textarea, select, [role="button"], [role="textbox"],
-[role="menuitem"], [contenteditable="true"], canvas, iframe, video {
-  -webkit-app-region: no-drag !important;
-}
-`
+protocol.registerSchemesAsPrivileged([{
+  scheme: SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: false,
+    stream: true,
+    codeCache: true,
+  },
+}])
 
-/** Inject drag strip + caption buttons (works with or without a skin titlebar). */
-const WIRE_SKIN_CAPTION_JS = `(() => {
-  const api = window.dshDesktop;
-  if (!api || typeof api.minimize !== 'function') return;
-  if (document.getElementById('dsh-desktop-chrome')) return;
+const MIME: Readonly<Record<string, string>> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml',
+}
 
-  const root = document.createElement('div');
-  root.id = 'dsh-desktop-chrome';
+interface RuntimeResources {
+  readonly node: string
+  readonly pnpm: string
+  readonly dsh: string
+  readonly profileResolution?: 'runtime'
+}
 
-  const edge = document.createElement('div');
-  edge.id = 'dsh-desktop-drag-edge';
-  edge.setAttribute('aria-hidden', 'true');
-  edge.title = '拖动窗口';
+function runtimeResources(): RuntimeResources {
+  const development = !app.isPackaged
+  const node = development
+    ? process.env.DSH_DESKTOP_NODE_BINARY
+      ?? join(process.resourcesPath, 'runtime', 'node', process.platform === 'win32' ? 'node.exe' : 'node')
+    : process.execPath
+  const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
+    ?? join(process.resourcesPath, 'runtime', 'pnpm', 'bin', 'pnpm.mjs')
+  const dsh = (development ? process.env.DSH_DESKTOP_DSH_DIR : undefined)
+    ?? (development ? join(process.resourcesPath, 'dsh') : join(app.getAppPath(), 'dsh'))
+  return { node, pnpm, dsh, ...(development ? {} : { profileResolution: 'runtime' }) }
+}
 
-  const drag = document.createElement('div');
-  drag.id = 'dsh-desktop-drag';
-  drag.setAttribute('aria-hidden', 'true');
-  drag.title = '拖动窗口';
-
-  const bar = document.createElement('div');
-  bar.id = 'dsh-desktop-caption';
-  bar.setAttribute('role', 'group');
-  bar.setAttribute('aria-label', 'Window controls');
-
-  const syncMode = () => {
-    bar.dataset.mode = document.querySelector('[data-skin-chrome="titlebar"]') ? 'overlay' : 'chrome';
-  };
-
-  const actions = [
-    ['min', 'Minimize', '–', () => api.minimize()],
-    ['max', 'Maximize', '□', () => api.maximize()],
-    ['close', 'Close', '×', () => api.close()],
-  ];
-  for (const [id, label, glyph, run] of actions) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.dataset.dshCaption = id;
-    btn.setAttribute('aria-label', label);
-    btn.textContent = glyph;
-    btn.style.webkitAppRegion = 'no-drag';
-    const fire = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      void run();
-    };
-    btn.addEventListener('pointerdown', fire, true);
-    btn.addEventListener('mousedown', fire, true);
-    btn.addEventListener('click', fire, true);
-    btn.addEventListener('dblclick', fire, true);
-    bar.appendChild(btn);
+function developmentHostInspectPort(enabled: boolean): number | undefined {
+  const configured = process.env.DSH_DESKTOP_HOST_INSPECT_PORT
+  if (!enabled || configured === undefined || configured === '') return undefined
+  const port = Number(configured)
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('dsh desktop: DSH_DESKTOP_HOST_INSPECT_PORT must be an integer from 1 through 65535')
   }
-
-  root.append(edge, drag, bar);
-  const mount = () => {
-    if (!document.body) return false;
-    document.body.appendChild(root);
-    syncMode();
-    new MutationObserver(syncMode).observe(document.documentElement, { childList: true, subtree: true });
-    return true;
-  };
-  if (!mount()) {
-    document.addEventListener('DOMContentLoaded', () => { mount(); }, { once: true });
-  }
-})()`
-
-let mainWindow: BrowserWindow | null = null
-let supervisor: HarnessSupervisor | null = null
-let tray: Tray | null = null
-let lifecycle: DesktopLifecycle | null = null
-let updater: UpdateController | null = null
-let quitReleased = false
-let pendingDeepLink: string | null = null
-let preferencesStore: PreferencesStore | null = null
-let notificationsEnabled = DEFAULT_PREFERENCES.notificationsEnabled
-let hiddenLaunch = false
-let connectingTimer: NodeJS.Timeout | null = null
-let connectingLocale: ConnectingLocale = 'en'
-/** Resolved shell env; populated during `boot` and read by IPC handlers. */
-let currentEnv: DesktopEnv | null = null
-
-/** Status reported while no updater exists (development or non-packaged runs). */
-const UNSUPPORTED_STATUS: UpdateStatus = { phase: 'unsupported' }
-
-/**
- * Resolve the branded app icon for window chrome, tray (Windows), and toasts.
- * Packaged builds read `desktop-resources/icon.png`; development uses `build/icon.png`.
- * @returns absolute path when the asset exists, else undefined.
- */
-function resolveAppIcon(): string | undefined {
-  const candidates = app.isPackaged
-    ? [join(process.resourcesPath, 'desktop-resources', 'icon.png')]
-    : [join(app.getAppPath(), 'build', 'icon.png'), join(app.getAppPath(), 'resources', 'icon.png')]
-  return candidates.find(candidate => existsSync(candidate))
+  return port
 }
 
-/** Load the tray glyph: macOS template PNG, Windows branded icon, empty fallback. */
-function trayImage(): NativeImage {
-  const base = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const dir = app.isPackaged ? join(base, 'desktop-resources') : join(base, 'resources')
-  const path = process.platform === 'darwin'
-    ? join(dir, 'trayTemplate.png')
-    : (resolveAppIcon() ?? join(dir, 'trayTemplate.png'))
-  const image = existsSync(path) ? nativeImage.createFromPath(path) : nativeImage.createEmpty()
-  if (process.platform === 'darwin') image.setTemplateImage(true)
-  return image
-}
-
-function isExternalUrl(raw: string): boolean {
-  try {
-    const url = new URL(raw)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
-function hasOrigin(raw: string, expected: string): boolean {
-  try {
-    return new URL(raw).origin === expected
-  } catch {
-    return false
-  }
-}
-
-/** Install navigation and permission policy before the first renderer loads. */
-function hardenSession(): void {
-  const desktopSession = session.defaultSession
-  const allow = new Set(['clipboard-read', 'clipboard-sanitized-write'])
-  desktopSession.setPermissionCheckHandler((_wc, permission) => allow.has(permission))
-  desktopSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(allow.has(permission))
-  })
-}
-
-function createWindow(): BrowserWindow {
-  const appIcon = resolveAppIcon()
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 960,
-    minHeight: 640,
-    show: false,
-    autoHideMenuBar: true,
-    minimizable: true,
-    maximizable: true,
-    closable: true,
-    // Frameless on Windows so skins are not covered by native caption buttons.
-    // macOS still uses hidden-inset traffic lights; Windows gets WINDOW_DRAG_CSS.
-    frame: process.platform !== 'win32',
-    ...(process.platform === 'darwin' ? {
-      titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 16, y: 12 },
-      vibrancy: 'sidebar',
-      visualEffectState: 'followWindow',
-      transparent: true,
-      backgroundColor: '#00000000',
-    } : process.platform === 'win32' ? {
-      backgroundMaterial: 'acrylic',
-      hasShadow: true,
-      roundedCorners: true,
-      thickFrame: true,
-    } : {
-      transparent: true,
-      backgroundColor: '#00000000',
-    }),
-    title: APP_NAME,
-    ...(appIcon === undefined ? {} : { icon: appIcon }),
+function createWindow(preload: string, show = false): BrowserWindow {
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 880,
+    minHeight: 600,
+    show,
     webPreferences: {
-      preload: join(app.getAppPath(), 'preload.cjs'),
-      contextIsolation: true,
+      preload,
       nodeIntegration: false,
+      contextIsolation: true,
       sandbox: true,
       webSecurity: true,
     },
   })
-  win.once('ready-to-show', () => {
-    if (!(lifecycle?.isQuitting ?? false) && !hiddenLaunch) win.show()
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event, url) => {
+    if (new URL(url).protocol !== `${SCHEME}:`) event.preventDefault()
+    const page = emergencyPages.get(window)
+    if (page === undefined || page.busy || window.webContents.getURL() !== page.url) return
+    const action = new URL(url)
+    if (action.protocol !== 'dsh-recovery:' || !['restart', 'plugins', 'reset'].includes(action.hostname)) return
+    if (action.hostname !== 'restart' && !profileRecoveryAvailable()) return
+    page.busy = true
+    void recoverApplication(action.hostname as RecoveryAction).catch(async (error: unknown) => {
+      if (!window.isDestroyed()) await showEmergencyDocument(window, `${page.message}\n${desktopErrorState(error).message}`)
+    }).catch((error: unknown) => { console.error(error) }).finally(() => { page.busy = false })
   })
-  // An ordinary close hides to the tray; the Host stays alive until an
-  // explicit quit disposes it (see window-lifecycle.ts).
-  win.on('close', (event) => { lifecycle?.onWindowClose(event) })
-  win.on('closed', () => {
-    if (mainWindow === win) mainWindow = null
+  return window
+}
+
+function assertDesktopSender(event: IpcMainInvokeEvent, hostnames: readonly string[]): void {
+  const senderFrame = event.senderFrame
+  if (senderFrame === null) throw new Error('dsh desktop: rejected IPC without a sender frame')
+  const url = new URL(senderFrame.url)
+  if (url.protocol !== `${SCHEME}:` || !hostnames.includes(url.hostname)) {
+    throw new Error('dsh desktop: rejected IPC from an unowned renderer')
+  }
+}
+
+async function serveShellAsset(request: Request): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 })
+  const root = resolve(app.getAppPath(), 'renderer')
+  const url = new URL(request.url)
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname)
+  } catch {
+    return new Response(null, { status: 400 })
+  }
+  const target = resolve(normalize(join(root, pathname)))
+  if (target !== root && !target.startsWith(root + sep)) return new Response(null, { status: 403 })
+  try {
+    const body = request.method === 'HEAD' ? null : await readFile(target)
+    return new Response(body, { headers: { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' } })
+  } catch {
+    return new Response(null, { status: 404 })
+  }
+}
+
+async function main(): Promise<void> {
+  const resources = runtimeResources()
+  const paths = resolveDesktopPaths()
+  const development = app.isPackaged ? undefined : join(app.getAppPath(), '.desktop-build', 'development', 'project')
+  const activeProject = development ?? paths.profile
+  const manager = new DesktopProjectManager(paths, resources)
+  profileRecoveryAvailable = () => development === undefined && manager.canRecoverProfile()
+  let pageError: Extract<DesktopBackendState, { phase: 'error' }> | undefined
+  let quitting = false
+  let startup: Promise<void> | undefined
+  let mainWindow: BrowserWindow | undefined
+  let pluginWindow: BrowserWindow | undefined
+  let shellInstallerOwnsQuit = false
+  let updateState: DesktopUpdateState = { phase: 'idle' }
+  const locale = resolveDesktopLocale(app.getLocale())
+  const messages = locale.messages
+  const appPreload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))
+  const managementPreload = fileURLToPath(new URL('./preload.cjs', import.meta.url))
+  const startupUrl = `${SCHEME}://shell/startup.html`
+  const applicationUrl = `${SCHEME}://app/index.html`
+  let navigation: { window: BrowserWindow; url: string; promise: Promise<void> } | undefined
+  let emergencyDocument = false
+
+  const showEmergencyError = async (error: unknown): Promise<void> => {
+    if (quitting || emergencyDocument) return
+    emergencyDocument = true
+    const diagnostic = desktopErrorState(error).message
+    pageError = { phase: 'error', message: diagnostic }
+    if (mainWindow !== undefined) await showEmergencyDocument(mainWindow, diagnostic)
+  }
+
+  const navigateMain = (url: string): Promise<void> => {
+    const window = mainWindow
+    if (quitting || emergencyDocument || window === undefined || window.isDestroyed()) return Promise.resolve()
+    if (navigation?.window === window && navigation.url === url) return navigation.promise
+    const next = { window, url, promise: Promise.resolve() }
+    next.promise = window.loadURL(url).catch((error: unknown) => {
+      if (quitting || window.isDestroyed() || navigation !== next) return
+      navigation = undefined
+      throw error
+    })
+    navigation = next
+    return next.promise
+  }
+  const backendState = (): DesktopBackendState => {
+    const state = pageError ?? backend.state
+    return state.phase === 'error' ? { ...state, profileRecovery: profileRecoveryAvailable() } : state
+  }
+  const publishBackend = (state: DesktopBackendState): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(DESKTOP_IPC.backendState, state)
+    }
+  }
+  const backend = new DesktopBackendController((onFailure) => {
+    if (development === undefined) manager.assertProfileRuntime(activeProject)
+    const hostInspectPort = developmentHostInspectPort(development !== undefined)
+    const host = new DesktopHostProcess(resources.node, development ?? resources.dsh, activeProject,
+      hostInspectPort, process.env, onFailure)
+    return {
+      start: () => host.start(),
+      stop: () => host.stop(),
+      fetch: (request: Request) => host.fetch(request),
+    }
+  }, (state) => {
+    if (state.phase === 'starting' && !emergencyDocument) pageError = undefined
+    publishBackend(backendState())
+    if (state.phase === 'error') void navigateMain(startupUrl).catch((error: unknown) => { console.error(error) })
   })
-  win.webContents.on('will-navigate', (event, url) => {
-    const origin = supervisor?.url
-    if (origin !== null && origin !== undefined && hasOrigin(url, origin)) return
+
+  const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
+    updateState = state
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(DESKTOP_IPC.updatesState, state)
+    }
+    return state
+  }
+
+  const hooks: DesktopProjectHooks = {
+    beforeChange: () => backend.stop(),
+    afterChange: () => backend.start(async () => {}),
+  }
+
+  recoverApplication = async (action): Promise<void> => {
+    await startup?.catch(() => undefined)
+    await backend.stop()
+    if (action === 'restart') {
+      app.relaunch()
+      app.quit()
+      return
+    }
+    if (!profileRecoveryAvailable()) throw new Error(messages.startupReinstallAdvice)
+    if (action === 'reset') await manager.resetConfiguration(hooks)
+    else await manager.mutate({ type: 'plugins-disable-all' }, hooks)
+    emergencyDocument = false
+    pageError = undefined
+    navigation = undefined
+    await navigateMain(applicationUrl)
+  }
+
+  const showStartupError = async (error: unknown): Promise<void> => {
+    if (quitting) return
+    pageError = desktopErrorState(error)
+    try { await navigateMain(startupUrl) }
+    catch (navigationError) {
+      await showEmergencyError(new AggregateError([error, navigationError], messages.startupFailed))
+    }
+    publishBackend(backendState())
+  }
+  const reconcileBackend = (): Promise<void> => {
+    startup ??= (async () => {
+      pageError = undefined
+      await navigateMain(startupUrl)
+      await backend.start(async () => {
+        if (development === undefined) {
+          await manager.applyRelease()
+        }
+      })
+      if (backend.host !== undefined) await navigateMain(applicationUrl)
+    })().catch(async (error: unknown) => {
+      await showStartupError(error)
+      throw error
+    }).finally(() => { startup = undefined })
+    return startup
+  }
+
+  const updates = new DesktopUpdateCoordinator(
+    publishUpdate,
+    async () => {
+      shellInstallerOwnsQuit = true
+      await backend.stop()
+    },
+  )
+
+  protocol.handle(SCHEME, (request) => {
+    const url = new URL(request.url)
+    if (url.hostname === 'shell') return serveShellAsset(request).then((response) => {
+      if (response.status >= 400 && ['/startup.html', '/startup.js', '/startup.css'].includes(url.pathname)) {
+        void showEmergencyError(new Error(`Desktop recovery resource could not be loaded: ${url.pathname} (HTTP ${response.status})`))
+          .catch((error: unknown) => { console.error(error) })
+      }
+      return response
+    })
+    if (url.hostname !== 'app') return Promise.resolve(new Response(null, { status: 404 }))
+    const active = backend.host
+    if (active === undefined) return Promise.resolve(new Response('backend unavailable', { status: 503 }))
+    return active.fetch(request)
+  })
+
+  const mutate = async (event: IpcMainInvokeEvent, mutation: Parameters<DesktopProjectManager['mutate']>[0]): Promise<void> => {
+    assertDesktopSender(event, ['shell'])
+    if (development !== undefined) {
+      throw new Error('dsh desktop: plugin package changes require a packaged application')
+    }
+    await startup?.catch(() => undefined)
+    pageError = undefined
+    await navigateMain(startupUrl)
+    try {
+      await manager.mutate(mutation, hooks)
+      await navigateMain(applicationUrl)
+    } catch (error) {
+      await showStartupError(error)
+      throw error
+    }
+  }
+  ipcMain.handle(DESKTOP_IPC.localeGet, (event) => {
+    assertDesktopSender(event, ['shell'])
+    return locale
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsList, (event) => {
+    assertDesktopSender(event, ['shell'])
+    if (development !== undefined) return []
+    return manager.listPlugins()
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsAdd, (event, spec: unknown) => {
+    if (typeof spec !== 'string') throw new Error('dsh desktop: plugin spec must be a string')
+    return mutate(event, { type: 'plugin-add', spec })
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsRemove, (event, name: unknown) => {
+    if (typeof name !== 'string') throw new Error('dsh desktop: plugin name must be a string')
+    return mutate(event, { type: 'plugin-remove', name })
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsUpdate, (event, name: unknown, version: unknown) => {
+    if (typeof name !== 'string' || typeof version !== 'string') {
+      throw new Error('dsh desktop: plugin name and version must be strings')
+    }
+    return mutate(event, { type: 'plugin-update', name, version })
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsToggle, (event, name: unknown, enabled: unknown) => {
+    if (typeof name !== 'string' || typeof enabled !== 'boolean') throw new Error('dsh desktop: invalid plugin activation request')
+    return mutate(event, { type: 'plugin-toggle', name, enabled })
+  })
+  ipcMain.handle(DESKTOP_IPC.pluginsDisableAll, event => mutate(event, { type: 'plugins-disable-all' }))
+  ipcMain.handle(DESKTOP_IPC.backendStatus, (event) => {
+    assertDesktopSender(event, ['shell'])
+    return backendState()
+  })
+  ipcMain.handle(DESKTOP_IPC.backendRetry, async (event) => {
+    assertDesktopSender(event, ['shell'])
+    await reconcileBackend()
+    focusPrimaryWindow()
+  })
+  ipcMain.handle(DESKTOP_IPC.applicationRestart, async (event) => {
+    assertDesktopSender(event, ['shell'])
+    try {
+      await recoverApplication('restart')
+    } catch (error) {
+      await showStartupError(error)
+    }
+  })
+  ipcMain.handle(DESKTOP_IPC.configurationReset, async (event) => {
+    assertDesktopSender(event, ['shell'])
+    if (development !== undefined) throw new Error('Desktop configuration reset requires a packaged application')
+    const failure = backendState()
+    if (failure.phase !== 'error') {
+      throw new Error('Desktop profile reset requires a startup failure')
+    }
+    await startup?.catch(() => undefined)
+    try {
+      await recoverApplication('reset')
+    } catch (error) {
+      await showStartupError(error)
+    }
+  })
+  ipcMain.handle(DESKTOP_IPC.updatesCheck, async (event) => {
+    assertDesktopSender(event, ['shell'])
+    return updates.check()
+  })
+  ipcMain.handle(DESKTOP_IPC.updatesInstall, async (event) => {
+    assertDesktopSender(event, ['shell'])
+    await updates.install()
+  })
+
+  const checkAndPrompt = async (manual: boolean): Promise<void> => {
+    const state = await updates.check()
+    if (state.phase === 'error') {
+      if (manual) {
+        await dialog.showMessageBox({
+          type: 'error',
+          title: messages.updateCheckFailedTitle,
+          message: state.message ?? messages.unknownError,
+        })
+      }
+      return
+    }
+    if (state.phase !== 'available') {
+      if (manual) {
+        await dialog.showMessageBox({
+          type: 'info',
+          title: messages.updateCheckTitle,
+          message: state.message ?? messages.updateCurrent,
+        })
+      }
+      return
+    }
+    const result = await dialog.showMessageBox({
+      type: 'info',
+      title: messages.updateTitle,
+      message: messages.updateAvailable,
+      detail: formatDesktopMessage(messages.updateDetail, { version: state.version ?? '' }),
+      buttons: [messages.installAndRestart, messages.later],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (result.response !== 0) return
+    const installed = await updates.install()
+    if (installed.phase === 'error') {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: messages.updateFailedTitle,
+        message: installed.message ?? messages.unknownError,
+      })
+    }
+  }
+
+  const openPluginWindow = (): void => {
+    if (pluginWindow !== undefined && !pluginWindow.isDestroyed()) {
+      pluginWindow.focus()
+      return
+    }
+    pluginWindow = createWindow(managementPreload)
+    pluginWindow.setSize(900, 620)
+    pluginWindow.setTitle(messages.pluginWindowTitle)
+    pluginWindow.once('ready-to-show', () => { pluginWindow?.show() })
+    pluginWindow.once('closed', () => { pluginWindow = undefined })
+    void pluginWindow.loadURL(`${SCHEME}://shell/plugin-manager.html`)
+  }
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{
+    label: process.platform === 'darwin' ? app.name : messages.application,
+    submenu: [
+      {
+        label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
+        accelerator: 'CmdOrCtrl+,',
+        enabled: development === undefined,
+        click: openPluginWindow,
+      },
+      { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+      { type: 'separator' },
+      { role: 'quit' },
+    ],
+  }]))
+
+  const createMainWindow = (): BrowserWindow => {
+    const window = createWindow(appPreload, true)
+    mainWindow = window
+    window.on('closed', () => { if (mainWindow === window) mainWindow = undefined })
+    window.webContents.on('preload-error', (_event, _path, error) => {
+      void showEmergencyError(error).catch((failure: unknown) => { console.error(failure) })
+    })
+    window.webContents.on('render-process-gone', (_event, details) => {
+      navigation = undefined
+      emergencyDocument = false
+      void showStartupError(new Error(`Desktop renderer exited: ${details.reason}`))
+        .catch((failure: unknown) => { console.error(failure) })
+    })
+    return window
+  }
+  focusPrimaryWindow = () => {
+    const window = mainWindow
+    if (window === undefined || window.isDestroyed()) {
+      createMainWindow()
+      void navigateMain(backendState().phase === 'ready' ? applicationUrl : startupUrl)
+        .catch((error: unknown) => { console.error(error) })
+      return
+    }
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  }
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) focusPrimaryWindow()
+  })
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+  app.on('before-quit', (event) => {
+    if (shellInstallerOwnsQuit || quitting) return
     event.preventDefault()
-    if (isExternalUrl(url)) void shell.openExternal(url)
+    quitting = true
+    void backend.close().catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
   })
-  // The shell opens no second windows; hand external navigation to the browser.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternalUrl(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-  win.webContents.on('did-finish-load', () => {
-    if (process.platform === 'win32' && !win.isDestroyed()) {
-      void win.webContents.insertCSS(WINDOW_DRAG_CSS)
-      void win.webContents.executeJavaScript(WIRE_SKIN_CAPTION_JS, true)
-    }
-    if (pendingDeepLink !== null && !win.isDestroyed()) {
-      win.webContents.send('dsh:deep-link', pendingDeepLink)
-      pendingDeepLink = null
-    }
-  })
-  return win
-}
 
-function windowFromEvent(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
-  return BrowserWindow.fromWebContents(event.sender)
-}
-
-/** Snapshot returned to the Web GUI launch-at-login row. */
-interface LaunchAtLoginState {
-  enabled: boolean
-  /** False in unpackaged Electron so the UI stays off and disabled. */
-  available: boolean
-}
-
-function readLaunchAtLoginState(): LaunchAtLoginState {
-  const enabled = preferencesStore?.read().launchAtLoginEnabled ?? DEFAULT_PREFERENCES.launchAtLoginEnabled
-  return { enabled, available: app.isPackaged }
-}
-
-function writeLaunchAtLoginEnabled(enabled: boolean): LaunchAtLoginState {
-  if (!app.isPackaged) return { enabled: false, available: false }
-  createLoginItemController().setEnabled(enabled)
-  const current = preferencesStore?.read() ?? { ...DEFAULT_PREFERENCES }
-  preferencesStore?.write({ ...current, launchAtLoginEnabled: enabled })
-  refreshTrayMenu()
-  return { enabled, available: true }
-}
-
-/** Snapshot returned to the Web GUI system-notifications row. */
-interface NotificationsPrefState {
-  enabled: boolean
-}
-
-function readNotificationsState(): NotificationsPrefState {
-  const enabled = preferencesStore?.read().notificationsEnabled ?? DEFAULT_PREFERENCES.notificationsEnabled
-  return { enabled }
-}
-
-function writeNotificationsEnabled(enabled: boolean): NotificationsPrefState {
-  notificationsEnabled = enabled
-  const current = preferencesStore?.read() ?? { ...DEFAULT_PREFERENCES }
-  preferencesStore?.write({ ...current, notificationsEnabled: enabled })
-  refreshTrayMenu()
-  return { enabled }
-}
-
-/** Snapshot returned to renderer close-behavior requests. */
-interface CloseBehaviorState {
-  behavior: CloseBehavior
-}
-
-function readCloseBehaviorState(): CloseBehaviorState {
-  const behavior = preferencesStore?.read().closeBehavior ?? DEFAULT_PREFERENCES.closeBehavior
-  return { behavior }
-}
-
-function writeCloseBehavior(behavior: unknown): CloseBehaviorState {
-  const value: CloseBehavior = behavior === 'quit' ? 'quit' : 'tray'
-  const current = preferencesStore?.read() ?? { ...DEFAULT_PREFERENCES }
-  preferencesStore?.write({ ...current, closeBehavior: value })
-  return { behavior: value }
-}
-
-function registerWindowControlIpc(): void {
-  ipcMain.handle('dsh:window-minimize', (event) => {
-    const win = windowFromEvent(event)
-    if (win === null || win.isDestroyed()) return
-    // Acrylic / frameless Windows sometimes ignores a synchronous minimize.
-    win.setMinimizable(true)
-    if (win.isMaximized()) win.unmaximize()
-    setImmediate(() => {
-      if (!win.isDestroyed()) win.minimize()
-    })
-  })
-  ipcMain.handle('dsh:window-maximize', (event) => {
-    const win = windowFromEvent(event)
-    if (win === null || win.isDestroyed()) return
-    if (win.isMaximized()) win.unmaximize()
-    else win.maximize()
-  })
-  ipcMain.handle('dsh:window-close', (event) => {
-    windowFromEvent(event)?.close()
-  })
-  ipcMain.handle('dsh:launch-at-login-get', (): LaunchAtLoginState => readLaunchAtLoginState())
-  ipcMain.handle('dsh:launch-at-login-set', (_event, enabled: unknown): LaunchAtLoginState => (
-    writeLaunchAtLoginEnabled(enabled === true)
-  ))
-  ipcMain.handle('dsh:notifications-get', (): NotificationsPrefState => readNotificationsState())
-  ipcMain.handle('dsh:notifications-set', (_event, enabled: unknown): NotificationsPrefState => (
-    writeNotificationsEnabled(enabled === true)
-  ))
-  ipcMain.handle(OPEN_LOG_CHANNEL, () => handleOpenLog())
-  ipcMain.handle('dsh:close-behavior-get', (): CloseBehaviorState => readCloseBehaviorState())
-  ipcMain.handle('dsh:close-behavior-set', (_event, behavior: unknown): CloseBehaviorState => (
-    writeCloseBehavior(behavior)
-  ))
-}
-
-/** Load the harness origin, or the connecting page when it is not ready yet. */
-function loadWindow(win: BrowserWindow): void {
-  const url = supervisor?.url
-  if (url === null || url === undefined) {
-    // Start (or restart) the per-window connecting timer. A `restart` event
-    // also lands here, so the timer resets every time the page reloads.
-    showConnecting(win)
-  } else {
-    clearConnectingTimer()
-    // Mark the renderer so the Web GUI can reserve title-bar space under
-    // frameless window controls (macOS traffic lights sit over the sidebar).
-    const rendererUrl = new URL(url)
-    rendererUrl.searchParams.set('dsh-desktop-platform', process.platform)
-    void win.loadURL(rendererUrl.href)
+  mainWindow = createMainWindow()
+  await reconcileBackend().catch(() => undefined)
+  // Window lifecycle callbacks run while backend startup is pending.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (quitting) return
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (mainWindow !== undefined && development !== undefined && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
   }
+  publishUpdate(updateState)
+  setTimeout(() => { void checkAndPrompt(false) }, 10_000)
 }
 
-/** Cancel the connecting placeholder's pending timeout, if any. */
-function clearConnectingTimer(): void {
-  if (connectingTimer !== null) {
-    clearTimeout(connectingTimer)
-    connectingTimer = null
+const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+
+if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(error)
+  const diagnosticFile = process.env.DSH_DESKTOP_DIAGNOSTIC_FILE
+  if (diagnosticFile !== undefined) {
+    await writeFile(diagnosticFile, `${error instanceof Error ? error.stack ?? message : message}\n`).catch(() => undefined)
   }
-}
-
-/**
- * Render the connecting page in `timedOut: false` state and arm a per-window
- * timer that re-renders it in `timedOut: true` once the harness has not
- * reported ready after {@link DesktopEnv.connectingTimeoutMs}. The harness
- * supervisor's `ready` event still cancels this and loads the origin.
- *
- * The timeout callback re-checks `supervisor.url` before swapping copy: a
- * `ready` that arrives after the timer has fired but before the callback
- * runs must still win, otherwise the stalled placeholder would overlay the
- * already-loaded GUI.
- *
- * @param win - The shell's main window; a destroyed one is a no-op.
- */
-function showConnecting(win: BrowserWindow): void {
-  clearConnectingTimer()
-  const html = renderConnectingPage({ locale: connectingLocale, timedOut: false })
-  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-  const env = currentEnv
-  if (env === null) return
-  connectingTimer = setTimeout(() => {
-    connectingTimer = null
-    if (win.isDestroyed()) return
-    if (supervisor?.url !== null && supervisor?.url !== undefined) return
-    const stalled = renderConnectingPage({ locale: connectingLocale, timedOut: true })
-    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(stalled)}`)
-  }, env.connectingTimeoutMs)
-}
-
-/** IPC handler: reveal the harness log file in the OS file manager. */
-async function handleOpenLog(): Promise<{ kind: 'file' | 'directory'; error: string }> {
-  const env = currentEnv
-  if (env === null) return { kind: 'directory', error: 'desktop env is not resolved' }
-  const result = await revealLogFile(env.logFile, logRevealShell, existsSync(env.logFile))
-  if (result.error !== '') {
-    // Both callers (the tray item and the connecting-page button) route here
-    // and have no UI of their own, so surface the failure as a native dialog.
-    void dialog.showMessageBox({
-      type: 'error',
-      title: `${APP_NAME}: open log`,
-      message: result.error,
-    })
-  }
-  return { kind: result.action.kind === 'show-item-in-folder' ? 'file' : 'directory', error: result.error }
-}
-
-function deliverDeepLink(url: string): void {
-  if (!url.startsWith(DEEP_LINK_PREFIX)) return
-  pendingDeepLink = url
-  const win = mainWindow
-  if (win !== null && !win.isDestroyed() && !win.webContents.isLoading()) {
-    win.webContents.send('dsh:deep-link', url)
-    pendingDeepLink = null
-  }
-}
-
-/** Native notification backend backed by Electron's Notification API. */
-function createElectronNotificationSink(): NotificationSink {
-  return {
-    show({ title, body }) {
-      if (!Notification.isSupported()) return
-      const icon = resolveAppIcon()
-      new Notification({ title, body, ...(icon === undefined ? {} : { icon }) }).show()
-    },
-  }
-}
-
-/**
- * OS login-item access. Windows registers a Run key with the hidden-launch
- * argument; macOS login items (SMAppService) take no custom arguments, so
- * hidden launch is detected via `wasOpenedAtLogin` instead of argv there.
- */
-function createLoginItemController(): LoginItemController {
-  const isDarwin = process.platform === 'darwin'
-  return {
-    isEnabled() {
-      if (isDarwin) return app.getLoginItemSettings().openAtLogin
-      return app.getLoginItemSettings({ path: process.execPath, args: [HIDDEN_LAUNCH_ARG] }).openAtLogin
-    },
-    setEnabled(enabled) {
-      if (isDarwin) {
-        app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: enabled })
-      } else {
-        app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [HIDDEN_LAUNCH_ARG] })
-      }
-    },
-  }
-}
-
-/** Build the tray menu, querying live OS and preference state. */
-function buildTrayMenu(): Menu {
-  const launchAtLogin = readLaunchAtLoginState()
-  const template: MenuItemConstructorOptions[] = [
-    { label: 'Open Window', click: () => { void lifecycle?.showWindow() } },
-    {
-      label: 'Open log',
-      click: () => { void handleOpenLog() },
-    },
-    { type: 'separator' },
-    {
-      label: 'Launch at login',
-      type: 'checkbox',
-      enabled: launchAtLogin.available,
-      checked: launchAtLogin.enabled,
-      click: (menuItem) => {
-        writeLaunchAtLoginEnabled(menuItem.checked)
-      },
-    },
-    {
-      label: 'Notifications',
-      type: 'checkbox',
-      checked: notificationsEnabled,
-      click: (menuItem) => {
-        writeNotificationsEnabled(menuItem.checked)
-      },
-    },
-    { type: 'separator' },
-    { label: 'Quit', click: () => { void requestAppQuit() } },
-  ]
-  return Menu.buildFromTemplate(template)
-}
-
-function refreshTrayMenu(): void {
-  if (tray === null) return
-  tray.setContextMenu(buildTrayMenu())
-}
-
-function createTray(): void {
-  tray = new Tray(trayImage())
-  tray.setToolTip(APP_NAME)
-  refreshTrayMenu()
-  tray.on('click', () => {
-    refreshTrayMenu()
-    void lifecycle?.showWindow()
-  })
-  tray.on('right-click', () => { refreshTrayMenu() })
-}
-
-function releaseAppQuit(): void {
-  quitReleased = true
-  tray?.destroy()
-  tray = null
-  // A downloaded update installs on this quit; otherwise quit normally. The
-  // updater's quitAndInstall quits and runs the installer, so `app.quit()` is
-  // deliberately not called again on that path.
-  if (updater !== null && updater.hasDownloadedUpdate()) {
-    updater.install()
-    return
-  }
-  app.quit()
-}
-
-/** Join explicit quit requests even while the Host is still starting. */
-function requestAppQuit(): Promise<void> {
-  if (lifecycle !== null) return lifecycle.requestQuit()
-  return (supervisor?.stop() ?? Promise.resolve()).catch((error: unknown) => {
-    console.error('desktop shutdown failed:', error)
-  }).then(() => {
-    releaseAppQuit()
-  })
-}
-
-/** Register the renderer-facing updater IPC surface once per process. */
-function registerUpdaterIpc(): void {
-  ipcMain.handle('dsh:updater:get-status', () => updater?.status ?? UNSUPPORTED_STATUS)
-  ipcMain.handle('dsh:updater:check', () => { void updater?.check() })
-  // "Install now" is a graceful quit with install-on-quit: it reuses the same
-  // teardown as every other quit source rather than quitting out from under
-  // the Host. Guarded so a stray call without a downloaded update is a no-op.
-  ipcMain.handle('dsh:updater:install', () => {
-    if (updater?.hasDownloadedUpdate() === true) void requestAppQuit()
-  })
-}
-
-async function boot(): Promise<void> {
-  app.setAppUserModelId('com.deepseek.dsh-desktop')
-  preferencesStore = createPreferencesStore(join(app.getPath('userData'), 'preferences.json'))
-  const prefs = preferencesStore.read()
-  notificationsEnabled = prefs.notificationsEnabled
-  if (app.isPackaged) {
-    createLoginItemController().setEnabled(prefs.launchAtLoginEnabled)
-  }
-  hiddenLaunch = shouldStartHidden({
-    argv: process.argv,
-    openedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin,
-    platform: process.platform,
-  })
-  const appIcon = resolveAppIcon()
-  if (process.platform === 'darwin' && appIcon !== undefined) {
-    app.dock?.setIcon(appIcon)
-  }
-  registerWindowControlIpc()
-  registerUpdaterIpc()
-  const resourceRoot = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const env = resolveDesktopEnv(resourceRoot)
-  currentEnv = env
-  connectingLocale = detectConnectingLocale(app.getLocale())
-  const sup = new HarnessSupervisor(env.launch.command, env.launch.args, {
-    logFile: env.logFile,
-    restartDelayMs: env.restartDelayMs,
-    maxRestartDelayMs: env.maxRestartDelayMs,
-    killTimeoutMs: env.killTimeoutMs,
-  })
-  supervisor = sup
-  const notificationSink = createElectronNotificationSink()
-  const notificationThrottle = createNotificationThrottle(5 * 60_000)
-  let crashed = false
-  sup.on('ready', () => {
-    if (mainWindow !== null && !mainWindow.isDestroyed()) loadWindow(mainWindow)
-    if (crashed) {
-      crashed = false
-      if (notificationsEnabled && notificationThrottle.allow(RECOVERED_KEY, Date.now())) {
-        notificationSink.show(RECOVERED_NOTIFICATION)
-      }
-    }
-  })
-  sup.on('restart', ({ attempt }) => {
-    crashed = true
-    // An unexpected exit killed the old origin; return to connecting until the
-    // next child reports ready. `loadWindow` resets the connecting timer so
-    // a slow restart still gets its full per-window timeout.
-    if (mainWindow !== null && !mainWindow.isDestroyed()) loadWindow(mainWindow)
-    if (notificationsEnabled) {
-      const rule = restartNotificationFor(attempt)
-      if (rule !== undefined && notificationThrottle.allow(rule.key, Date.now())) {
-        notificationSink.show(rule.notification)
-      }
-    }
-  })
-  sup.start()
-  hardenSession()
-  // A packaged build has an update feed (electron-builder's publish config);
-  // development runs have no feed, so no updater exists and the renderer sees
-  // `unsupported`. Download runs in the background; install waits for a quit.
-  if (app.isPackaged) {
-    updater = new UpdateController({ checkIntervalMs: env.updateCheckIntervalMs })
-    updater.on('status', (status) => {
-      const win = mainWindow
-      if (win !== null && !win.isDestroyed()) win.webContents.send('dsh:updater:status', status)
-    })
-    updater.start()
-  }
-  lifecycle = createDesktopLifecycle({
-    getWindow: () => mainWindow ?? undefined,
-    createWindow: async () => createWindow(),
-    disposeHost: async () => { await sup.stop() },
-    quit: releaseAppQuit,
-    reportError: (error) => { console.error('desktop shutdown failed:', error) },
-    readCloseBehavior: () => preferencesStore?.read().closeBehavior ?? DEFAULT_PREFERENCES.closeBehavior,
-  })
-  createTray()
-  mainWindow = createWindow()
-  loadWindow(mainWindow)
-}
-
-const hasLock = app.requestSingleInstanceLock()
-if (!hasLock) {
-  app.quit()
-} else {
-  app.on('second-instance', (_event, argv) => {
-    void lifecycle?.showWindow()
-    const link = argv.find(arg => arg.startsWith(DEEP_LINK_PREFIX))
-    if (link !== undefined) deliverDeepLink(link)
-  })
-}
-
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  deliverDeepLink(url)
-})
-
-app.on('activate', () => {
-  void lifecycle?.showWindow()
-})
-
-app.on('window-all-closed', () => {
-  // The tray and Host own application lifetime on every platform; the window
-  // is hidden rather than destroyed on close.
-})
-
-app.on('before-quit', (event) => {
-  if (quitReleased) return
-  event.preventDefault()
-  void requestAppQuit()
-})
-
-void app.whenReady().then(boot).catch((error: unknown) => {
-  console.error('desktop startup failed:', error)
-  if (quitReleased) return
-  void dialog.showMessageBox({
-    type: 'error',
-    title: `${APP_NAME} failed to start`,
-    message: error instanceof Error ? error.message : String(error),
-  }).finally(() => {
-    void requestAppQuit()
-  })
+  const window = BrowserWindow.getAllWindows()[0] ?? createWindow(fileURLToPath(new URL('./preload-app.cjs', import.meta.url)), true)
+  window.once('closed', () => { app.quit() })
+  await showEmergencyDocument(window, message)
+}).catch((error: unknown) => {
+  console.error(error)
+  app.exit(1)
 })

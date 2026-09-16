@@ -4,6 +4,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { GoalError } from '@deepseek-ai/dsh-goal'
 import type { GoalPhase, GoalRef, GoalView } from '@deepseek-ai/dsh-goal'
@@ -108,15 +109,15 @@ function missingGoal(action: string): CommandResult {
 }
 
 /**
- * Submit the invocation's admitted composer images as one model-visible user
- * message ahead of the goal's next round. The images precede a fixed text
+ * Submit the invocation's admitted composer attachments as one model-visible user
+ * message ahead of the goal's next round. The attachments precede a fixed text
  * block naming their role, so a later goal round reads them from ordinary
  * session history without the goal domain storing attachment state.
  */
 function submitObjectiveAttachments(invocation: CommandInvocation): void {
   if (invocation.attachments.length === 0) return
   invocation.agent.followup(createUserMessage({
-    content: [...invocation.attachments, { type: 'text', text: 'Reference images for the goal objective.' }],
+    content: [...invocation.attachments, { type: 'text', text: 'Reference attachments for the goal objective.' }],
     source: { kind: 'user' },
   }))
 }
@@ -127,7 +128,7 @@ function executeGoalCommand(ctx: Context, invocation: CommandInvocation): Comman
   if (invocation.attachments.length > 0 && command.kind !== 'create' && command.kind !== 'edit') {
     return {
       kind: 'error',
-      text: 'Image attachments only accompany a goal objective: /goal <objective> or /goal edit <objective>.',
+      text: 'Attachments only accompany a goal objective: /goal <objective> or /goal edit <objective>.',
     }
   }
   try {
@@ -188,9 +189,10 @@ function executeGoalCommand(ctx: Context, invocation: CommandInvocation): Comman
 /** Register the Codex-shaped `/goal` command for every composed command adapter. */
 export function apply(ctx: Context): void {
   ctx.commands.register({
+    definitionId: CommandDefinitionId('@deepseek-ai/dsh-command-goal'),
     name: 'goal',
-    description: 'set or view the goal for a long-running task',
-    input: { hint: '[<objective>|clear|edit <objective>|pause|resume]', images: true },
+    description: 'Set or view the goal for a long-running task',
+    input: { hint: '[<objective>|clear|edit <objective>|pause|resume]', attachments: true },
     handler: invocation => executeGoalCommand(ctx, invocation),
   })
 }

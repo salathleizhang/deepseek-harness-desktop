@@ -30,10 +30,10 @@
       "path": "../../client/connection/tsconfig.host.json"
     },
     {
-      "path": "../../host/webserver"
+      "path": "../../client/file-upload/tsconfig.host.json"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../host/webserver"
     },
     {
       "path": "../../util/crypto"

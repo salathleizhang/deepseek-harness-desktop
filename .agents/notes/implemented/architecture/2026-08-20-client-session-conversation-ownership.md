@@ -298,11 +298,11 @@ Draft and input state belong to Conversation UI and do not enter the Session sna
 
 `client/ui-chat` registers target id `chat` and owns the Chat snapshot builder, Conversation Node definitions, keyed node renderers, selection, details, statistics, locale, and Tool-inspection collaboration.
 
-It registers the `chat` target source through `ctx.uiSession.provide()`. `ChatNodeSeat` and internal Chat consumers use `useChat` instead of passing `useConversation(snapshot => snapshot.views.get('chat'))`.
+It registers the `chat` target source through `ctx.uiSession.provide()`. `ChatView` uses `useChat` for aggregate order, navigation, and timeline reads; each `ChatNodeSeat` receives identity-stable Node and Turn-process sources from that snapshot and does not subscribe to the aggregate source.
 
 Only visible non-command Chat Nodes activate Chat. Ordinary command-only history keeps the Hero visible; the `/goal` `command-input` Node activates a fresh Conversation.
 
-The historical-image cache moved to `ui-conversation` (`ctx.uiConversation.imageUrl`), so Chat and Trajectory share one authorized read and one browser URL per session attachment ([Trajectory durable image attachments](../feature/2026-08-24-trajectory-image-attachments.md)); draft images remain part of Conversation input.
+The historical-image cache moved to `ui-conversation` (`ctx.uiConversation.imageUrl`), so Chat and Trajectory share one authorized read and one browser URL per session attachment ([Trajectory durable image attachments](../../archived/feature/2026-08-24-trajectory-image-attachments.md)); draft images remain part of Conversation input.
 
 ### Trajectory owner
 

@@ -33,7 +33,7 @@
       "path": "../../session/session-projection"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../compaction/compaction-image-offload"
     }
   ]
 }

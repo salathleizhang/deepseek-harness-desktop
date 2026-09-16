@@ -64,7 +64,8 @@ API Proxy 不拥有 Session 或 Workspace Remote namespace，也不拥有 Host �
 
 Host 按配置的 `websocketHeartbeatIntervalMs` 间隔（默认 2 秒）向每条已打开的 mux socket 发送一个 RFC 6455 Ping 控制帧；浏览器在协议层回复 Pong。两种控制帧都不进入 Remote stream JSON union，也不改变 Connection generation 状态。每次 Ping 前，Host 把 socket 标记为等待 Pong；若到下一间隔仍未收到 Pong，Host 会终止该 socket。
 
-首次建连失败或已连接 socket 丢失后，已打开的 logical stream 会以 `RemoteStreamCarrierError` 结束当前物理 generation。`ConnectionController` 拥有有界的指数 retry 调度；每次尝试都要求 mux 恰好一次替换候选或活动 socket，再重开 `$events`。用户要求的重连通过同一路径重置 attempt 序列并跳过等待（见[决策](../feature/2026-08-28-web-connection-recovery-control.zh.md)）。
+首次建连失败或已连接 socket 丢失后，已打开的 logical stream 会以 `RemoteStreamCarrierError` 结束当前物理 generation。`ConnectionController` 拥有持续且间隔封顶的指数 retry 调度；每次尝试都要求 mux 恰好一次替换候选或活动 socket，再重开 `$events`。用户要求的重连通过同一路径重置 attempt 序列并跳过等待（见[决策](../../archived/feature/2026-08-28-web-connection-recovery-control.md)）。
+
 
 浏览器网络状态事件是同一 Controller 的输入。`offline` 会撤回 Connection generation 并暂停自动 retry；下一次 `online` 转换会从基础退避档重新开始。这些事件不会建立连接；只有新的 `$events` ready 帧才会发布 Connection generation。
 
@@ -163,7 +164,7 @@ Session Remote 方法传递 `SessionId` 或 `SessionAddress`，不靠参数类�
 
 读取 title、列表和投影不要求 Agent。观察操作不能因为另一个 Remote endpoint 使用了 Agent lookup 而继承其恢复权限。
 
-`SessionQuery.observeSession()` 选择 attached Session，或从 `SessionPersistence.borrowSession()` 借用 prepared source。Persistence preparation cache 共享并发冷读取，并在所有 observation lease 释放前固定同一个未发布 Session。一次 observation 要么计算所有已注册 projection，要么完全不计算；调用方可以只公开其中一部分，但不会建立只计算部分 projection 的中间状态。
+`SessionQuery.observeSession()` 选择 attached Session，或从读取方自己的 prepared cache——经由持久化读句柄填充——提供冷 Session。该 cache 共享并发冷读取，并在所有 observation lease 释放前固定同一条目。一次 observation 要么计算所有已注册 projection，要么完全不计算；调用方可以只公开其中一部分，但不会建立只计算部分 projection 的中间状态。
 
 `session.list` 不会无界扫描冷日志。它优先使用缓存的 projection hint，仅在独立存储 artifact 不超过配置的小日志字节上限时，才可能完整观察日志以判断不确定的 blank 状态。hint 缺失或不可读时，列表仍保留该行，并把 metadata 视为未知。
 
@@ -219,7 +220,7 @@ Session 列表的 `updatedAt` 取 `max(header.createdAt, sessionListMetadata.las
 
 `packages/api/workspace-controller` 提供 Host `ctx.workspaceController` 与生成的 `ctx.remote.workspace` namespace。
 
-它拥有 create、rename、delete、insertBefore、insertSessionBefore、archiveSession 与 `follow`。Workspace registry 仍是持久事实来源，Controller 负责 Remote 命令、投影和错误映射。
+它拥有 create、rename、delete、insertBefore、insertSessionBefore、archiveSession、unarchiveSession 与 `follow`。Workspace registry 仍是持久事实来源，Controller 负责 Remote 命令、投影和错误映射。
 
 `WorkspaceFeed` 同步观察 storage `domain/changed`，并为每个 follow generation 先发送完整 baseline，再发送 `upsert`、`remove`、`order` 与 `archived` 增量。
 
@@ -380,4 +381,4 @@ Remote waterfall 保留多 Client 首个 claim、全体 `next` 后继续 Host ch
 
 本决定扩展[Remote 事件投递](2026-08-10-remote-event-delivery.zh.md)的 allowlist 与单一 Cordis 签名设计：普通通知继续使用 `emit`，Agent-scoped async waterfall 使用同一 `ctx.remote.$on` 面和显式 `waterfall` mode；不建立第二套 invocation map。
 
-本决定接管[简单一元 API Proxy 迁移](2026-08-10-unary-apiproxy-remote-migration.zh.md)中保留的 Session、Workspace 与 Host event carrier，并保留[后台任务展示](../feature/2026-08-08-web-background-job-display.zh.md)所要求的完整 jobs snapshot、进程内生命周期和“观察不恢复 Agent”语义。
+本决定接管[简单一元 API Proxy 迁移](../../archived/architecture/2026-08-10-unary-apiproxy-remote-migration.md)中保留的 Session、Workspace 与 Host event carrier，并保留[后台任务展示](../feature/2026-08-08-web-background-job-display.zh.md)所要求的完整 jobs snapshot、进程内生命周期和“观察不恢复 Agent”语义。

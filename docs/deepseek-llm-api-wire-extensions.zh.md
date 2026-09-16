@@ -2,7 +2,7 @@
 
 [English](deepseek-llm-api-wire-extensions.md) | 中文
 
-本参考文档定义 [`@deepseek-ai/dsh-llm-deepseek`](../packages/llm/llm-deepseek/README.zh.md) 在 `deepseek-official` 聊天补全请求中发送的全部 DeepSeek Harness 特有 HTTP 标头和附加 JSON 字段。本文不重复定义 DeepSeek 上游 API 持有的字段。提供方无关的 LLM（大语言模型）接口与 `llm-pi-ai` 均不实现这些扩展。
+本参考文档定义 [`@deepseek-ai/dsh-llm-deepseek`](../packages/llm/llm-deepseek/README.zh.md) 在 `deepseek-official` Messages 与 Chat Completions 请求中发送的全部 DeepSeek Harness 特有 HTTP 标头和附加 JSON 字段。本文不重复定义 DeepSeek 上游 API 持有的字段。提供方无关的 LLM（大语言模型）接口与 `llm-pi-ai` 均不实现这些扩展。
 
 适配器将这些扩展发送至已解析的 `baseURL`，包括已配置的网关。扩展位于 `messages`、系统提示词和工具 schema 之外，因此不会增加模型输入 token，也不会改变模型可见前缀。
 
@@ -24,9 +24,9 @@
 | 标头 | 出现条件 | 值 |
 |---|---|---|
 | `user-agent` | 每个提供方 HTTP 请求，包括 Files API 操作 | 采用 `product/version (+url)` 形式的应用身份；默认产品为 `deepseek-harness` |
-| `x-deepseek-harness-user-id` | 每个已授权的聊天补全请求 | 已解析 Harness home 的稳定匿名 UUID |
-| `x-deepseek-harness-session-id` | 携带会话 id 的聊天补全请求 | 确切的请求 `sessionId` 字符串 |
-| `x-deepseek-harness-compact` | 用途为 `compaction` 的聊天补全请求 | 字面字符串 `1` |
+| `x-deepseek-harness-user-id` | 每个已授权的模型请求 | 已解析 Harness home 的稳定匿名 UUID |
+| `x-deepseek-harness-session-id` | 携带会话 id 的模型请求 | 确切的请求 `sessionId` 字符串 |
+| `x-deepseek-harness-compact` | 用途为 `compaction` 的模型请求 | 字面字符串 `1` |
 
 凭据失败发生在解析匿名用户 id 之前，因此未授权请求既不会发送这些标头，也不会创建身份文件。没有会话的直接请求会省略 `x-deepseek-harness-session-id`。会话标题请求没有额外的用途标头；请求携带 `sessionId` 时，仍然适用普通的会话 id 规则。
 
@@ -73,14 +73,15 @@
 
 ## `dsh_session_log`
 
-[`@deepseek-ai/dsh-session-log-deepseek`](../packages/session/session-log-deepseek/README.zh.md) 贡献权威会话日志的一段连续后缀。该字段默认禁用。启用后，它适用于携带存活会话且至少存在一个事件的请求；直接请求、陈旧会话 id 或空日志会省略该字段。
+[`@deepseek-ai/dsh-session-log-deepseek`](../packages/session/session-log-deepseek/README.zh.md) 贡献权威会话日志的一段连续后缀。该字段默认启用。它适用于携带存活会话且至少存在一个事件的请求；直接请求、陈旧会话 id 或空日志会省略该字段，组合可用 `enabled: false` 禁用它。下方示例使用逻辑 Session 格式 2 仅为说明协议字段，并不标识[当前写入格式](session-format-status.zh.md)。
 
 ```json
 {
   "dsh_session_log": {
     "version": 1,
+    "sessionFormatVersion": 2,
     "session": {
-      "version": 0,
+      "version": 2,
       "id": "session-id",
       "createdAt": 1780000000000
     },
@@ -103,32 +104,33 @@
 | 成员 | 类型 | 含义 |
 |---|---|---|
 | `version` | `1` | `dsh_session_log` 的 schema 版本 |
-| `session` | 对象 | 不可变的权威 `SessionHeader` |
+| `sessionFormatVersion` | 非负整数 | 该后缀所表示的 Session 格式 generation |
+| `session` | 对象 | 当前 Session header 的不可变协议投影 |
 | `afterSeq` | 整数 | 本次请求前记录为已接受的最大序号，或 `-1` |
 | `throughSeq` | 非负整数 | 本次请求所表示的最大序号 |
 | `events` | 数组 | 从 `afterSeq + 1` 到 `throughSeq` 的连续事件 |
 
 首次上传使用 `afterSeq: -1`，并携带当前的完整日志。此后每次上传都从同一会话 id 的最大已接受水位（watermark）之后开始。发送方为每次请求仅快照一次事件数组；快照后的追加内容属于后续请求。
 
-### 会话头
+### Session 协议 header
 
-`session` 成员是确切的 `Session.header`，不是完整的运行时会话。外层 `dsh_session_log.version` 选择本扩展 schema，`session.version` 则选择权威磁盘会话格式；两个版本值相互独立演进。
+`session` 成员将逻辑 Session 元数据投影为原始 JSON 基元。seeded Session 以 `seedLength` 发送确切的 `Session.inheritedEventCount`；未 seeded 的 Session 省略该字段。逻辑 `isSeeded` 标志不出现在此协议中。外层 `dsh_session_log.version` 选择本扩展 schema，`session.version` 则选择逻辑 Session 格式。即使嵌入的逻辑格式同时变化，只要 Session header 投影变化，扩展 schema 也必须升版。
 
 | 成员 | 出现条件 | 含义 |
 |---|---|---|
-| `version` | 必需 | 权威会话格式版本；当前为 `0` |
+| `version` | 必需 | 来自 `Session.header` 的逻辑 Session 格式版本；见[格式状态](session-format-status.zh.md) |
 | `id` | 必需 | 确切的会话 id |
 | `createdAt` | 必需 | 非负安全整数 Unix epoch 毫秒数 |
 | `cwd` | 可选 | 创建会话时记录的绝对工作目录 |
 | `parentSession` | 可选 | fork 的父会话 id |
-| `seedLength` | 可选 | 通过 seed 继承的前导事件数量 |
+| `seedLength` | 仅 seeded Session | 确切的继承事件数量；空的继承前缀使用零 |
 | `origin` | 可选 | subagent 子项使用的字面值 `subagent` |
 | `delegationDepth` | 可选 | 持久化的非负 subagent 委派深度 |
 | `agentPreset` | 可选 | 用于组合该会话的 agent preset id |
 
 ### 权威事件信封
 
-每个 `events` 元素都是完整的权威 `SessionEvent`，不依赖任何其他请求字段。事件始终携带 `type`、`seq`、`time` 与 `data`；它可以携带 `ignorable: true`，展示事件还可携带 `sourceEventSeqs` 与 `surfaceOp`。发送方会复制每个已有成员，不执行投影、脱敏或重建。
+每个 `events` 元素以原始 JSON 基元承载规范事件，不依赖任何其他请求字段。每个事件包含 `type`、数值型 `seq`、`time` 与 `data`，存在 `ignorable: true` 时保留该值。表层事件必须携带 `surfaceOp`；替换范围使用数值型 `startSeq` 与 `endSeq`，system、user 和 tool 事件还可携带数值型 `sourceEventSeqs`。assistant 的提供方元数据保留在内嵌流中。已知的仅日志事件省略表层元数据；恢复的未知可忽略记录保留不透明元数据，但不将其解释为表层操作。
 
 ### 接受水位与至少一次交付
 
@@ -141,19 +143,20 @@
   "time": 1780000000002,
   "data": {
     "sessionId": "session-id",
+    "sessionFormatVersion": 2,
     "throughSeq": 7
   }
 }
 ```
 
-`delivery-accepted` 表示已配置端点为包含该字段的 LLM 请求返回 HTTP 2xx。它不表示 SSE 已完整结束，也不表示远端已经持久化。该事件的 `throughSeq` 必须标识一项更早的事件，`sessionId` 则标识已发送后缀所属的会话。
+`delivery-accepted` 表示已配置端点为包含该字段的 LLM 请求返回 HTTP 2xx。它不表示 SSE 已完整结束，也不表示远端已经持久化。该事件的 `throughSeq` 必须标识一项更早的事件，`sessionId` 标识已发送后缀所属的 Session，`sessionFormatVersion` 则把水位绑定到该逻辑 generation。缺少该字段表示历史格式 v0。
 
-发送方会折叠最大的匹配 `throughSeq`，因此并发已接受请求无法使游标倒退。恢复后的进程会从持久日志重建游标。fork 会忽略命名其父会话的继承水位，因此先发送自身完整的继承前缀，再以子会话 id 推进。水位事件自身属于下一段未发送后缀。
+发送方只会为当前 Session id 与格式 generation 折叠最大的匹配 `throughSeq`，因此并发已接受请求无法使游标倒退，其他 generation 的水位也不能授权当前后缀。恢复后的进程会从持久日志重建游标。fork 会忽略命名其他 Session 的继承水位，因此先发送自身完整的继承前缀，再以子会话 id 推进。水位事件自身属于下一段未发送后缀。
 
 传输失败和非 2xx 响应不会追加水位。端点接受后、本地持久化前发生崩溃时，系统可能重新发送已接受范围；不确定性只会产生重复，绝不会产生序号缺口。系统没有独立上传存储、大小上限或截断路径。
 
 ## 暴露内容与接收方要求
 
-请求标头会暴露 Harness 应用版本、一个匿名 Harness-home 身份和可选的会话身份。`dsh_plugin_packages` 会暴露存活 npm 包的名称与版本。启用后，`dsh_session_log` 可能暴露会话工作目录、系统提示词快照、用户与 assistant 内容、原始 assistant 分片、工具参数与结果、压缩摘要、反馈和插件持有的事件。适配器 API key 不是会话事件，因此不会进入该字段。通过 `baseURL` 选择的网关会收到与官方端点相同的值。
+请求标头会暴露 Harness 应用版本、一个匿名 Harness-home 身份和可选的会话身份。`dsh_plugin_packages` 会暴露存活 npm 包的名称与版本。除非组合禁用该字段，`dsh_session_log` 可能暴露会话工作目录、系统提示词快照、用户与 Assistant 内容、嵌入式 Assistant stream、失败 attempt 输出、工具参数与结果、压缩摘要、反馈和插件持有的事件。适配器 API key 不是会话事件，因此不会进入该字段。通过 `baseURL` 选择的网关会收到与官方端点相同的值。
 
 接收方按名称定位扩展字段，按各字段自己的 `version` 分派，保留不同的包版本，并忽略 JSON 成员顺序。会话日志接收方必须先校验连续序号范围，再解释事件类型。遇到不带 `ignorable: true` 的未知权威事件时，接收方无法进行无损重建。即使缺少注册表或某项贡献，基础请求仍然可用；字段缺失表示该项贡献不适用于本次请求。

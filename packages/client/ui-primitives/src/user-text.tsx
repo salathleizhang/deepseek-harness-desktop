@@ -2,18 +2,29 @@
  * Display projection of reference forms in sent user text (bubble and queue
  * rows). The logged model text remains the single truth; this is presentation
  * only, and every part renders inline so a single-line message never breaks
- * across lines. Three decoration sources, by precedence: the wire session form
+ * across lines. Four decoration sources, by precedence: the wire session form
  * `@[label](dsh-session:...)` folds to its label; exact session labels
- * supplied by an adjacent recall decorate their bare `@label` mention; and
- * plain `/name` / `@name` word-boundary tokens decorate by shape alone (sent
- * tokens were validated at compose time).
+ * supplied by an adjacent recall decorate their bare `@label` mention; plain
+ * `@name` word-boundary tokens decorate by shape alone; and a plain `/name`
+ * token decorates only when the caller names it — a skill the host actually
+ * loaded for that message (ui-chat reads the step's `skill-invocation`
+ * injections) or the command a command-input bubble echoes — so `/123` or a
+ * stray `/word` stays plain text. A `/name` token is whitespace-bounded like
+ * the host skill gesture (`dsh-tool-skill`): it ends at whitespace or the
+ * text end, so slash paths (`/nfs-hg/xxx`, `/plan.md`) and punctuation-glued
+ * tokens (`/plan。`) stay plain even for a loaded name.
  */
 import type { ReactNode } from 'react'
+import clsx from 'clsx'
 import { ReferenceIcon } from './ReferenceIcon.tsx'
 import css from './user-text.module.css'
+import markdownCss from './markdown/MarkdownText.module.css'
 
 /** The wire form a session chip serializes to; label is the display text. */
 const SESSION_WIRE_RE = /@\[([^\]\n]+)\]\(dsh-session:[^)\s]+\)/gu
+
+/** Sentence punctuation a bare `@name` token may carry without being part of the reference. */
+const TRAILING_PUNCTUATION_RE = /[.,;:!?，。；：！？]+$/u
 
 interface DecorationRange {
   readonly start: number
@@ -25,13 +36,32 @@ interface DecorationRange {
   readonly display?: string
 }
 
+/** Optional navigation supplied by consumers that can preview references. */
+export interface UserTextReferences {
+  /** Open a file path decoded from an `@` mention. */
+  openFile: (path: string) => void
+  /** Open the source of a skill loaded for this message. */
+  openSkill: (name: string) => void
+}
+
 /**
  * Split one sent text into inline plain runs and reference chips.
  * @param text - the logged model text of the message or queue row.
  * @param sessionLabels - exact session mention labels associated by an adjacent recall.
+ * @param slashNames - names a `/name` token may decorate as: the skills the
+ * host loaded for this message, or the command a command bubble echoes
+ * (unsent queue rows pass none).
+ * @param slashKind - the chip kind those tokens render as.
+ * @param references - optional file and skill preview actions; session and command tokens stay labels.
  * @returns inline nodes covering the whole text.
  */
-export function projectUserText(text: string, sessionLabels: readonly string[]): ReactNode {
+export function projectUserText(
+  text: string,
+  sessionLabels: readonly string[],
+  slashNames: readonly string[] = [],
+  slashKind: 'skill' | 'command' = 'skill',
+  references?: UserTextReferences,
+): ReactNode {
   const ranges: DecorationRange[] = []
   SESSION_WIRE_RE.lastIndex = 0
   let wire: RegExpExecArray | null
@@ -52,15 +82,18 @@ export function projectUserText(text: string, sessionLabels: readonly string[]):
       start = text.indexOf(label, start + label.length)
     }
   }
-  const re = /(^|\s)(\/[\w-]+|@"[^"\n]+"|@[^\s]+)/gu
+  // A `/` token ends at whitespace or the text end like the host skill
+  // gesture; only `@` tokens shed sentence punctuation below.
+  const re = /(^|\s)(\/[\w-]+(?=\s|$)|@"[^"\n]+"|@[^\s]+)/gu
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const tokenStart = m.index + (m[1] as string).length // (^|\s) captures '' at line start
     const rawLabel = m[2] as string // non-optional alternation capture
     const label = rawLabel.startsWith('@"')
       ? rawLabel
-      : rawLabel.replace(/[.,;:!?，。；：！？]+$/gu, '')
+      : rawLabel.replace(TRAILING_PUNCTUATION_RE, '')
     if (label.length <= 1) continue
+    if (label.startsWith('/') && !slashNames.includes(label.slice(1))) continue
     ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: 'plain' })
   }
   const rankOf = (range: DecorationRange): number => range.kind === 'session' ? 0 : 1
@@ -77,7 +110,7 @@ export function projectUserText(text: string, sessionLabels: readonly string[]):
     const referenceKind = kind === 'session'
       ? 'session'
       : label.startsWith('@')
-        ? label.endsWith('/') ? 'folder' : 'file'
+        ? label.replace(/^@"|"$/gu, '').endsWith('/') ? 'folder' : 'file'
         : undefined
     const displayLabel = range.display
       ?? (referenceKind === undefined
@@ -85,19 +118,36 @@ export function projectUserText(text: string, sessionLabels: readonly string[]):
         : referenceKind === 'session'
           ? label.slice(1)
           : label.slice(1).replace(/^"|"$/gu, '').split(/[\\/]/u).filter(Boolean).at(-1) ?? label.slice(1))
-    parts.push(
-      <span
+    const contents = <>
+      {referenceKind !== undefined && (
+        <ReferenceIcon kind={referenceKind} size={16} className={css.refIcon} />
+      )}
+      {displayLabel}
+    </>
+    const open = references === undefined ? undefined
+      : referenceKind === 'file'
+        ? () => { references.openFile(label.slice(1).replace(/^"|"$/gu, '')) }
+        : referenceKind === undefined && slashKind === 'skill'
+          ? () => { references.openSkill(label.slice(1)) }
+          : undefined
+    const className = clsx(css.refChip, referenceKind === undefined && css.slashChip)
+    parts.push(open === undefined
+      ? <span key={tokenStart} className={className} data-ref-chip={referenceKind ?? slashKind} title={label}>
+        {contents}
+      </span>
+      : <button
         key={tokenStart}
-        className={css.refChip}
-        data-ref-chip={referenceKind ?? 'skill'}
+        type="button"
+        className={clsx(className, markdownCss.fileMention)}
+        data-ref-chip={referenceKind ?? slashKind}
         title={label}
+        onClick={(event) => {
+          if (event.detail > 1 || (event.detail !== 0 && event.currentTarget.ownerDocument.getSelection()?.isCollapsed === false)) return
+          open()
+        }}
       >
-        {referenceKind !== undefined && (
-          <ReferenceIcon kind={referenceKind} size={16} className={css.refIcon} />
-        )}
-        {displayLabel}
-      </span>,
-    )
+        {contents}
+      </button>)
     cursor = end
   }
   if (parts.length === 0) return <span className={css.plainRun}>{text}</span>

@@ -2,10 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   SessionEventLike, SessionEventLikeEntry, SessionLiveEventEntry,
 } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { ChunkRowEvent } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { ChunkRow } from '@deepseek-ai/dsh-session/chunk-rows'
+import { LlmAttemptId } from '@deepseek-ai/dsh-llm/brand'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
-import { ConversationNodeAssembler as RuntimeConversationNodeAssembler } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import {
+  ConversationLocationIndex,
+  ConversationNodeAssembler as RuntimeConversationNodeAssembler,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
   ConversationMatch, ConversationNodeContext,
   ConversationNodeDefinition, ConversationViewDefinition, ConversationViewNode,
@@ -114,7 +118,7 @@ function trackedView(target: string) {
   return { definition, create, replace, apply }
 }
 
-function at(seq: number, type: string, data: unknown): SessionEvent {
+function at(seq: SessionSeq, type: string, data: unknown): SessionEvent {
   return { seq, time: 1_700_000_000_000 + seq, type, data } as SessionEvent
 }
 
@@ -122,14 +126,21 @@ function input(event: SessionEvent): SessionLiveEventEntry {
   return { type: 'event', event }
 }
 
-function chunkInput(row: ChunkRow): SessionEventLikeEntry {
-  const event = {
-    type: `chunkrow/${row.type}`,
-    seq: row.seq0,
-    time: row.time0,
-    data: row.data,
-  } as ChunkRowEvent
-  return { type: 'chunks', event }
+function transientChunk(
+  seq: number,
+  turn: number,
+  step: number,
+  chunk: StreamChunk,
+): SessionEventLikeEntry {
+  return {
+    type: 'transient',
+    event: {
+      type: 'assistant/live-chunk',
+      seq,
+      time: 1_700_000_000_000 + seq,
+      data: { attemptId: LlmAttemptId('test-attempt'), turn, step, chunk },
+    },
+  }
 }
 
 function testSnapshot(assembler: ConversationNodeAssembler): TestSnapshot | undefined {
@@ -161,6 +172,54 @@ function fallbackDefinition(start: () => string): ConversationNodeDefinition<str
 }
 
 describe('ConversationNodeAssembler', () => {
+  it('publishes Location data through stable per-key sources', () => {
+    const index = new ConversationLocationIndex()
+    const turnStart = at(SessionSeq(1), 'turn/start', { turn: 1 })
+    const stepStart = at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })
+    index.rebuild([input(turnStart), input(stepStart)])
+    const location = index.locationOf(stepStart)
+    if (location.kind !== 'step') throw new Error('scope probe requires a Step Location')
+    const source = location.step.data.source('scope-probe')
+    const listener = vi.fn()
+    source.subscribe(listener)
+    const initial = { value: 1 }
+
+    expect(location.step.data.source('scope-probe')).toBe(source)
+    expect(source.getSnapshot()).toBeUndefined()
+    expect(index.replaceData([{
+      owner: 'scope-probe:1:1',
+      data: { kind: 'step', turn: 1, step: 1, key: 'scope-probe', value: initial },
+    }])).toBe(true)
+    expect(source.getSnapshot()).toBe(initial)
+    expect(listener).not.toHaveBeenCalled()
+
+    index.publishData()
+    expect(listener).toHaveBeenCalledOnce()
+    listener.mockClear()
+
+    index.replaceData([])
+    index.replaceData([{
+      owner: 'scope-probe:1:1',
+      data: { kind: 'step', turn: 1, step: 1, key: 'scope-probe', value: initial },
+    }])
+    index.publishData()
+    expect(listener).not.toHaveBeenCalled()
+
+    const changed = { value: 2 }
+    index.replaceData([{
+      owner: 'scope-probe:1:1',
+      data: { kind: 'step', turn: 1, step: 1, key: 'scope-probe', value: changed },
+    }])
+    index.publishData()
+    expect(source.getSnapshot()).toBe(changed)
+    expect(listener).toHaveBeenCalledOnce()
+
+    index.replaceData([])
+    index.publishData()
+    expect(source.getSnapshot()).toBeUndefined()
+    expect(listener).toHaveBeenCalledTimes(2)
+  })
+
   it('reports a replacement only when an active target has a registered builder', () => {
     const assembler = new RuntimeConversationNodeAssembler(
       new TestEventDefinitions([]),
@@ -210,7 +269,7 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([chat.definition, trajectory.definition]),
     )
 
-    assembler.replaceWindow([input(at(1, 'active/start', {}))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'active/start', {}))], false)
     expect(assembler.flush()).toBe(false)
     expect(chat.create).not.toHaveBeenCalled()
     expect(trajectory.create).not.toHaveBeenCalled()
@@ -223,7 +282,7 @@ describe('ConversationNodeAssembler', () => {
     expect(buildChat).toHaveBeenCalledOnce()
     expect(buildTrajectory).not.toHaveBeenCalled()
 
-    assembler.append(input(at(2, 'active/update', {})))
+    assembler.append(input(at(SessionSeq(2), 'active/update', {})))
     expect(assembler.flush()).toBe(true)
     expect(chat.apply).toHaveBeenCalledOnce()
     expect(trajectory.apply).not.toHaveBeenCalled()
@@ -234,7 +293,7 @@ describe('ConversationNodeAssembler', () => {
     expect((assembler.snapshot('trajectory') as readonly ConversationViewNode[])
       .map(node => node.data)).toEqual([{ updates: 1 }])
 
-    assembler.append(input(at(3, 'active/update', {})))
+    assembler.append(input(at(SessionSeq(3), 'active/update', {})))
     expect(assembler.flush()).toBe(true)
     expect(chat.apply).toHaveBeenCalledTimes(2)
     expect(trajectory.apply).toHaveBeenCalledOnce()
@@ -270,13 +329,13 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'tool/call', { turn: 1, step: 1, callId: 'a', name: 'x', arguments: '{}' })),
-      input(at(2, 'tool/call', { turn: 1, step: 1, callId: 'b', name: 'x', arguments: '{}' })),
+      input(at(SessionSeq(1), 'tool/call', { turn: 1, step: 1, callId: 'a', name: 'x', arguments: '{}' })),
+      input(at(SessionSeq(2), 'tool/call', { turn: 1, step: 1, callId: 'b', name: 'x', arguments: '{}' })),
     ], false)
     assembler.flush()
     starts.mockClear()
 
-    assembler.append(input(at(3, 'tool/result', {
+    assembler.append(input(at(SessionSeq(3), 'tool/result', {
       turn: 1,
       step: 1,
       message: { source: { type: 'tool-result', callId: 'a' }, content: [], isError: false },
@@ -321,11 +380,11 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(1, 'linear/start', {}))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'linear/start', {}))], false)
     starts.mockClear()
 
     for (let seq = 2; seq <= 1_001; seq++) {
-      assembler.append(input(at(seq, 'linear/update', {})))
+      assembler.append(input(at(SessionSeq(seq), 'linear/update', {})))
     }
     assembler.flush()
 
@@ -335,16 +394,16 @@ describe('ConversationNodeAssembler', () => {
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe(1_000)
   })
 
-  it('keeps one packed Match through replace, Location replay, and Registry rebuild', () => {
+  it('keeps one transient Match through replace, Location replay, and Registry rebuild', () => {
     interface State {
       readonly updates: readonly string[]
-      readonly packedStatus: string | undefined
+      readonly transientStatus: string | undefined
     }
 
     const matches = vi.fn((event: SessionEventLike) => {
       if (event.type === 'step/start') return { id: '2:3', role: 'start' as const }
       if ((event.type as string) === 'probe/update'
-        || event.type === 'chunkrow/text-chunks') {
+        || event.type === 'assistant/live-chunk') {
         return { id: '2:3', role: 'update' as const }
       }
       return null
@@ -354,14 +413,14 @@ describe('ConversationNodeAssembler', () => {
       context: ConversationNodeContext<State> & { readonly state: State },
       match: ConversationMatch,
     ): State => {
-      if (match.event.type === 'chunkrow/text-chunks') {
+      if (match.event.type === 'assistant/live-chunk') {
         return {
           ...context.state,
           updates: [
             ...context.state.updates,
-            `packed:${String(match.event.seq)}-${String(match.event.seq + match.event.data.texts.length - 1)}`,
+            `transient:${String(match.event.seq)}:${match.event.data.chunk.type}`,
           ],
-          packedStatus: match.location.kind === 'step'
+          transientStatus: match.location.kind === 'step'
             ? match.location.step.status
             : match.location.kind,
         }
@@ -372,9 +431,9 @@ describe('ConversationNodeAssembler', () => {
       }
     })
     const definition: ConversationNodeDefinition<State> = {
-      kind: 'packed-probe',
+      kind: 'transient-probe',
       match: matches,
-      start: () => ({ updates: [], packedStatus: undefined }),
+      start: () => ({ updates: [], transientStatus: undefined }),
       update: updates,
       target: 'test',
       buildViewNode: context => context.state === undefined
@@ -388,22 +447,17 @@ describe('ConversationNodeAssembler', () => {
         }),
     }
     const passive: ConversationNodeDefinition<null> = {
-      kind: 'packed-passive',
+      kind: 'transient-passive',
       match: passiveMatches,
       start: () => null,
       update: context => context.state,
     }
-    const run = chunkInput({
-      type: 'text-chunks',
-      seq0: 12,
-      time0: 1_700_000_000_012,
-      data: { turn: 2, step: 3, index: 0, dt: [1, 1], texts: ['a', 'b', 'c'] },
-    })
+    const delta = transientChunk(12.5, 2, 3, { type: 'text-delta', index: 0, text: 'abc' })
     const inputs: SessionEventLikeEntry[] = [
-      input(at(10, 'step/start', { turn: 2, step: 3 })),
-      input(at(11, 'probe/update', { turn: 2, step: 3 })),
-      run,
-      input(at(15, 'probe/update', { turn: 2, step: 3 })),
+      input(at(SessionSeq(10), 'step/start', { turn: 2, step: 3 })),
+      input(at(SessionSeq(11), 'probe/update', { turn: 2, step: 3 })),
+      delta,
+      input(at(SessionSeq(15), 'probe/update', { turn: 2, step: 3 })),
     ]
     const assembler = new ConversationNodeAssembler(
       new TestEventDefinitions([definition, passive]),
@@ -417,28 +471,28 @@ describe('ConversationNodeAssembler', () => {
     expect(passiveMatches).toHaveBeenCalledTimes(4)
     expect(updates).toHaveBeenCalledTimes(3)
     expect(updates.mock.calls.filter(([, match]) => (
-      match.event.type === 'chunkrow/text-chunks'
+      match.event.type === 'assistant/live-chunk'
     ))).toHaveLength(1)
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toEqual({
-      updates: ['event:11', 'packed:12-14', 'event:15'],
-      packedStatus: 'open',
+      updates: ['event:11', 'transient:12.5:text-delta', 'event:15'],
+      transientStatus: 'open',
       matches: [
         { type: 'step/start', seq: 10 },
         { type: 'probe/update', seq: 11 },
-        { type: 'chunkrow/text-chunks', seq: 12 },
+        { type: 'assistant/live-chunk', seq: 12.5 },
         { type: 'probe/update', seq: 15 },
       ],
     })
 
-    assembler.append(input(at(16, 'step/end', { turn: 2, step: 3 })))
+    assembler.append(input(at(SessionSeq(16), 'step/end', { turn: 2, step: 3 })))
     assembler.flush()
 
     expect(updates.mock.calls.filter(([, match]) => (
-      match.event.type === 'chunkrow/text-chunks'
+      match.event.type === 'assistant/live-chunk'
     ))).toHaveLength(2)
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toMatchObject({
-      updates: ['event:11', 'packed:12-14', 'event:15'],
-      packedStatus: 'closed',
+      updates: ['event:11', 'transient:12.5:text-delta', 'event:15'],
+      transientStatus: 'closed',
     })
 
     matches.mockClear()
@@ -451,11 +505,79 @@ describe('ConversationNodeAssembler', () => {
     expect(passiveMatches).toHaveBeenCalledTimes(5)
     expect(updates).toHaveBeenCalledTimes(3)
     expect(updates.mock.calls.filter(([, match]) => (
-      match.event.type === 'chunkrow/text-chunks'
+      match.event.type === 'assistant/live-chunk'
     ))).toHaveLength(1)
   })
 
-  it('replays one pending packed Match after prepend supplies its scalar start', () => {
+  it('settles one Assistant attempt without replacing unrelated Contexts', () => {
+    interface State { readonly events: readonly string[] }
+    const definition: ConversationNodeDefinition<State> = {
+      kind: 'assistant-settlement',
+      target: 'test',
+      match: (event) => {
+        if (event.type === 'step/start') {
+          return { id: `${String(event.data.turn)}:${String(event.data.step)}`, role: 'start' }
+        }
+        if (event.type === 'assistant/live-chunk'
+          || event.type === 'assistant/message'
+          || event.type === 'assistant/attempt'
+          || event.type === 'llm/retry') {
+          return { id: `${String(event.data.turn)}:${String(event.data.step)}`, role: 'update' }
+        }
+        return null
+      },
+      start: () => ({ events: [] }),
+      update: (context, match) => ({
+        events: [...context.state.events, match.event.type],
+      }),
+      buildViewNode: context => context.state === undefined
+        ? null
+        : node(context, context.state.events),
+    }
+    const apply = vi.fn()
+    const assembler = new ConversationNodeAssembler(
+      new TestEventDefinitions([definition]),
+      new TestViewDefinitions([testView(apply)]),
+    )
+    const firstStart = input(at(SessionSeq(10), 'step/start', { turn: 2, step: 3 }))
+    const secondStart = input(at(SessionSeq(11), 'step/start', { turn: 2, step: 4 }))
+    const delta = transientChunk(11.5, 2, 3, { type: 'text-delta', index: 0, text: 'abc' })
+    const later = input(at(SessionSeq(13), 'llm/retry', { turn: 2, step: 3 }))
+    assembler.replaceWindow([firstStart, secondStart, delta, later], false)
+    assembler.flush()
+    const before = [...testSnapshot(assembler)?.nodes.values() ?? []]
+    const unaffected = before.find(candidate => candidate.id === '2:4')
+    expect(unaffected).toBeDefined()
+    apply.mockClear()
+    const settlementEvent = at(SessionSeq(12), 'assistant/message', {
+      turn: 2,
+      step: 3,
+      message: { role: 'assistant', content: [], source: { kind: 'model', provider: 'p', model: 'm' } },
+      stream: [],
+    })
+    if (settlementEvent.type !== 'assistant/message') throw new Error('expected Assistant settlement')
+    const settlement = { type: 'event' as const, event: settlementEvent }
+
+    expect(assembler.settleAssistant(LlmAttemptId('test-attempt'), settlement)).toBe('immediate')
+    assembler.flush()
+
+    const after = [...testSnapshot(assembler)?.nodes.values() ?? []]
+    expect(after.find(candidate => candidate.id === '2:3')?.data)
+      .toEqual(['assistant/message', 'llm/retry'])
+    expect(after.find(candidate => candidate.id === '2:4')).toBe(unaffected)
+    expect(apply).toHaveBeenCalledOnce()
+    expect(apply.mock.calls[0]?.[0]).toHaveLength(1)
+
+    assembler.append(transientChunk(13.5, 2, 3, { type: 'reasoning-delta', index: 0, text: 'x' }))
+    assembler.flush()
+    expect(assembler.settleAssistant(LlmAttemptId('test-attempt'))).toBe('immediate')
+    assembler.flush()
+    expect([...testSnapshot(assembler)?.nodes.values() ?? []]
+      .find(candidate => candidate.id === '2:3')?.data)
+      .toEqual(['assistant/message', 'llm/retry'])
+  })
+
+  it('replays one pending transient Match after prepend supplies its durable start', () => {
     const starts = vi.fn(() => ({ batches: 0, status: 'unresolved' }))
     const updates = vi.fn((
       context: ConversationNodeContext<{ batches: number; status: string }> & {
@@ -467,12 +589,12 @@ describe('ConversationNodeAssembler', () => {
       status: match.location.kind === 'step' ? match.location.step.status : match.location.kind,
     }))
     const definition: ConversationNodeDefinition<{ batches: number; status: string }> = {
-      kind: 'packed-pending',
+      kind: 'transient-pending',
       match: (event) => {
         if (event.type === 'step/start') {
           return { id: `${String(event.data.turn)}:${String(event.data.step)}`, role: 'start' }
         }
-        if (event.type === 'chunkrow/reasoning-chunks') {
+        if (event.type === 'assistant/live-chunk') {
           return { id: `${String(event.data.turn)}:${String(event.data.step)}`, role: 'update' }
         }
         return null
@@ -491,14 +613,9 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    const run = chunkInput({
-      type: 'reasoning-chunks',
-      seq0: 21,
-      time0: 1_700_000_000_021,
-      data: { turn: 4, step: 5, index: 0, dt: [0, -1], texts: ['', ' ', 'x'] },
-    })
+    const delta = transientChunk(21, 4, 5, { type: 'reasoning-delta', index: 0, text: 'x' })
 
-    assembler.replaceWindow([run], true)
+    assembler.replaceWindow([delta], true)
     assembler.flush()
 
     expect(starts).not.toHaveBeenCalled()
@@ -506,7 +623,7 @@ describe('ConversationNodeAssembler', () => {
     expect(testSnapshot(assembler)?.order).toEqual([])
 
     assembler.prepend([
-      input(at(20, 'step/start', { turn: 4, step: 5 })),
+      input(at(SessionSeq(20), 'step/start', { turn: 4, step: 5 })),
     ], false)
     assembler.flush()
 
@@ -515,14 +632,14 @@ describe('ConversationNodeAssembler', () => {
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toEqual({
       batches: 1,
       status: 'open',
-      matches: [['step/start', 20], ['chunkrow/reasoning-chunks', 21]],
+      matches: [['step/start', 20], ['assistant/live-chunk', 21]],
     })
   })
 
-  it('rejects a packed event classified as a Context start', () => {
+  it('rejects a transient event classified as a Context start', () => {
     const definition: ConversationNodeDefinition<null> = {
-      kind: 'invalid-packed-start',
-      match: event => event.type === 'chunkrow/text-chunks'
+      kind: 'invalid-transient-start',
+      match: event => event.type === 'assistant/live-chunk'
         ? { id: 'one', role: 'start' }
         : null,
       start: () => null,
@@ -532,15 +649,10 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    const run = chunkInput({
-      type: 'text-chunks',
-      seq0: 1,
-      time0: 1_700_000_000_001,
-      data: { turn: 1, step: 1, index: 0, dt: [1, 1], texts: ['a', 'b', 'c'] },
-    })
+    const delta = transientChunk(1, 1, 1, { type: 'text-delta', index: 0, text: 'abc' })
 
-    expect(() => assembler.replaceWindow([run], false)).toThrow(
-      'conversation Context 20:invalid-packed-startone received a packed start Match',
+    expect(() => assembler.replaceWindow([delta], false)).toThrow(
+      'conversation Context 23:invalid-transient-startone received a transient start Match',
     )
   })
 
@@ -567,7 +679,7 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     const current = Array.from({ length: 100 }, (_, index) => (
-      input(at(index + 102, 'linear/update', {}))
+      input(at(SessionSeq(index + 102), 'linear/update', {}))
     ))
     assembler.replaceWindow(current, true)
     assembler.flush()
@@ -575,9 +687,9 @@ describe('ConversationNodeAssembler', () => {
     expect(updates).not.toHaveBeenCalled()
 
     const older = [
-      input(at(1, 'linear/start', {})),
+      input(at(SessionSeq(1), 'linear/start', {})),
       ...Array.from({ length: 100 }, (_, index) => (
-        input(at(index + 2, 'linear/update', {}))
+        input(at(SessionSeq(index + 2), 'linear/update', {}))
       )),
     ]
     assembler.prepend(older, false)
@@ -606,7 +718,7 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(10, 'tool/result', {
+    assembler.replaceWindow([input(at(SessionSeq(10), 'tool/result', {
       turn: 1,
       step: 1,
       message: { source: { type: 'tool-result', callId: 'a' }, content: [], isError: false },
@@ -615,7 +727,7 @@ describe('ConversationNodeAssembler', () => {
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data)
       .toEqual({ pendingStart: true })
 
-    assembler.prepend([input(at(5, 'tool/call', {
+    assembler.prepend([input(at(SessionSeq(5), 'tool/call', {
       turn: 1, step: 1, callId: 'a', name: 'x', arguments: '{}',
     }))], false)
     assembler.flush()
@@ -642,8 +754,8 @@ describe('ConversationNodeAssembler', () => {
     )
 
     expect(() => assembler.replaceWindow([
-      input(at(1, 'turn/start', { turn: 1 })),
-      input(at(2, 'turn/end', { turn: 1, reason: { kind: 'completed' } })),
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'turn/end', { turn: 1, reason: { kind: 'completed' } })),
     ], false)).toThrow('received an update before its start Match')
   })
 
@@ -677,13 +789,14 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([source, consumer]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(10, 'assistant/message', {
+    assembler.replaceWindow([input(at(SessionSeq(10), 'assistant/message', {
       turn: 2, step: 1, message: { role: 'assistant', content: [] },
+      stream: [],
     }))], true)
     assembler.flush()
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe(-1)
 
-    assembler.prepend([input(at(5, 'user/message', {
+    assembler.prepend([input(at(SessionSeq(5), 'user/message', {
       id: 'm1', value: 7, content: [], source: { kind: 'user' },
     }))], false)
     assembler.flush()
@@ -718,23 +831,25 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(40, 'user/message', { id: 'm40', content: [], source: { kind: 'user' } })),
-      input(at(50, 'assistant/message', {
+      input(at(SessionSeq(40), 'user/message', { id: 'm40', content: [], source: { kind: 'user' } })),
+      input(at(SessionSeq(50), 'assistant/message', {
         turn: 1, step: 1, message: { role: 'assistant', content: [] },
+        stream: [],
       })),
     ], true)
     assembler.flush()
 
     assembler.prepend([
-      input(at(10, 'user/message', { id: 'm10', content: [], source: { kind: 'user' } })),
-      input(at(30, 'user/message', { id: 'm30', content: [], source: { kind: 'user' } })),
+      input(at(SessionSeq(10), 'user/message', { id: 'm10', content: [], source: { kind: 'user' } })),
+      input(at(SessionSeq(30), 'user/message', { id: 'm30', content: [], source: { kind: 'user' } })),
     ], false)
     assembler.flush()
-    assembler.append(input(at(60, 'user/message', {
+    assembler.append(input(at(SessionSeq(60), 'user/message', {
       id: 'm60', content: [], source: { kind: 'user' },
     })))
-    assembler.append(input(at(70, 'assistant/message', {
+    assembler.append(input(at(SessionSeq(70), 'assistant/message', {
       turn: 2, step: 1, message: { role: 'assistant', content: [] },
+      stream: [],
     })))
     assembler.flush()
 
@@ -762,8 +877,9 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([consumer]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(10, 'assistant/message', {
+    assembler.replaceWindow([input(at(SessionSeq(10), 'assistant/message', {
       turn: 2, step: 1, message: { role: 'assistant', content: [] },
+      stream: [],
     }))], true)
     assembler.flush()
 
@@ -807,12 +923,14 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'user/message', { id: 'source', content: [], source: { kind: 'user' } })),
-      input(at(2, 'assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [] } })),
+      input(at(SessionSeq(1), 'user/message', { id: 'source', content: [], source: { kind: 'user' } })),
+      input(at(SessionSeq(2), 'assistant/message', {
+        turn: 1, step: 1, message: { role: 'assistant', content: [] }, stream: [],
+      })),
     ], false)
     assembler.flush()
 
-    expect(assembler.append(input(at(3, 'source/update', { value: 2 })))).toBe('immediate')
+    expect(assembler.append(input(at(SessionSeq(3), 'source/update', { value: 2 })))).toBe('immediate')
     assembler.flush()
 
     expect(consumerStart).toHaveBeenCalledTimes(2)
@@ -875,14 +993,16 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'user/message', { id: 'source', content: [], source: { kind: 'user' } })),
-      input(at(2, 'turn/start', { turn: 1 })),
-      input(at(3, 'assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [] } })),
-      input(at(4, 'tool/call', { turn: 1, step: 1, callId: 'call', name: 'x', arguments: '{}' })),
+      input(at(SessionSeq(1), 'user/message', { id: 'source', content: [], source: { kind: 'user' } })),
+      input(at(SessionSeq(2), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(3), 'assistant/message', {
+        turn: 1, step: 1, message: { role: 'assistant', content: [] }, stream: [],
+      })),
+      input(at(SessionSeq(4), 'tool/call', { turn: 1, step: 1, callId: 'call', name: 'x', arguments: '{}' })),
     ], false)
 
-    assembler.append(input(at(5, 'diamond/x', { value: 20 })))
-    assembler.append(input(at(6, 'diamond/a', { value: 2 })))
+    assembler.append(input(at(SessionSeq(5), 'diamond/x', { value: 20 })))
+    assembler.append(input(at(SessionSeq(6), 'diamond/a', { value: 2 })))
     assembler.flush()
 
     const value = [...testSnapshot(assembler)?.nodes.values() ?? []]
@@ -911,13 +1031,13 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView(apply)]),
     )
     assembler.replaceWindow([
-      input(at(1, 'turn/start', { turn: 1 })),
-      input(at(2, 'step/start', { turn: 1, step: 1 })),
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })),
     ], false)
     assembler.flush()
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe('open')
 
-    assembler.append(input(at(3, 'step/end', { turn: 1, step: 1 })))
+    assembler.append(input(at(SessionSeq(3), 'step/end', { turn: 1, step: 1 })))
     assembler.flush()
 
     expect(starts).toHaveBeenCalledTimes(2)
@@ -990,18 +1110,64 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'turn/start', { turn: 1 })),
-      input(at(2, 'step/start', { turn: 1, step: 1 })),
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })),
     ], false)
     assembler.flush()
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data)
       .toEqual({ step: 1, turn: 1 })
 
-    assembler.append(input(at(3, 'scope-probe/update', { turn: 1, step: 1, value: 2 })))
+    assembler.append(input(at(SessionSeq(3), 'scope-probe/update', { turn: 1, step: 1, value: 2 })))
     assembler.flush()
 
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data)
       .toEqual({ step: 2, turn: 2 })
+  })
+
+  it('does not republish an equivalent Location value', () => {
+    const apply = vi.fn()
+    const initialValue = { value: 1 }
+    const changedValue = { value: 2 }
+    const definition: ConversationNodeDefinition<{ readonly value: ScopeProbeStepData }> = {
+      kind: 'scope-probe',
+      match: (event) => {
+        if (event.type === 'step/start') return { id: '1:1', role: 'start' }
+        if ((event.type as string) === 'scope-probe/update') return { id: '1:1', role: 'update' }
+        return null
+      },
+      start: () => ({ value: initialValue }),
+      update: (_context, match) => ({
+        value: (match.event.data as unknown as { changed: boolean }).changed
+          ? changedValue
+          : initialValue,
+      }),
+      buildLocationData: (context, scope, previous) => {
+        if (scope !== 'step' || context.state === undefined) return null
+        if (previous?.kind === 'step'
+          && previous.turn === 1
+          && previous.step === 1
+          && previous.key === 'scope-probe'
+          && previous.value === context.state.value) return previous
+        return { kind: 'step', turn: 1, step: 1, key: 'scope-probe', value: context.state.value }
+      },
+    }
+    const assembler = new ConversationNodeAssembler(
+      new TestEventDefinitions([definition]),
+      new TestViewDefinitions([testView(apply)]),
+    )
+    assembler.replaceWindow([
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })),
+    ], false)
+    assembler.flush()
+
+    assembler.append(input(at(SessionSeq(3), 'scope-probe/update', { turn: 1, step: 1, changed: false })))
+    expect(assembler.flush()).toBe(false)
+    expect(apply).not.toHaveBeenCalled()
+
+    assembler.append(input(at(SessionSeq(4), 'scope-probe/update', { turn: 1, step: 1, changed: true })))
+    expect(assembler.flush()).toBe(true)
+    expect(apply).toHaveBeenCalledOnce()
   })
 
   it('updates existing turn Locations when their Step membership changes', () => {
@@ -1022,11 +1188,11 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView(apply)]),
     )
-    assembler.replaceWindow([input(at(1, 'turn/start', { turn: 1 }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'turn/start', { turn: 1 }))], false)
     assembler.flush()
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe(0)
 
-    assembler.append(input(at(2, 'step/start', { turn: 1, step: 1 })))
+    assembler.append(input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })))
     assembler.flush()
 
     expect(apply).toHaveBeenCalledOnce()
@@ -1042,7 +1208,7 @@ describe('ConversationNodeAssembler', () => {
     assembler.replaceWindow([], false)
     assembler.flush()
 
-    assembler.append(input(at(1, 'turn/start', { turn: 1 })))
+    assembler.append(input(at(SessionSeq(1), 'turn/start', { turn: 1 })))
     assembler.flush()
 
     expect(apply).toHaveBeenCalledOnce()
@@ -1083,11 +1249,11 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'turn/start', { turn: 1 })),
-      input(at(2, 'step/start', { turn: 1, step: 1 })),
-      input(at(3, 'turn/start', { turn: 2 })),
-      input(at(4, 'command/run', { commandId: 'command', name: 'x' })),
-      input(at(5, 'compaction/start', { compactionId: 'compact', turn: null })),
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })),
+      input(at(SessionSeq(3), 'turn/start', { turn: 2 })),
+      input(at(SessionSeq(4), 'command/run', { commandId: 'command', name: 'x' })),
+      input(at(SessionSeq(5), 'compaction/start', { compactionId: 'compact', turn: null })),
     ], false)
     assembler.flush()
 
@@ -1111,12 +1277,12 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'turn/start', { turn: 1 })),
-      input(at(2, 'step/start', { turn: 1, step: 1 })),
+      input(at(SessionSeq(1), 'turn/start', { turn: 1 })),
+      input(at(SessionSeq(2), 'step/start', { turn: 1, step: 1 })),
     ], false)
     assembler.flush()
 
-    assembler.append(input(at(3, 'turn/end', { turn: 1, reason: { kind: 'aborted' } })))
+    assembler.append(input(at(SessionSeq(3), 'turn/end', { turn: 1, reason: { kind: 'aborted' } })))
     assembler.flush()
 
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe('turn')
@@ -1125,7 +1291,7 @@ describe('ConversationNodeAssembler', () => {
   it('carries explicit coordinates across coordinate-free events in a partial window and live tail', () => {
     const definition: ConversationNodeDefinition<null> = {
       kind: 'location-probe',
-      match: event => (event.type as string) === 'tool/code-dispatch-start'
+      match: event => (event.type as string) === 'tool/ptc-dispatch-start'
         ? { id: String(event.seq), role: 'start' }
         : null,
       start: () => null,
@@ -1143,12 +1309,12 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(10, 'tool/call', { turn: 2, step: 3, callId: 'root', name: 'x', arguments: '{}' })),
-      input(at(11, 'tool/code-dispatch-start', { rootCallId: 'root', subCallId: 'a' })),
+      input(at(SessionSeq(10), 'tool/call', { turn: 2, step: 3, callId: 'root', name: 'x', arguments: '{}' })),
+      input(at(SessionSeq(11), 'tool/ptc-dispatch-start', { rootCallId: 'root', subCallId: 'a' })),
     ], true)
     assembler.flush()
 
-    assembler.append(input(at(12, 'tool/code-dispatch-start', { rootCallId: 'root', subCallId: 'b' })))
+    assembler.append(input(at(SessionSeq(12), 'tool/ptc-dispatch-start', { rootCallId: 'root', subCallId: 'b' })))
     assembler.flush()
 
     expect([...testSnapshot(assembler)?.nodes.values() ?? []].map(value => value.data))
@@ -1176,9 +1342,9 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(10, 'tool/call', { turn: 2, step: 3, callId: 'root', name: 'x', arguments: '{}' })),
-      input(at(11, 'step/end', { turn: 2, step: 3 })),
-      input(at(12, 'turn/end', { turn: 2, reason: { kind: 'completed' } })),
+      input(at(SessionSeq(10), 'tool/call', { turn: 2, step: 3, callId: 'root', name: 'x', arguments: '{}' })),
+      input(at(SessionSeq(11), 'step/end', { turn: 2, step: 3 })),
+      input(at(SessionSeq(12), 'turn/end', { turn: 2, reason: { kind: 'completed' } })),
     ], true)
     assembler.flush()
 
@@ -1205,10 +1371,10 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(1, 'step/start', { turn: 1, step: 1 }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'step/start', { turn: 1, step: 1 }))], false)
     assembler.flush()
 
-    assembler.append(input(at(2, 'step/end', { turn: 1, step: 1 })))
+    assembler.append(input(at(SessionSeq(2), 'step/end', { turn: 1, step: 1 })))
     assembler.flush()
 
     expect(seen).toHaveBeenCalledTimes(2)
@@ -1229,7 +1395,7 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
 
-    assembler.replaceWindow([input(at(1, 'command/run', { commandId: 'one', name: 'x' }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' }))], false)
     assembler.flush()
 
     expect(fallbackStart).toHaveBeenCalledOnce()
@@ -1253,7 +1419,7 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
 
-    assembler.replaceWindow([input(at(1, 'command/run', { commandId: 'one', name: 'x' }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' }))], false)
     assembler.flush()
 
     expect(fallbackStart).toHaveBeenCalledOnce()
@@ -1274,7 +1440,7 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([claimed], fallbackDefinition(fallbackStart)),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(1, 'command/run', { commandId: 'one', name: 'x' }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' }))], false)
     assembler.flush()
 
     expect(fallbackStart).not.toHaveBeenCalled()
@@ -1298,11 +1464,11 @@ describe('ConversationNodeAssembler', () => {
       new TestEventDefinitions([definition]),
       new TestViewDefinitions([testView()]),
     )
-    assembler.replaceWindow([input(at(1, 'command/run', { commandId: 'one', name: 'x' }))], false)
+    assembler.replaceWindow([input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' }))], false)
     assembler.flush()
     expect(testSnapshot(assembler)?.order).toHaveLength(1)
 
-    assembler.append(input(at(2, 'toggle/hide', {})))
+    assembler.append(input(at(SessionSeq(2), 'toggle/hide', {})))
     expect(() => assembler.flush()).toThrow(/withdrew materialized target "test"/)
 
     expect(testSnapshot(assembler)?.order).toHaveLength(1)
@@ -1322,7 +1488,7 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     expect(() => startAssembler.replaceWindow([
-      input(at(1, 'command/run', { commandId: 'one', name: 'x' })),
+      input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' })),
     ], false)).toThrow(/Definition "undefined-start" returned undefined from start/)
 
     const updateUndefined: ConversationNodeDefinition<boolean> = {
@@ -1342,10 +1508,10 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     updateAssembler.replaceWindow([
-      input(at(1, 'command/run', { commandId: 'one', name: 'x' })),
+      input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' })),
     ], false)
     expect(() => updateAssembler.append(
-      input(at(2, 'command/done', { commandId: 'one', kind: 'success' })),
+      input(at(SessionSeq(2), 'command/done', { commandId: 'one', kind: 'success' })),
     )).toThrow(/Definition "undefined-update" returned undefined from update/)
   })
 
@@ -1363,12 +1529,12 @@ describe('ConversationNodeAssembler', () => {
       new TestViewDefinitions([testView()]),
     )
     assembler.replaceWindow([
-      input(at(1, 'command/run', { commandId: 'one', name: 'x' })),
+      input(at(SessionSeq(1), 'command/run', { commandId: 'one', name: 'x' })),
     ], false)
     assembler.flush()
 
     expect(() => assembler.append(
-      input(at(2, 'command/run', { commandId: 'two', name: 'x' })),
+      input(at(SessionSeq(2), 'command/run', { commandId: 'two', name: 'x' })),
     )).toThrow(/received more than one start Match/)
     assembler.flush()
     expect([...testSnapshot(assembler)?.nodes.values() ?? []][0]?.data).toBe(1)

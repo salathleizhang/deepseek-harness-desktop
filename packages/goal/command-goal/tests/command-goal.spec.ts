@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
-import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import GoalService from '@deepseek-ai/dsh-goal'
 import type { GoalRef } from '@deepseek-ai/dsh-goal'
-import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import * as commandGoal from '@deepseek-ai/dsh-command-goal'
+import { createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
 
 interface Harness {
   readonly ctx: Context
@@ -21,7 +22,7 @@ interface Harness {
 function stubAgent(ctx: Context, id: string): { agent: Agent; session: Session } {
   // Store-created: the command executor durably logs lifecycle events on it.
   const session = ctx.sessions.create(SessionId(id))
-  const inbox = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
+  const inbox = createInboxStub()
   let status: AgentStatus = 'idle'
   const agent: Agent = {
     id: session.id,
@@ -33,7 +34,7 @@ function stubAgent(ctx: Context, id: string): { agent: Agent; session: Session }
     send: () => {},
     followup: () => {},
     steer: () => {},
-    inject(input) { inbox.append('next-step', input) },
+    inject(input) { this.inbox.append('next-step', input) },
     cancel() { status = 'idle' },
     runMaintenance: task => task(new AbortController().signal),
     whenIdle() { return Promise.resolve() },
@@ -45,29 +46,29 @@ function stubAgent(ctx: Context, id: string): { agent: Agent; session: Session }
 async function harness(): Promise<Harness> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(AgentRegistry)
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(GoalService)
   const plugin = await ctx.plugin(commandGoal)
   const { agent, session } = stubAgent(ctx, `command-goal-${Math.random()}`)
-  ctx.agents.register(agent)
+  await ctx.agents.register(agent)
   return { ctx, agent, session, plugin }
 }
 
 /** The log with executor-owned command lifecycle bookkeeping stripped (goal assertions target domain events). */
-function domainEvents(session: Session): readonly Session['events'][number][] {
+function domainEvents(session: Session): readonly SessionEvent[] {
   const lifecycle = new Set<number>()
-  for (const event of session.events) {
+  for (const event of session.snapshotEvents()) {
     if (event.type !== 'command/run' && event.type !== 'command/done') continue
     lifecycle.add(event.seq)
     // The zero-step wrap around a lifecycle event is bookkeeping too.
-    const before = session.events[event.seq - 1]
-    const after = session.events[event.seq + 1]
+    const before = session.snapshotEvents()[event.seq - 1]
+    const after = session.snapshotEvents()[event.seq + 1]
     if (before?.type === 'turn/start') lifecycle.add(before.seq)
     if (after?.type === 'turn/end') lifecycle.add(after.seq)
   }
-  return session.events.filter(event => !lifecycle.has(event.seq))
+  return session.snapshotEvents().filter(event => !lifecycle.has(event.seq))
 }
 
 /** Execute `/goal` through the same registry boundary as a UI adapter. */
@@ -97,9 +98,10 @@ describe('@deepseek-ai/dsh-command-goal registration', () => {
     expect(loader.unwrapExports(commandGoal)).toBe(commandGoal)
 
     expect(test.ctx.commands.list(test.agent)).toContainEqual({
+      definitionId: '@deepseek-ai/dsh-command-goal',
       name: 'goal',
-      description: 'set or view the goal for a long-running task',
-      input: { hint: '[<objective>|clear|edit <objective>|pause|resume]', images: true },
+      description: 'Set or view the goal for a long-running task',
+      input: { hint: '[<objective>|clear|edit <objective>|pause|resume]', attachments: true },
     })
     expect(test.ctx.commands.find(test.agent, 'goal')).toBeDefined()
 
@@ -236,7 +238,7 @@ describe('/goal human command', () => {
   })
 })
 
-describe('/goal image attachments', () => {
+describe('/goal attachments', () => {
   const PNG = 'AAAA'
 
   /** Wire the fake store the executor admits through (once per harness). */
@@ -261,25 +263,35 @@ describe('/goal image attachments', () => {
         for (const input of inputs) refs.push(await saveImage(input))
         return refs
       },
+      saveFile(input: { data: Uint8Array; name?: string }) {
+        saved += 1
+        return Promise.resolve({
+          attachmentId: `att-${saved}`, bytes: input.data.byteLength, name: input.name ?? 'attachment',
+        })
+      },
     })
+    test.ctx.commands.registerFileReceiptResolver((_agent, receiptId) => receiptId === 'receipt-notes'
+      ? { attachmentId: 'file-notes' as never, bytes: 5, name: 'notes.txt' }
+      : undefined)
   }
 
-  /** Run /goal with `count` composer images through the executor boundary. */
-  async function runWithImages(test: Harness, suffix: string, count: number) {
-    const images = Array.from({ length: count }, (_, index) => ({
-      mediaType: 'image/png' as const, data: PNG, name: `ref-${index + 1}.png`,
-    }))
-    const execution = await test.ctx.commands.execute(test.agent, `/goal${suffix}`, images, new AbortController().signal)
+  /** Run /goal with a mixed composer batch through the executor boundary. */
+  async function runWithAttachments(test: Harness, suffix: string, includeFile = true) {
+    const attachments = [
+      { type: 'image' as const, mediaType: 'image/png' as const, data: PNG, name: 'ref.png' },
+      ...(includeFile ? [{ type: 'file' as const, receiptId: 'receipt-notes' }] : []),
+    ]
+    const execution = await test.ctx.commands.execute(test.agent, `/goal${suffix}`, attachments, new AbortController().signal)
     if (execution === undefined) throw new Error('goal command was not registered')
     return execution.result
   }
 
-  it('submits one user followup carrying the admitted images ahead of the round prompt', async () => {
+  it('submits one user followup carrying mixed attachments ahead of the round prompt', async () => {
     const test = await harness()
     provideStore(test)
     const followup = vi.fn()
     ;(test.agent as unknown as { followup: typeof followup }).followup = followup
-    const result = await runWithImages(test, ' rebuild the cathedral', 2)
+    const result = await runWithAttachments(test, ' rebuild the cathedral')
     expect(result.kind).toBe('success')
     expect(followup).toHaveBeenCalledTimes(1)
     const message = followup.mock.calls[0]?.[0] as {
@@ -287,9 +299,10 @@ describe('/goal image attachments', () => {
       source: { kind: string }
     }
     expect(message.source).toEqual({ kind: 'user' })
-    expect(message.content.map(block => block.type)).toEqual(['image', 'image', 'text'])
-    expect(message.content.at(-1)).toEqual({ type: 'text', text: 'Reference images for the goal objective.' })
-    expect((message.content[0] as { attachment: { name: string } }).attachment.name).toBe('ref-1.png')
+    expect(message.content.map(block => block.type)).toEqual(['image', 'file', 'text'])
+    expect(message.content.at(-1)).toEqual({ type: 'text', text: 'Reference attachments for the goal objective.' })
+    expect((message.content[0] as { attachment: { name: string } }).attachment.name).toBe('ref.png')
+    expect((message.content[1] as { attachment: { name: string } }).attachment.name).toBe('notes.txt')
   })
 
   it('accompanies an edit and a post-complete recreate the same way', async () => {
@@ -298,7 +311,7 @@ describe('/goal image attachments', () => {
     const followup = vi.fn()
     ;(test.agent as unknown as { followup: typeof followup }).followup = followup
     test.ctx.goals.create(test.agent, { objective: 'initial objective' })
-    const result = await runWithImages(test, ' edit refined objective', 1)
+    const result = await runWithAttachments(test, ' edit refined objective')
     expect(result.kind).toBe('success')
     expect(followup).toHaveBeenCalledTimes(1)
   })
@@ -310,10 +323,10 @@ describe('/goal image attachments', () => {
     ;(test.agent as unknown as { followup: typeof followup }).followup = followup
     test.ctx.goals.create(test.agent, { objective: 'active objective' })
     for (const suffix of [' pause', '', ' clear']) {
-      const result = await runWithImages(test, suffix, 1)
+      const result = await runWithAttachments(test, suffix, false)
       expect(result).toEqual({
         kind: 'error',
-        text: 'Image attachments only accompany a goal objective: /goal <objective> or /goal edit <objective>.',
+        text: 'Attachments only accompany a goal objective: /goal <objective> or /goal edit <objective>.',
       })
     }
     expect(followup).not.toHaveBeenCalled()
@@ -326,7 +339,7 @@ describe('/goal image attachments', () => {
     const followup = vi.fn()
     ;(test.agent as unknown as { followup: typeof followup }).followup = followup
     test.ctx.goals.create(test.agent, { objective: 'existing objective' })
-    const result = await runWithImages(test, ' replacement objective', 1)
+    const result = await runWithAttachments(test, ' replacement objective')
     expect(result.kind).toBe('error')
     expect(followup).not.toHaveBeenCalled()
   })

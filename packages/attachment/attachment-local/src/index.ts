@@ -1,21 +1,27 @@
 /** Local durable attachment backend rooted below `DSH_HOME`. @module @deepseek-ai/dsh-attachment-local */
 
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {
+  FileAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
-  ImageRequestPolicy,
+  ImageRequestTarget,
   RequestImageAttachment,
+  SaveFileAttachment,
+  SaveFileStreamAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { dshCachePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { NormalizationPolicy } from './normalization.ts'
-import { CompressionLimiter } from './compression-limiter.ts'
+import { CompressionLimiter, compressionFailure } from './compression-limiter.ts'
 import { commitPreparedImageFile, normalizedImagePath, prepareImageFile, readImageFile, validateImageFile } from './store.ts'
+import {
+  readFileStreamVerbatim, saveFileStreamVerbatim, saveFileVerbatim, storedFilePath,
+} from './file-store.ts'
 import { readRequestImageFile, requestImageVariantId } from './request-image.ts'
 
 export { canPassThroughNormalization, normalizeImage } from './normalization.ts'
@@ -124,9 +130,7 @@ class SharedRequest<T> {
       }, (error: unknown) => {
         signal.removeEventListener('abort', abort)
         release(false)
-        // CompressionLimiter normalizes task rejections before this handler.
-        // oxlint-disable-next-line typescript/prefer-promise-reject-errors
-        reject(error)
+        reject(compressionFailure(error))
       })
     })
   }
@@ -162,12 +166,15 @@ export class LocalAttachmentStore extends AttachmentStore {
   readonly normalizationPolicy: Readonly<NormalizationPolicy>
   /** Resolved instance-level compression limit. */
   readonly imageCompressionConcurrency: number
+  private readonly cacheRoot: string
   private readonly compression: CompressionLimiter
   private readonly requestInflight = new Map<string, SharedRequest<RequestImageAttachment>>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
-    this.root = resolve(join(resolveDshHome(config.dshHome), 'attachments', 'v1'))
+    const dshHome = resolveDshHome(config.dshHome)
+    this.root = join(dshHome, 'attachments', 'v1')
+    this.cacheRoot = dshCachePath({ dshHome }, 'attachments')
     this.imageLimits = Object.freeze({
       maxImageBytes: config.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES,
       maxImagesPerMessage: config.maxImagesPerMessage ?? DEFAULT_MAX_IMAGES_PER_MESSAGE,
@@ -222,22 +229,38 @@ export class LocalAttachmentStore extends AttachmentStore {
     return normalizedImagePath(this.root, ref)
   }
 
+  override async saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef> {
+    return saveFileVerbatim(this.root, input)
+  }
+
+  override async saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> {
+    return saveFileStreamVerbatim(this.root, input)
+  }
+
+  override readFileStream(ref: FileAttachmentRef, signal?: AbortSignal): AsyncIterable<Uint8Array> {
+    return readFileStreamVerbatim(this.root, ref, signal)
+  }
+
+  override fileHostPath(ref: FileAttachmentRef): string {
+    return storedFilePath(this.root, ref)
+  }
+
   override async readImageRequest(
     ref: ImageAttachmentRef,
-    policy: ImageRequestPolicy,
+    target: ImageRequestTarget,
     signal?: AbortSignal,
   ): Promise<RequestImageAttachment> {
-    return this.requestVersion(ref, policy, undefined, signal)
+    return this.requestVersion(ref, target, undefined, signal)
   }
 
   private requestVersion(
     ref: ImageAttachmentRef,
-    policy: ImageRequestPolicy,
+    target: ImageRequestTarget,
     stored: StoredImageAttachment | undefined,
     signal: AbortSignal | undefined,
   ): Promise<RequestImageAttachment> {
     signal?.throwIfAborted()
-    const variantId = requestImageVariantId(ref, policy)
+    const variantId = requestImageVariantId(ref, target)
     const key = String(variantId)
     let operation = this.requestInflight.get(key)
     if (operation?.controller.signal.aborted) {
@@ -247,9 +270,9 @@ export class LocalAttachmentStore extends AttachmentStore {
     if (operation === undefined) {
       const shared = new SharedRequest<RequestImageAttachment>(sharedSignal => this.compression.run(async () => {
         const request = await readRequestImageFile(
-          this.root,
+          this.cacheRoot,
           stored ?? await this.readImage(ref, sharedSignal),
-          policy,
+          target,
           sharedSignal,
         )
         return request

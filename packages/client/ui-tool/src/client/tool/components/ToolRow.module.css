@@ -172,8 +172,9 @@
   gap: 4px;
   margin: 4px 0 2px 4px;
   padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: 999px;
+  corner-shape: round;
   /* Base background, not bg-overlay: the overlay token is a raised dark
      surface and reads too heavy for a quiet in-flow affordance. */
   background: var(--dsw-alias-bg-base);
@@ -212,7 +213,7 @@
   display: flex;
   flex-direction: column;
   margin: 4px 0 4px 4px;
-  border: 1px solid var(--dsw-alias-border-l1);
+  border: 0.5px solid var(--dsw-alias-border-l1);
   border-radius: 12px;
   background: var(--dsw-alias-markdown-code-block);
   font: var(--dsw-font-markdown-code-block-small);
@@ -260,7 +261,7 @@
    (it sits between the padded sections, not inside their grid). */
 .ioDivider {
   flex: none;
-  height: 1px;
+  height: 0.5px;
   background: var(--dsw-alias-border-l2);
 }
 
@@ -288,6 +289,7 @@
 .terminalBody,
 .diffBody,
 .readBody,
+.imageBody,
 .searchBody,
 .webBody {
   margin: 4px 0 4px 4px;
@@ -298,6 +300,28 @@
    retained rows. Same column indent as the card body. */
 .searchRecovery {
   margin: 4px 0 4px 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The image card's in-card label: the view's replacement title, else the
+   shortened path — the same role ReadBlock's own label plays, so the presentation
+   contract's replacement-title rule is honoured here too. */
+.imageLabel {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+  font: var(--dsw-font-sm-13);
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The image card's own result text (media type, dimensions, byte size) under the
+   gallery, in the same muted tone the search recovery footer uses. Always
+   rendered: the attachment presentation slot is optional, so when nothing
+   occupies it the gallery is empty and this line is the only evidence an image
+   was returned. The enclosing .imageBody already carries the row indent. */
+.imageMeta {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: var(--dsw-font-xs-13);
@@ -317,7 +341,7 @@
   --dsl-terminal-font: var(--dsw-font-markdown-code-block-small);
   --dsl-terminal-line-height: 18px;
   --dsl-terminal-output-max-height: 224px;
-  border: 1px solid var(--dsw-alias-border-l1);
+  border: 0.5px solid var(--dsw-alias-border-l1);
 }
 
 /* Visually hidden run-state label for assistive technology: the StateDot and

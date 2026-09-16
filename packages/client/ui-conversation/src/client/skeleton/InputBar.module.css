@@ -10,6 +10,13 @@
   padding: 0 var(--dsh-composer-side-clearance) 8px;
 }
 
+/* A mounted stats row in the composer dock (data-composer-stats, ui-chat
+   StatsPills) brings its own 4px top pad, so the root's bottom clearance
+   tightens to keep the drawn B8 rhythm. */
+.root:has([data-composer-stats]) {
+  padding-bottom: 4px;
+}
+
 .hero {
   /* No bottom pad in the centered hero, but the side clearance must survive:
      the hero wrapper is full-width on narrow viewports, so this padding is
@@ -34,19 +41,20 @@
   position: relative; /* overlay anchor positioning context */
   display: flex;
   flex-direction: column;
-  /* figma Input 75:8208: 12px between the text area and the button row; 10px
-     top pad on the card before .InputText. */
+  /* figma Input 75:8208: 12px between the text area and the button row; the
+     card's top pad before .InputText tightened from the drawn 10 to 8. */
   gap: 12px;
   width: 100%;
   max-width: var(--dsh-composer-card-max-width);
-  padding-top: 10px;
-  /* Input stroke: black/0.10 light, white/0.06 dark (figma darkmode note says
-     the input border is one notch weaker than buttons) — exactly the
-     l2-darkmode-thin pair. Fill: the input surface token (elevated in dark). */
-  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  padding-top: 8px;
+  /* Input stroke: the light neutral (l2, one step above the menus' l1),
+     drawn as the elevation hairline so it costs no layout; the shadow is the
+     soft elevation tier. Fill: the input surface token (elevated in dark). */
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
   border-radius: 22px;
   background: var(--dsw-specific-input-major);
-  box-shadow: var(--dsw-shadow-lv2);
+  box-shadow: var(--dsw-elevation-soft);
   /* The draft text follows the Settings font-size preference (the textarea,
      mirror, and backdrop all inherit from here, so the three layers stay in
      step); the line height keeps the default 10px leading via the shared px
@@ -69,7 +77,7 @@
    by an SVG dash ring (stroke-width 2 centered on the box edge = 1px visible
    inside), which keeps the 22px radius and both themes. */
 .cardWorkspaceTrigger {
-  border-color: transparent;
+  --dsw-elevation-stroke-color: transparent;
   cursor: pointer;
 }
 
@@ -122,8 +130,8 @@
   margin-right: 4px;
 }
 
-/* The card's 22px corner arc still overlaps the scrollport's top (10px top
-   pad reaches only y=10): start the thumb's travel below the arc so it never
+/* The card's 22px corner arc still overlaps the scrollport's top (8px top
+   pad reaches only y=8): start the thumb's travel below the arc so it never
    pokes outside the capsule. WebKit-path only; Firefox's thin bar has no
    track margin, an accepted remainder. */
 .scroll::-webkit-scrollbar-track {
@@ -141,6 +149,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--dsw-alias-state-business-primary);
   animation: input-pending 1s ease-in-out infinite alternate;
 }
@@ -151,11 +160,15 @@
 }
 
 /* The contenteditable draft surface (grows with its content; .scroll caps
-   and scrolls it). figma .InputText 34:10434: pl 16 / pr 12 / pt 4 — the
-   right pad is 8 here plus .scroll's 4px bar inset. */
+   and scrolls it). figma .InputText 34:10434 drew pl 16 / pr 12 / pt 4; the
+   left pad tightened to 14, and the right pad is 8 here plus .scroll's 4px
+   bar inset. */
 .input {
   box-sizing: border-box;
-  padding: 4px 8px 0 16px;
+  /* Docked floor: one 24px line + 4px top pad = 28 content height; 36 leaves
+     an 8px breath below the line (the hero keeps its own 52px floor below). */
+  min-height: 36px;
+  padding: 4px 8px 0 14px;
   font-family: var(--dsw-font-family);
   font-size: inherit;
   line-height: inherit;
@@ -182,12 +195,25 @@
   color: var(--dsw-alias-label-caption);
 }
 
+.input[data-composer-composing] p:last-child::after {
+  content: none;
+}
+
+.input[data-composer-composing] + .placeholder {
+  visibility: hidden;
+}
+
 /* figma 34:10434: #ADB2B8 light / #81858C dark — the caption pair exactly.
-   Right inset mirrors .input's 8px pad (the other 4px sits on .scroll). */
+   Insets mirror .input's pads (the other right 4px sits on .scroll). One
+   ellipsized line: a wrapped second line would clip against the docked
+   36px floor. */
 .placeholder {
   position: absolute;
-  inset: 4px 8px auto 16px;
+  inset: 4px 8px auto 14px;
   color: var(--dsw-alias-label-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
   user-select: none;
 }
@@ -207,6 +233,16 @@
   min-height: 52px;
 }
 
+/* The hero's 52px floor fits two lines, so its placeholder clamps at two
+   instead of the docked single line. */
+.hero .placeholder {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
 /* Toolbar: attach + Plan + Read-only on the left; model + send on the right
    (figma Input_Bottom chrome). */
 .row {
@@ -216,8 +252,8 @@
   justify-content: space-between;
   gap: 12px;
   /* 2px moved from the bottom pad to the top: the whole control row sits 2px
-     lower in the card (it read too high against the textarea) while the card
-     height and the controls' own centering stay untouched. */
+     lower in the card (it read too high against the textarea) while the
+     controls' own centering stays untouched. */
   padding: 2px 8px 6px;
   min-width: 0;
   /* Size container so the chips inside can collapse to icon-only when the
@@ -236,10 +272,10 @@
 }
 
 /* figma 75:8208 drew 16 between + and the mode chips and 4 between Plan /
-   Read-only; the chip gap widened to 12 so the pill chips read as separate
-   controls. */
+   Read-only; both gaps settled on 12 so the pill chips read as separate
+   controls without drifting from the + control. */
 .tools {
-  gap: 16px;
+  gap: 12px;
 }
 
 .modes {
@@ -266,6 +302,7 @@
   height: 28px;
   border: none;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-specific-selector);
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
@@ -323,6 +360,7 @@
   height: 34px;
   border: none;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-alias-button-info-fill);
   /* Static white, not the foreground token: the arrow stays white on the blue
      fill in both themes (design 34:10465). */

@@ -7,12 +7,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { ToolCallTree } from './tool/ToolCallTree.tsx'
-import { ToolDetails } from './tool/ToolDetails.tsx'
 import { CONVERSATION_NS as NS } from './locale.ts'
 import { askQuestionToolview } from './tool/toolviews/ask-question-row.tsx'
 import { bashToolviewSample } from './tool/toolviews/bash-sample.tsx'
 import { fileMutationToolview } from './tool/toolviews/file-mutation-row.tsx'
 import { readToolview } from './tool/toolviews/read-row.tsx'
+import { readImageToolview } from './tool/toolviews/read-image-row.tsx'
 import { searchToolview } from './tool/toolviews/search-row.tsx'
 import { todoToolview } from './tool/toolviews/todo-row.tsx'
 import { webToolview } from './tool/toolviews/web-row.tsx'
@@ -40,14 +40,9 @@ export function apply(ctx: ClientContext): void {
     inject: toolInject,
   }, ToolCallTree))
 
-  ctx.slots.inject('conversation.details.tool', () => ctx.slots.register({
-    name: 'conversation.details.tool',
-    locale: NS,
-    inject: toolInject,
-  }, ToolDetails))
-
   ctx.plugin(bashToolviewSample)
   ctx.plugin(readToolview)
+  ctx.plugin(readImageToolview)
   ctx.plugin(fileMutationToolview)
   ctx.plugin(searchToolview)
   ctx.plugin(webToolview)

@@ -8,7 +8,7 @@
 }
 
 .field + .field {
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
 .head {
@@ -30,26 +30,6 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-
-.badge {
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 17px;
-  white-space: nowrap;
-  font-weight: 500;
-  background: var(--dsw-alias-bg-module-platform);
-  color: var(--dsw-alias-label-secondary);
-}
-
-.badgeMuted {
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 17px;
-  white-space: nowrap;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .reset {
@@ -74,7 +54,7 @@
 .input {
   height: 34px;
   padding: 0 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   border-radius: 8px;
   background: var(--dsw-alias-bg-layer-3);
   font: inherit;

@@ -75,3 +75,5 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 None.
 
 </details>
+
+**Runtime invariant:** No companion is published. The answerer waterfall is resolved per request and returns directly to its caller; the seam publishes no independent request/answer audit stream.

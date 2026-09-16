@@ -54,8 +54,8 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('coding task: fix a failing test 
     const before = spawnSync('node', ['add.test.js'], { cwd: workdir })
     expect(before.status).not.toBe(0)
 
-    ctx = await codingHarness(workdir, { persona: SYSTEM_PROMPT })
-    const agent = ctx.agentLoop.create(SessionId('e2e-task'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    ctx = await codingHarness(workdir, { personaPrefix: SYSTEM_PROMPT })
+    const agent = await ctx.agentLoop.create(SessionId('e2e-task'), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
 
     agent.followup(createUserMessage({
       content: [{
@@ -67,7 +67,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('coding task: fix a failing test 
     await waitForIdle(ctx, agent)
 
     // The agent claims success…
-    const summary = finalText([...agent.session.events]).toLowerCase()
+    const summary = finalText(agent.session.snapshotEvents()).toLowerCase()
     expect(summary.length).toBeGreaterThan(0)
 
     // …and the world agrees: the test passes when WE run it, and the test

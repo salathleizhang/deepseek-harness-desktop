@@ -10,12 +10,11 @@ import { SessionQueryError } from './config.ts'
  */
 export function assertSessionHeadersCompatible(a: SessionHeader, b: SessionHeader): void {
   if (
-    a.version !== b.version
-    || a.id !== b.id
+    a.id !== b.id
     || a.createdAt !== b.createdAt
     || a.cwd !== b.cwd
     || a.parentSession !== b.parentSession
-    || a.seedLength !== b.seedLength
+    || a.isSeeded !== b.isSeeded
     || (a.delegationDepth ?? 0) !== (b.delegationDepth ?? 0)
   ) {
     throw new SessionQueryError(

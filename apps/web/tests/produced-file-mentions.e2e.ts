@@ -1,11 +1,4 @@
-// Web e2e scenario: inline-code file mentions in the closing prose. Cold-seeds
-// a built write turn (zero model calls) whose closing message names the written
-// file three ways: by unique basename (links), ambiguously (stays inert), and
-// as a file the turn never touched (stays inert). Package tests cover the
-// resolver in isolation; only the assembled application shows a real write's
-// locations reaching the prose as an opener. The click itself is not driven
-// here: it hands the path to the Host's opener, which would launch a real
-// application on the machine running the suite (the produced-files restraint).
+/** Web e2e coverage for unique, ambiguous, and unknown inline file references. */
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
@@ -50,6 +43,7 @@ function mentionFixture(): string {
     args: JSON.stringify({ file_path: path, content: `content of ${path}\n` }),
   }))
   session.append('assistant/message', {
+    stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -80,8 +74,10 @@ function mentionFixture(): string {
       }),
     }, { surfaceOp: 'append', sourceEventSeqs: [source.seq] })
   }
+  session.append('step/end', { turn: 1, step: 1 })
   session.append('step/start', { turn: 1, step: 2 })
   session.append('assistant/message', {
+    stream: [],
     turn: 1,
     step: 2,
     message: createAssistantMessage({
@@ -106,8 +102,10 @@ function mentionFixture(): string {
       id: '{{sessionId}}',
       createdAt: 0,
       cwd: '{{cwd}}',
+      isSeeded: false,
+      delegationDepth: 0,
     }),
-    ...session.events.map(event => JSON.stringify({
+    ...session.snapshotEvents().map(event => JSON.stringify({
       ...event,
       time: eventTimeOrigin + event.seq * 1_000,
     })),
@@ -151,10 +149,10 @@ describe('web e2e: inline-code mentions of produced files', () => {
     const mentions = page.locator('[class*="markdown"] code button')
     await expect.poll(() => mentions.count(), { timeout: 10_000 }).toBe(1)
     expect(await mentions.first().innerText()).toBe('report.html')
-    expect(await mentions.first().getAttribute('aria-label')).toBe('Open site/report.html')
+    expect(await mentions.first().getAttribute('aria-label')).toBe('Open site/report.html in sidebar')
     expect(await mentions.first().getAttribute('title')).toBe('site/report.html')
     // The turn still ends with its produced-files row (all three writes).
-    expect(await page.getByText('Produced', { exact: true }).count()).toBe(1)
+    expect(await page.getByText('Files changed', { exact: true }).count()).toBe(1)
 
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])

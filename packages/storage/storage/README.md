@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Mount `dsh-storage` to give a composition durable, non-session storage: it is the hub where backends and data forms connect, so host packages can read and write typed records through `ctx.storageDomain`. The hub performs no IO itself — backends own the medium (a file-tree root, a database file), and data forms own semantics — so a composition pairs it with one or more backends and the domain form. It is optional and host-side only: it registers no tools, injects no prompts, and writes no session events, so the model and the agent loop never see it. Choose it whenever any package in the composition needs durable data that is not a session event log; a composition with no such data can omit the whole group.
+Use `dsh-storage` to keep typed application data durable without adding it to session history. Mount it with a supported storage medium and domain configuration, then callers can access records through the public `ctx.storageDomain` API. Choose it for workspace records, session sidecars, or other application state that must survive restarts without becoming session events. It is available only to host code and has no model-visible effect; compositions that do not need such data can omit it.
 
 ## Table of Contents
 
@@ -86,7 +86,7 @@ The hub is a pure registration table with two faces, designed so backends and da
 | [`src/registry.ts`](src/registry.ts) | `BackendRegistry`: name → backend table, registration disposers |
 | [`src/backend.ts`](src/backend.ts) | The backend contract: facets, units, `UNIT_NAME_RE` |
 | [`src/error.ts`](src/error.ts) | `StorageError` codes shared by the hub and every backend |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant: a pure registration table) |
+| — | No runtime invariant companion is published; the hub is a pure registration table (names → backends, forms → facilities) whose consistency is fully enforced at the call sites (duplicate/missing entries fail loud synchronously); it owns no event stream or mutable medium to cross-check. |
 | [`tests/contract.ts`](tests/contract.ts) | The shared conformance suite run against each backend |
 
 </details>

@@ -16,6 +16,7 @@ import type {
  * is all an implementation owes the abstract class.
  */
 class StubSubprocessRuntime extends SubprocessRuntime {
+  async terminalEnvironment() { return { platform: 'posix' as const } }
   async resolveExecutable(command: string): Promise<string> {
     return `/bin/${command}`
   }
@@ -26,7 +27,7 @@ class StubSubprocessRuntime extends SubprocessRuntime {
       ? { stdout: { readFrom: () => read } }
       : {}
     return {
-      pid: spec.argv.length,
+      control: undefined,
       stdin: undefined,
       stdout: undefined,
       stderr: undefined,
@@ -43,6 +44,7 @@ class StubSubprocessRuntime extends SubprocessRuntime {
       output: new PassThrough(),
       done: Promise.resolve({ exitCode: 0, signal: null }),
       write: async () => {},
+      resize: async () => {},
       inspectForeground: async () => ({ processGroupId: 1, inputWaiting: true }),
       signalForeground: async () => 1,
       terminate: async () => {},
@@ -60,7 +62,7 @@ describe('SubprocessRuntime seam', () => {
       stdio: { stdin: 'ignore', stdout: { maxBytes: 1 }, stderr: 'inherit' },
       graceMs: 1,
     })
-    expect(handle.pid).toBe(1)
+    expect(Object.hasOwn(handle, 'pid')).toBe(false)
     expect(handle.collected.stdout!.readFrom(0)).toEqual({ text: '', nextOffset: 0, lossy: false })
     handle.terminate()
     await expect(handle.waitForExit()).resolves.toBe(true)

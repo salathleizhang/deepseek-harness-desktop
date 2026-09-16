@@ -9,6 +9,9 @@
   ],
   "references": [
     {
+      "path": "../../boot/app-boot"
+    },
+    {
       "path": "../../../vendor/cosmokit"
     },
     {
@@ -22,9 +25,6 @@
     },
     {
       "path": "../registry"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     }
   ]
 }

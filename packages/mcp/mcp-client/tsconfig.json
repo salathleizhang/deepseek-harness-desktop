@@ -4,7 +4,9 @@
     "rootDir": "src",
     "outDir": "lib/types"
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": [
     {
       "path": "../../../vendor/cosmokit"
@@ -28,10 +30,16 @@
       "path": "../../subprocess/subprocess"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../util/timeout"
     },
     {
-      "path": "../../util/timeout"
+      "path": "../../util/http-proxy"
+    },
+    {
+      "path": "../mcp-resources"
+    },
+    {
+      "path": "../../core/system-prompt"
     }
   ]
 }

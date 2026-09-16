@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Win32Error } from '@deepseek-ai/dsh-win32-process'
 import { ERROR_BROKEN_PIPE } from '@deepseek-ai/dsh-win32-process/src/abi.ts'
-import { PROCESS_INFORMATION } from '@deepseek-ai/dsh-win32-process/src/ffi.ts'
+import { processInformationType } from '@deepseek-ai/dsh-win32-process/src/ffi.ts'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import koffi from 'koffi'
 
@@ -133,7 +133,7 @@ function happyStubs(): HappyStubs {
     _token: unknown, _app: unknown, _cmd: unknown, _pa: unknown, _ta: unknown,
     _inherit: unknown, _flags: unknown, _env: unknown, _cwd: unknown, _si: unknown, processInfo: NativePtr,
   ) => {
-    koffi.encode(processInfo, PROCESS_INFORMATION, { hProcess: fresh(), hThread: fresh(), dwProcessId: 1234, dwThreadId: 5678 })
+    koffi.encode(processInfo, processInformationType(), { hProcess: fresh(), hThread: fresh(), dwProcessId: 1234, dwThreadId: 5678 })
     return 1
   })
   const peekNamedPipe = vi.fn(() => 0)
@@ -358,6 +358,23 @@ describe('AclSandbox init', () => {
 })
 
 describe('AclSandbox spawn', () => {
+  it('refuses control with piped stdio before starting a restricted process', async () => {
+    const sandbox = new AclSandbox({ writableDirs: [], tempDir: null, mode: 'read-only' })
+    await sandbox.init()
+    expect(() => sandbox.spawn({ command: 'probe.exe', controlFileDescriptor: 7 })).toThrow('control pipe requires inherited stdio')
+    sandbox.dispose()
+  })
+
+  it('forwards the inherited control pipe to the restricted child', async () => {
+    const { api } = state.stubs as HappyStubs
+    Object.assign(api, { uvGetOsfhandle: vi.fn(() => 107n), getFileType: vi.fn(() => 3) })
+    const sandbox = new AclSandbox({ writableDirs: [], tempDir: null, mode: 'read-only' })
+    await sandbox.init()
+    const child = sandbox.spawn({ command: 'probe.exe', stdio: 'inherit', controlFileDescriptor: 7 })
+    await expect(child.wait()).resolves.toEqual({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 42 })
+    sandbox.dispose()
+  })
+
   it('refuses to spawn before init', () => {
     const workspace = scratch()
     const sandbox = new AclSandbox({ writableDirs: [workspace], tempDir: null, writeSid: 'S-1-4-9000-11', mode: 'workspace-write' })

@@ -58,7 +58,7 @@ const EVERY_REPLY = 'Reminders: Check primary metrics; Check secondary metrics.'
 const EVERY_INTERVAL_SECONDS = 60 * 60
 const EVERY_FIXTURE_AGE_MS = 90 * 60 * 1_000
 const CATALOG_SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/schedule-catalog', import.meta.url))
-const CATALOG_FIXTURE = join(CATALOG_SNAPSHOT_DIR, 'session.jsonl')
+const CATALOG_FIXTURE = join(CATALOG_SNAPSHOT_DIR, 'session.v3.jsonl')
 const CATALOG_EXPECTED = join(CATALOG_SNAPSHOT_DIR, 'catalog.expected.md')
 const BASE_PATCH = fileURLToPath(new URL('../../../packages/bundle/base/cordis.patch.yml', import.meta.url))
 const WEB_PATCH = fileURLToPath(new URL('../../../packages/bundle/web-app/cordis.patch.yml', import.meta.url))
@@ -205,7 +205,7 @@ async function waitForReply(
 ): Promise<SessionEvent<'assistant/message'>> {
   const deadline = Date.now() + timeoutMs
   while (true) {
-    const event = handle.agent.session.events.find((candidate): candidate is SessionEvent<'assistant/message'> => (
+    const event = handle.agent.session.snapshotEvents().find((candidate): candidate is SessionEvent<'assistant/message'> => (
       candidate.type === 'assistant/message' && assistantText(candidate) === text
     ))
     if (event !== undefined) return event
@@ -455,7 +455,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
   it('batches one latest occurrence per overdue Every record into an ordinary follow-up', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-schedule-every'))
     const ids = new Set(everyRecords.map(record => record.id))
-    const dispatches = everyHandle.agent.session.events.filter(event => (
+    const dispatches = everyHandle.agent.session.snapshotEvents().filter(event => (
       event.type === 'schedule/change'
       && event.data.operation === 'dispatch'
       && ids.has(event.data.id)
@@ -470,7 +470,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     const decision = acceptedAt[0]
     if (decision === undefined) throw new Error('missing Every decision time')
 
-    const batch = everyHandle.agent.session.events.find(event => (
+    const batch = everyHandle.agent.session.snapshotEvents().find(event => (
       event.type === 'user/message'
       && event.data.source.kind === 'plugin'
       && event.data.source.plugin === 'schedule'
@@ -493,7 +493,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     if (reminderRequest === undefined) throw new Error('model did not receive the Every batch')
     expect(requestText(reminderRequest)).toContain(batchBlock.text)
     expectReminderFraming(reminderRequest)
-    const active = foldScheduleEvents(everyHandle.agent.session.events).active
+    const active = foldScheduleEvents(everyHandle.agent.session.snapshotEvents()).active
     expect(active).toHaveLength(2)
     expect(active.every(record => Date.parse(record.scheduledAt) > Date.parse(decision))).toBe(true)
 
@@ -516,7 +516,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
 
   it('uses request-local browser context to create an explicit local At reminder', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-schedule-at'))
-    const user = atHandle.agent.session.events.find(event => (
+    const user = atHandle.agent.session.snapshotEvents().find(event => (
       event.type === 'user/message'
       && event.data.source.kind === 'user'
       && event.data.content.some(block => block.type === 'text' && block.text === AT_USER_PROMPT)
@@ -541,12 +541,12 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     }
     expect(selectedAt.time_zone).toBe(AT_BROWSER_ZONE)
 
-    const toolCall = atHandle.agent.session.events.find(event => (
+    const toolCall = atHandle.agent.session.snapshotEvents().find(event => (
       event.type === 'tool/call' && event.data.name === 'schedule_create'
     ))
     if (toolCall?.type !== 'tool/call') throw new Error('missing schedule_create tool call')
     expect(JSON.parse(toolCall.data.arguments)).toEqual({ prompt: AT_PROMPT, at: selectedAt })
-    const created = atHandle.agent.session.events.find(event => (
+    const created = atHandle.agent.session.snapshotEvents().find(event => (
       event.type === 'schedule/change'
       && event.data.operation === 'create'
       && event.data.schedule.kind === 'at'
@@ -560,7 +560,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
       prompt: AT_PROMPT,
       scheduledAt,
     })
-    expect(atHandle.agent.session.events.filter(event => (
+    expect(atHandle.agent.session.snapshotEvents().filter(event => (
       event.type === 'schedule/change'
       && event.data.operation === 'dispatch'
       && event.data.id === schedule.id
@@ -607,16 +607,19 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
     const fixture = await readFile(CATALOG_FIXTURE, 'utf8')
     scaffold = await launchWebScaffold({
       extraOverlayPath: OVERLAY,
-      replayFixture: CATALOG_FIXTURE,
-      replayProvidersOnly: true,
     })
     await seedSession(scaffold, fixture, CATALOG_SESSION_ID, 'standard')
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
     await workspace.attachSession(CATALOG_SESSION_ID)
 
     // Seed the zero-I/O list view before the Session is opened.
-    const catalog = await scaffold.ctx.sessionPersistence.readFrom(CATALOG_SESSION_ID, 0)
-    scaffold.ctx.sessionProjectionCache.coldSnapshot(catalog.meta, catalog.events)
+    const catalogReader = await scaffold.ctx.sessionPersistence.open(CATALOG_SESSION_ID, 'read')
+    try {
+      const catalogEvents = [...(await catalogReader.read()).events]
+      scaffold.ctx.sessionProjectionCache.coldSnapshot(catalogReader.header, catalogReader.inheritedEventCount, catalogEvents)
+    } finally {
+      await catalogReader.close()
+    }
 
     browser = await chromium.launch()
     page = await browser.newPage({
@@ -813,7 +816,7 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
     }).toBe(0)
     await assertFixtureInventory(CATALOG_SNAPSHOT_DIR, [
       'catalog.expected.md',
-      'session.jsonl',
+      'session.v3.jsonl',
       'system-prompt.expected.md',
       'tool-schemas.expected.json',
     ])

@@ -72,26 +72,26 @@ function recordStatus(ctx: Context, agent: Agent): { seen: string[]; dispose: ()
 }
 
 function userMessageTexts(agent: Agent): string[] {
-  return agent.session.events
+  return agent.session.snapshotEvents()
     .filter(e => e.type === 'user/message')
     .map(e => (e.data as { content: { type: string; text?: string }[] }).content.map(b => b.text ?? '').join(''))
 }
 
 function turnNumbers(agent: Agent): number[] {
-  return agent.session.events
+  return agent.session.snapshotEvents()
     .filter(e => e.type === 'turn/start')
     .map(e => e.data.turn)
 }
 
 function turnEndNumbers(agent: Agent): number[] {
-  return agent.session.events
+  return agent.session.snapshotEvents()
     .filter(e => e.type === 'turn/end')
     .map(e => (e.data as { turn: number }).turn)
 }
 
 function userMessageCountsByTurn(agent: Agent): number[] {
   const counts: number[] = []
-  for (const event of agent.session.events) {
+  for (const event of agent.session.snapshotEvents()) {
     if (event.type === 'turn/start') counts.push(0)
     if (event.type === 'user/message') counts[counts.length - 1]! += 1
   }
@@ -113,7 +113,7 @@ describe('agent loop scheduling properties', () => {
       async (texts) => {
         const ctx = await harness()
         try {
-          const agent = ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
+          const agent = await ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
           const { seen: trace } = recordStatus(ctx, agent)
           const idle = nextIdle(ctx, agent)
           // Send all in one synchronous tick: they queue before the loop wakes.
@@ -141,7 +141,7 @@ describe('agent loop scheduling properties', () => {
       async (texts) => {
         const ctx = await harness()
         try {
-          const agent = ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
+          const agent = await ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
           for (const text of texts) {
             const idle = nextIdle(ctx, agent)
             agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
@@ -166,7 +166,7 @@ describe('agent loop scheduling properties', () => {
       async (steps) => {
         const ctx = await harness()
         try {
-          const agent = ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
+          const agent = await ctx.agentLoop.create(SessionId('a'), { provider: 'mock', model: 'mock' })
           // Capture before each send; the last waiter covers the final turn, and
           // awaiting an already-settled earlier waiter is harmless.
           let lastIdle: Promise<void> | undefined

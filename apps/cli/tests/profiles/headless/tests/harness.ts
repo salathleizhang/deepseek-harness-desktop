@@ -2,7 +2,6 @@ import { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
 import * as BashEnvPlugin from '@deepseek-ai/dsh-shell-env'
@@ -38,10 +37,10 @@ export const TODO_SYSTEM_PROMPT = 'You are a coding agent. For multi-step work, 
 /** Options for {@link codingHarness}. */
 export interface CodingHarnessOptions {
   /**
-   * Deployment persona for the tree (the system-prompt plugin's `persona`
-   * config — per-context, not per-agent). Omitted ⇒ no persona section.
+   * Deployment persona prefix for the tree (the system-prompt plugin's `personaPrefix`
+   * config — per-context, not per-agent). Omitted ⇒ no persona prefix section.
    */
-  persona?: string
+  personaPrefix?: string
   /** Durable JSONL persistence root (the resume suite needs it; others stay file-free). */
   persistenceRoot?: string
   /**
@@ -56,13 +55,14 @@ export interface CodingHarnessOptions {
 
 export async function codingHarness(workdir: string, options: CodingHarnessOptions = {}): Promise<Context> {
   const ctx = new Context()
-  await ctx.plugin(SessionProjectionRegistry)
   await mountAgentLoopTestDependencies(ctx, {
-    systemPrompt: { persona: options.persona ?? '' },
+    systemPrompt: { personaPrefix: options.personaPrefix ?? '' },
   })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(LlmDeepSeek, options.modelContextWindow === undefined ? {} : {
-    models: [{ id: 'deepseek-v4-flash', contextWindow: options.modelContextWindow }],
+  await ctx.plugin(LlmDeepSeek, {
+    ...options.modelContextWindow === undefined ? {} : {
+      models: [{ id: 'deepseek-v4-flash', contextWindow: options.modelContextWindow }],
+    },
   })
   await ctx.plugin(LocalSubprocessRuntime)
   await ctx.plugin(BashEnvPlugin)
@@ -96,7 +96,7 @@ export function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
   })
 }
 
-export function finalText(events: SessionEvent[]): string {
+export function finalText(events: readonly SessionEvent[]): string {
   const message = events.findLast(event => event.type === 'assistant/message')
   if (message?.type !== 'assistant/message') return ''
   return message.data.message.content

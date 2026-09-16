@@ -100,19 +100,20 @@ jobs:
             echo "Notarization credentials not set; the macOS installer will be signed but not notarized."
           fi
 
-      # dist:mac stages the self-contained runtime (macOS Node runtime + the
-      # deployed harness) and builds the host-arch (arm64) dmg.
+      # The fixed target command stages the self-contained runtime and builds
+      # the host-arch (arm64) installers.
       - name: Package macOS
-        run: pnpm --filter @deepseek-ai/dsh-desktop run dist:mac
+        env:
+          DSH_DESKTOP_APP_ID: ${{ secrets.DSH_DESKTOP_APP_ID }}
+          DSH_DESKTOP_MACOS_SIGNING_IDENTITY: ${{ secrets.DSH_DESKTOP_MACOS_SIGNING_IDENTITY }}
+          DSH_DESKTOP_MACOS_TEAM_ID: ${{ secrets.DSH_DESKTOP_MACOS_TEAM_ID }}
+        run: pnpm run package:desktop:mac:arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos
           path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*.blockmap
-            apps/desktop/release/latest-mac.yml
+            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*
           if-no-files-found: error
           retention-days: 7
 
@@ -145,15 +146,13 @@ jobs:
         run: pnpm run build
 
       - name: Package Windows
-        run: pnpm --filter @deepseek-ai/dsh-desktop run dist:win
+        run: pnpm run package:desktop:win:x64:unsigned
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-windows
           path: |
-            apps/desktop/release/*.exe
-            apps/desktop/release/*.blockmap
-            apps/desktop/release/latest.yml
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*
           if-no-files-found: error
           retention-days: 7
 

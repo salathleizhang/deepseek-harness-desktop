@@ -7,8 +7,8 @@ import { EventEmitter } from 'node:events'
  * The web app prints one `dsh web: http://127.0.0.1:<port>` line (optionally
  * followed by ` (LAN: ...)`) once its Loader tree has settled; that line is the
  * documented readiness signal (`packages/bundle/web-app`), so the supervisor
- * treats it as the moment the window may load the origin. Matching the line
- * also gives the real port when the invocation used `--port 0`.
+ * treats it as the moment the window may load the served URL. Matching the line
+ * also gives the real port and access token when the invocation used `--port 0`.
  */
 const READINESS_PREFIX = 'dsh web: '
 
@@ -47,14 +47,13 @@ function parseReadinessLine(line: string): string | undefined {
   if (url.protocol !== 'http:'
     || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')
     || url.pathname !== '/'
-    || url.search !== ''
     || url.hash !== ''
     || !Number.isInteger(port)
     || port < 1
     || port > 65_535) {
     throw new Error(`desktop Host readiness URL must be loopback HTTP with an explicit port: ${token}`)
   }
-  return url.origin
+  return url.search === '' ? url.origin : `${url.origin}${url.pathname}${url.search}`
 }
 
 /**

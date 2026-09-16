@@ -31,6 +31,13 @@ describe('desktop Host readiness', () => {
     expect(parser.finalize()).toBe('http://localhost:51234')
   })
 
+  it('preserves the web access token in the readiness URL', () => {
+    const parser = createReadinessParser()
+
+    expect(parser.push('dsh web: http://127.0.0.1:51234/?token=secret\n'))
+      .toBe('http://127.0.0.1:51234/?token=secret')
+  })
+
   it.each([
     'dsh web: https://127.0.0.1:4173',
     'dsh web: http://0.0.0.0:4173',

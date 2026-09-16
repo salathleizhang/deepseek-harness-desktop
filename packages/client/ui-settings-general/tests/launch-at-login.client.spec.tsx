@@ -8,7 +8,9 @@ import {
 } from '../src/client/LaunchAtLoginRow.tsx'
 
 const unusedHook = (() => { throw new Error('unused by launch-at-login row') }) as never
-const kit = { useSessions: unusedHook, useWorkspaces: unusedHook, useSessionPendingInteraction: unusedHook }
+const usePanelInfo = ((selector: (value: { activePanelId: null }) => unknown) => selector({ activePanelId: null })) as never
+const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined, reload: () => {} })) as never
+const kit = { useSessions: unusedHook, useWorkspaces: unusedHook, useSessionPendingInteraction: unusedHook, usePanelInfo, useResource }
 
 describe('readDesktopLaunchAtLoginBridge', () => {
   afterEach(() => {

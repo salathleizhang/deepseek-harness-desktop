@@ -183,11 +183,12 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${GITHUB_REF#refs/tags/dsh-v}"
+          mapfile -d '' assets < <(find dist -type f -print0 | sort -z)
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* --clobber
+            gh release upload "$tag" "${assets[@]}" --clobber
           else
             gh release create "$tag" \
               --title "DeepSeek Harness Desktop ${version}" \
               --generate-notes \
-              dist/*
+              "${assets[@]}"
           fi

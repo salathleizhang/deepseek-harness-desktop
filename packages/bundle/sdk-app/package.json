@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-sdk-app",
   "description": "The dsh SDK profile bundle: stdio JSON-RPC serving and process lifecycle over dsh-base",
-  "version": "0.1.0-rc.16",
+  "version": "0.1.0-rc.17",
   "publishConfig": {
     "access": "public"
   },

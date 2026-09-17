@@ -438,20 +438,38 @@ async function main(): Promise<void> {
     void pluginWindow.loadURL(`${SCHEME}://shell/plugin-manager.html`)
   }
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate([{
-    label: process.platform === 'darwin' ? app.name : messages.application,
-    submenu: [
-      {
-        label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
-        accelerator: 'CmdOrCtrl+,',
-        enabled: development === undefined,
-        click: openPluginWindow,
-      },
-      { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
-      { type: 'separator' },
-      { role: 'quit' },
-    ],
-  }]))
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: process.platform === 'darwin' ? app.name : messages.application,
+      submenu: [
+        {
+          label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
+          accelerator: 'CmdOrCtrl+,',
+          enabled: development === undefined,
+          click: openPluginWindow,
+        },
+        { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      // macOS dispatches the standard editing shortcuts as menu key
+      // equivalents, so a custom application menu without these roles stops
+      // Cmd+C/Cmd+V from ever reaching the renderer; the roles also give
+      // Windows and Linux the same labeled, working items.
+      label: messages.editMenu,
+      submenu: [
+        { label: messages.undoMenu, role: 'undo' },
+        { label: messages.redoMenu, role: 'redo' },
+        { type: 'separator' },
+        { label: messages.cutMenu, role: 'cut' },
+        { label: messages.copyMenu, role: 'copy' },
+        { label: messages.pasteMenu, role: 'paste' },
+        { label: messages.selectAllMenu, role: 'selectAll' },
+      ],
+    },
+  ]))
 
   const createMainWindow = (): BrowserWindow => {
     const window = createWindow(appPreload, true)

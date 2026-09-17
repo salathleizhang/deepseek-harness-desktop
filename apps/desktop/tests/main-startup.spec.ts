@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import { DESKTOP_IPC } from '../src/ipc.ts'
+import { en } from '../src/locale.ts'
 
 const harness = await vi.hoisted(async () => {
   const { EventEmitter } = await import('node:events')
@@ -76,6 +77,10 @@ const harness = await vi.hoisted(async () => {
   return {
     windows, hosts, managerRuntimes, handlers, app, FakeWindow, FakeHost,
     dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
+    menu: {
+      setApplicationMenu: vi.fn(),
+      buildFromTemplate: vi.fn((template: unknown) => template),
+    },
     applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
     assertProfileRuntime: vi.fn(),
     canRecoverProfile: vi.fn(() => true),
@@ -102,7 +107,7 @@ vi.mock('electron', () => ({
   ipcMain: {
     handle: (channel: string, handler: (event: { senderFrame: { url: string } }) => unknown) => { harness.handlers.set(channel, handler) },
   },
-  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
+  Menu: harness.menu,
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
 }))
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: 'desktop-test-profile' }) }))
@@ -157,6 +162,18 @@ afterEach(async () => {
 })
 
 describe('desktop main startup', () => {
+  it('keeps the native editing shortcuts reachable through menu roles', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const template = harness.menu.setApplicationMenu.mock.calls[0]?.[0] as {
+      label: string
+      submenu?: { role?: string }[]
+    }[]
+    const edit = template.find(item => item.label === en.editMenu)
+    expect(edit?.submenu?.flatMap(item => item.role === undefined ? [] : [item.role]))
+      .toEqual(['undo', 'redo', 'cut', 'copy', 'paste', 'selectAll'])
+  })
+
   it('exits with a diagnostic when both initialization and emergency navigation fail', async () => {
     const exited = Promise.withResolvers<undefined>()
     vi.spyOn(harness.app, 'getLocale').mockImplementationOnce(() => { throw new Error('locale unavailable') })

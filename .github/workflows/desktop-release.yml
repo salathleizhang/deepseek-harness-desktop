@@ -186,10 +186,25 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${GITHUB_REF#refs/tags/dsh-v}"
-          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0 | sort -z)
-          for asset in "dist/deepseek-harness-${version}-mac-arm64.dmg" "dist/deepseek-harness-${version}-win-x64.exe"; do
+          channel=latest
+          if [[ "$version" == *-* ]]; then
+            channel="${version#*-}"
+            channel="${channel%%.*}"
+          fi
+          assets=(
+            "dist/deepseek-harness-${version}-mac-arm64.dmg"
+            "dist/deepseek-harness-${version}-mac-arm64.zip"
+            "dist/deepseek-harness-${version}-mac-arm64.zip.blockmap"
+            "dist/deepseek-harness-${version}-win-x64.exe"
+            "dist/deepseek-harness-${version}-win-x64.exe.blockmap"
+            "dist/${channel}-mac.yml"
+          )
+          if [ -f "dist/${channel}.yml" ]; then
+            assets+=("dist/${channel}.yml")
+          fi
+          for asset in "${assets[@]}"; do
             if [ ! -s "$asset" ]; then
-              echo "::error::missing or empty release installer: ${asset}"
+              echo "::error::missing or empty release asset: ${asset}"
               exit 1
             fi
           done

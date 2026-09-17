@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
   "description": "Extensible document previews for Sidebar files: Markdown, highlighted code, images, PDF, HTML, and plain text",
-  "version": "0.1.0-rc.18",
+  "version": "0.1.0-rc.20",
   "publishConfig": {
     "access": "public"
   },

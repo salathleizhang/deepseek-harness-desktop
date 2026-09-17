@@ -7,12 +7,10 @@
 # The macOS job signs with the Developer ID Application identity and notarizes
 # via notarytool (credentials come from repository secrets); the Windows job
 # stays unsigned until an Authenticode certificate is added. The installers use
-# fixed, version-free filenames (set in electron-builder.yml), so the
-# releases/latest/download/<name> links in the READMEs always resolve to the
-# newest release. electron-builder's `publish` config (with `--publish never`)
-# also writes the `latest-mac.yml` / `latest.yml` update metadata, which the
-# jobs upload alongside the installers to serve the in-app electron-updater
-# feed.
+# versioned filenames, with the tag and both package manifests carrying the
+# same version. electron-builder's `publish` config (with `--publish never`)
+# also writes channel update metadata, which the jobs upload alongside the
+# installers to serve the in-app electron-updater feed.
 name: Release (Desktop)
 
 on:
@@ -110,7 +108,10 @@ jobs:
         with:
           name: desktop-macos
           path: |
-            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*
+            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*.dmg
+            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*.zip
+            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*.zip.blockmap
+            apps/desktop/.desktop-build/targets/mac-arm64/artifacts/*.yml
           if-no-files-found: error
           retention-days: 7
 
@@ -151,7 +152,9 @@ jobs:
         with:
           name: desktop-windows
           path: |
-            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/deepseek-harness-*-win-x64.exe
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/deepseek-harness-*-win-x64.exe.blockmap
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.yml
           if-no-files-found: error
           retention-days: 7
 
@@ -183,7 +186,13 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${GITHUB_REF#refs/tags/dsh-v}"
-          mapfile -d '' assets < <(find dist -type f -print0 | sort -z)
+          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0 | sort -z)
+          for asset in "dist/deepseek-harness-${version}-mac-arm64.dmg" "dist/deepseek-harness-${version}-win-x64.exe"; do
+            if [ ! -s "$asset" ]; then
+              echo "::error::missing or empty release installer: ${asset}"
+              exit 1
+            fi
+          done
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" --clobber
           else

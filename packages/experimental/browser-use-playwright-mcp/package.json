@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-experimental-browser-use-playwright-mcp",
   "description": "Experimental per-Session Chromium browser tools through @playwright/mcp",
-  "version": "0.1.0-rc.21",
+  "version": "0.1.0-rc.22",
   "publishConfig": {
     "access": "public"
   },

@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-lazy-require",
   "description": "Caller-relative, success-cached lazy loading for CommonJS-compatible Host dependencies",
-  "version": "0.1.0-rc.21",
+  "version": "0.1.0-rc.22",
   "publishConfig": {
     "access": "public"
   },

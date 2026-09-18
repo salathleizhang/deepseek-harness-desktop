@@ -6,6 +6,8 @@ const electron = vi.hoisted(() => ({
   ipcRenderer: { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
 }))
 vi.mock('electron', () => electron)
+vi.mock('../src/preload-platform.ts', () => ({ markDocumentPlatform: vi.fn() }))
+vi.mock('../src/preload-theme.ts', () => ({ syncNativeTheme: vi.fn() }))
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.resetModules() })
 

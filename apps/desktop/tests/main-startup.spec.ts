@@ -106,7 +106,9 @@ vi.mock('electron', () => ({
   dialog: harness.dialog,
   ipcMain: {
     handle: (channel: string, handler: (event: { senderFrame: { url: string } }) => unknown) => { harness.handlers.set(channel, handler) },
+    on: vi.fn(),
   },
+  nativeTheme: { themeSource: 'system' },
   Menu: harness.menu,
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
 }))

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DESKTOP_ARTIFACT_NAME_PATTERN,
+  desktopArtifactBaseName,
   desktopBuildRecordFilename,
   desktopUpdateMetadataFilename,
   resolveDesktopAutoUpdateConfig,
@@ -85,5 +87,15 @@ describe('desktop auto-update environment', () => {
     expect(desktopUpdateMetadataFilename('1.2.3-beta.2', 'win32')).toBe('beta.yml')
     expect(() => desktopUpdateMetadataFilename('not-semver', 'darwin')).toThrow(/invalid Desktop version/u)
     expect(() => desktopUpdateMetadataFilename('1.2.3', 'linux')).toThrow(/unsupported metadata platform/u)
+  })
+
+  it('keeps the artifact base name free of the release version', () => {
+    expect(desktopArtifactBaseName('arm64')).toBe('DeepSeek.Harness-arm64')
+    expect(desktopArtifactBaseName('x64')).toBe('DeepSeek.Harness-x64')
+  })
+
+  it('expands the electron-builder pattern to the artifact base name', () => {
+    expect(DESKTOP_ARTIFACT_NAME_PATTERN.replace('${arch}', 'arm64').replace('${ext}', 'dmg'))
+      .toBe(`${desktopArtifactBaseName('arm64')}.dmg`)
   })
 })

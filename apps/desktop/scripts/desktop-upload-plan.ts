@@ -7,6 +7,7 @@ import { basename, join, resolve } from 'node:path'
 import { load } from 'js-yaml'
 import type { DesktopPackageTargetName } from './package-target.ts'
 import {
+  desktopArtifactBaseName,
   desktopBuildRecordFilename,
   desktopUpdateMetadataFilename,
   resolveDesktopUploadConfig,
@@ -218,7 +219,7 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: ${metadataFilename}.files must contain exactly one target update file`)
   }
 
-  const base = `deepseek-harness-${dshVersion}-${target.os}-${target.arch}`
+  const base = desktopArtifactBaseName(target.arch)
   const updaterExtension = target.platform === 'darwin' ? 'zip' : 'exe'
   const updaterInfo = updateFileInfo(metadata.files[0], `${metadataFilename}.files[0]`, `${base}.${updaterExtension}`)
   const updaterPath = await verifyChecksummedArtifact(artifactsRoot, updaterInfo)

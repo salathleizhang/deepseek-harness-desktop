@@ -18,7 +18,7 @@ Status: implemented
 - 下载在后台进行。安装是显式的：壳的退出路径在 Host 处置完成、且已有下载完成时调用 `autoUpdater.quitAndInstall()`，因此更新绝不会打断正在运行的会话。渲染层的「立即安装」也走同一条优雅退出路径。
 - 一个窄 preload 桥暴露状态读取/订阅外加检查/安装。浏览器表面是新的 `@deepseek-ai/dsh-client-ui-update` 包，注册一项 `sidebar.footer.action`——设置正上方的页脚列表——为 `available`/`downloading`/`downloaded` 渲染徽标，其余情况（包括桥缺失）一律渲染为空。
 
-macOS 为更新器增加了 `zip` 目标；`dmg` 仍作为一键手动安装包。固定、不带版本号的文件名保持不变：每个 release 的 `latest-mac.yml` 自引用其自身资产，因此更新器按 release 解析，而 `releases/latest/download/…` 链接保持稳定。
+macOS 为更新器增加了 `zip` 目标；`dmg` 仍作为一键手动安装包。载荷文件名不带版本号，因此 `releases/latest/download/…` 链接保持稳定，而每次发布的频道元数据自引用本次发布的载荷：`desktopArtifactBaseName` 负责名称主干，`artifactName` 展开为同一个名字，release workflow 与上传计划都由此推导各自期望的文件名。打包后的应用自带 `app-update.yml`：macOS 发布先用 `--dir` 打包，此时目标列表为空，electron-builder 自带的写入逻辑会跳过该文件，因此由 `desktop-app-update-config.mjs` 的 `afterPack` 钩子写入，随后两条产物通道再从 `--prepackaged` 副本打包。
 
 ## Alternatives considered
 
@@ -38,4 +38,4 @@ macOS 为更新器增加了 `zip` 目标；`dmg` 仍作为一键手动安装包�
 
 ## Related
 
-- [Electron 桌面客户端设计](../../proposed/feature/2026-08-13-electron-desktop-client.md)——父提案；本 note 实现其中的自动更新部分，原文为「自动更新使用 electron-updater 对接发布源」。
+- [Electron 桌面客户端设计](../../proposed/feature/2026-08-13-electron-desktop-client.zh.md)——父提案；本 note 实现其中的自动更新部分，原文为「自动更新使用 electron-updater 对接发布源」。

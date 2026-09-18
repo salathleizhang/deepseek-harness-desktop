@@ -18,7 +18,7 @@ The flow:
 - The download runs in the background. Installation is explicit: the shell's quit path calls `autoUpdater.quitAndInstall()` after Host disposal when a download has completed, so an update never interrupts a running session. The renderer's "install now" routes through the same graceful quit.
 - A narrow preload bridge exposes status read/subscribe plus check/install. The browser surface is a new `@deepseek-ai/dsh-client-ui-update` package that registers one `sidebar.footer.action` entry — the footer list directly above Settings — rendering a badge for `available`/`downloading`/`downloaded` and nothing otherwise, including when the bridge is absent.
 
-macOS adds a `zip` target for the updater; the `dmg` stays the one-click manual installer. Fixed, version-free artifact filenames are kept: each release's `latest-mac.yml` self-references its own assets, so the updater resolves per release while the `releases/latest/download/…` links stay stable.
+macOS adds a `zip` target for the updater; the `dmg` stays the one-click manual installer. Payload filenames carry no version, so the `releases/latest/download/…` links stay stable while each release's channel metadata self-references its own payloads: `desktopArtifactBaseName` owns the stem, `artifactName` expands to the same name, and the release workflow and the upload plan derive their expected filenames from it. The packaged application carries its `app-update.yml`, which `desktop-app-update-config.mjs` writes from an `afterPack` hook because the macOS release packs with `--dir` — an empty target list makes electron-builder's own writer skip the file — and then packs both artifacts from `--prepackaged` copies.
 
 ## Alternatives considered
 

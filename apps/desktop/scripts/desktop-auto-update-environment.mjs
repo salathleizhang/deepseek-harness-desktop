@@ -83,6 +83,29 @@ export function desktopUpdateMetadataFilename(version, platform) {
 }
 
 /**
+ * Version-free artifact name pattern for electron-builder.
+ *
+ * electron-builder expands `${arch}` and `${ext}`, producing the same stem
+ * {@link desktopArtifactBaseName} returns plus the target extension.
+ */
+export const DESKTOP_ARTIFACT_NAME_PATTERN = 'DeepSeek.Harness-${arch}.${ext}'
+
+/**
+ * Return the version-free artifact base name for one release architecture.
+ *
+ * The base name carries no version, so `releases/latest/download/<name>` and
+ * the update origin keep stable paths across releases. `artifactName` in
+ * electron-builder.config.mjs expands to the same `DeepSeek.Harness-<arch>`
+ * plus the target extension, and the upload plan requires the update metadata
+ * to reference that exact file.
+ * @param {string} arch - Target Node.js architecture.
+ * @returns {string} Artifact base name without an extension.
+ */
+export function desktopArtifactBaseName(arch) {
+  return `DeepSeek.Harness-${arch}`
+}
+
+/**
  * Read one required release setting without accepting whitespace-only values.
  * @param {NodeJS.ProcessEnv} env - Packaging or upload environment.
  * @param {string} name - Environment variable to read.

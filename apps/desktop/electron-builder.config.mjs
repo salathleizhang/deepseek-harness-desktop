@@ -11,7 +11,8 @@ import {
   createWindowsTokenSigner,
   installWindowsNsisBootstrapSigner,
 } from './scripts/windows-sign.mjs'
-import { resolveDesktopAutoUpdateConfig } from './scripts/desktop-auto-update-environment.mjs'
+import { DESKTOP_ARTIFACT_NAME_PATTERN, resolveDesktopAutoUpdateConfig } from './scripts/desktop-auto-update-environment.mjs'
+import { writeDesktopAppUpdateConfig } from './scripts/desktop-app-update-config.mjs'
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './scripts/desktop-build-paths.mjs'
 
 /**
@@ -55,7 +56,9 @@ export function createElectronBuilderConfig(
   return {
     appId,
     productName: 'DeepSeek Harness',
-    artifactName: 'deepseek-harness-${version}-${os}-${arch}.${ext}',
+    // Version-free so `releases/latest/download/<name>` and the update origin
+    // keep stable paths across releases; desktopArtifactBaseName owns the stem.
+    artifactName: DESKTOP_ARTIFACT_NAME_PATTERN,
     directories: { output: unsigned ? join(buildPaths.root, 'unsigned-artifacts') : buildPaths.artifacts },
     asar: true,
     files: [
@@ -89,6 +92,14 @@ export function createElectronBuilderConfig(
     dmg: {
       sign: true,
       writeUpdateInfo: false,
+    },
+    // electron-builder writes app-update.yml only when the pack targets include
+    // dmg or zip, and the macOS release packs the application with `--dir`
+    // before the artifact lanes copy it. Write the feed file here, where
+    // electron-builder still signs the bundle afterwards.
+    afterPack: async context => {
+      if (update === undefined || context.electronPlatformName !== 'darwin') return
+      await writeDesktopAppUpdateConfig(context, update)
     },
     afterSign: async context => {
       if (context.electronPlatformName !== 'darwin') return

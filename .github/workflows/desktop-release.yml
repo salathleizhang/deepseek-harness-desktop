@@ -7,10 +7,11 @@
 # The macOS job signs with the Developer ID Application identity and notarizes
 # via notarytool (credentials come from repository secrets); the Windows job
 # stays unsigned until an Authenticode certificate is added. The installers use
-# versioned filenames, with the tag and both package manifests carrying the
-# same version. electron-builder's `publish` config (with `--publish never`)
-# also writes channel update metadata, which the jobs upload alongside the
-# installers to serve the in-app electron-updater feed.
+# fixed, version-free filenames so the READMEs' releases/latest/download links
+# stay stable across releases; the tag and both package manifests still carry
+# the release version. electron-builder's `publish` config (with
+# `--publish never`) also writes channel update metadata, which the jobs upload
+# alongside the installers to serve the in-app electron-updater feed.
 name: Release (Desktop)
 
 on:
@@ -152,8 +153,8 @@ jobs:
         with:
           name: desktop-windows
           path: |
-            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/deepseek-harness-*-win-x64.exe
-            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/deepseek-harness-*-win-x64.exe.blockmap
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/DeepSeek.Harness-*.exe
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/DeepSeek.Harness-*.exe.blockmap
             apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.yml
           if-no-files-found: error
           retention-days: 7
@@ -192,11 +193,11 @@ jobs:
             channel="${channel%%.*}"
           fi
           assets=(
-            "dist/deepseek-harness-${version}-mac-arm64.dmg"
-            "dist/deepseek-harness-${version}-mac-arm64.zip"
-            "dist/deepseek-harness-${version}-mac-arm64.zip.blockmap"
-            "dist/deepseek-harness-${version}-win-x64.exe"
-            "dist/deepseek-harness-${version}-win-x64.exe.blockmap"
+            "dist/DeepSeek.Harness-arm64.dmg"
+            "dist/DeepSeek.Harness-arm64.zip"
+            "dist/DeepSeek.Harness-arm64.zip.blockmap"
+            "dist/DeepSeek.Harness-x64.exe"
+            "dist/DeepSeek.Harness-x64.exe.blockmap"
             "dist/${channel}-mac.yml"
           )
           if [ -f "dist/${channel}.yml" ]; then

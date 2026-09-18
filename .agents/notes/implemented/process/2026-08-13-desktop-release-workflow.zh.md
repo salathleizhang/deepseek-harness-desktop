@@ -6,9 +6,9 @@ Status: implemented
 
 ## Problem
 
-[Electron 桌面壳](../../proposed/feature/2026-08-13-electron-desktop-client.md)交付时带上了 `electron-builder` 打包（`dist:mac` → `.dmg`、`dist:win` → NSIS 安装包），但没有 CI：它的 README 写着「专用的打包/CI 任务是后续事项」。因此桌面发布只能在开发机上构建并手工上传，任何 tag 都无法复现一次发布的安装包。
+[Electron 桌面壳](../../proposed/feature/2026-08-13-electron-desktop-client.zh.md)交付时带上了 `electron-builder` 打包（`dist:mac` → `.dmg`、`dist:win` → NSIS 安装包），但没有 CI：它的 README 写着「专用的打包/CI 任务是后续事项」。因此桌面发布只能在开发机上构建并手工上传，任何 tag 都无法复现一次发布的安装包。
 
-有两个平台事实塑造了工作流。其一，桌面应用是 `dsh` 发布族（[npm 发布序列](2026-08-10-npm-release-sequences.md)）的成员：它共享该族的单一版本与 `dsh-v*` tag，所以桌面发布复用同一个 tag，而不是再造一条版本线。其二，`prepare-runtime` 用 `unzip` 解压 Windows 的 Node zip，而 Windows runner 上不存在这个二进制，因此 Windows CI 构建无法暂存它正在打包的自包含运行时。
+有两个平台事实塑造了工作流。其一，桌面应用是 `dsh` 发布族（[npm 发布序列](2026-08-10-npm-release-sequences.zh.md)）的成员：它共享该族的单一版本与 `dsh-v*` tag，所以桌面发布复用同一个 tag，而不是再造一条版本线。其二，`prepare-runtime` 用 `unzip` 解压 Windows 的 Node zip，而 Windows runner 上不存在这个二进制，因此 Windows CI 构建无法暂存它正在打包的自包含运行时。
 
 ## Decision
 
@@ -18,9 +18,9 @@ Status: implemented
 - **Windows**（`windows-2025`）：`dist:win` 在原生 `pwsh` 下构建 x64 NSIS 安装包。
 - **Release**（`ubuntu-latest`）：由 `dsh-v*` tag 推送触发，或在该 tag 上以 `publish: true` 手动触发，通过 `gh release create` 把两个安装包挂到标题为 `DeepSeek Harness Desktop <version>` 的 GitHub Release。
 
-electron-builder.yml 设置了带架构后缀的 `artifactName`，让发布页上的 macOS 与 Windows 安装包一目了然。它还钉死了 macOS 的 `identity`（不带证书类型前缀）并启用 `notarize: true`，同时设 `npmRebuild: false`（壳进程内没有原生依赖）；工作流把 `.p12` 导入临时钥匙串，并借助仓库 secret 里的 App Store Connect API key 通过 `notarytool` 公证。
+`electron-builder.config.mjs` 设置了不带版本号、带架构后缀的 `artifactName`，让发布页上的 macOS 与 Windows 安装包一目了然，同时让 `releases/latest/download/…` 链接保持稳定（[Desktop 自动更新](../feature/2026-08-15-desktop-auto-update.zh.md)）。它还钉死了 macOS 的 `identity`（不带证书类型前缀）并启用 `notarize: true`，同时设 `npmRebuild: false`（壳进程内没有原生依赖）；工作流把 `.p12` 导入临时钥匙串，并借助仓库 secret 里的 App Store Connect API key 通过 `notarytool` 公证。
 
-`prepare-runtime` 统一用 `tar -xf` 解压每个归档（bsdtar 既能读 tarball 也能读 zip，无需 `unzip`），把 Windows 下载名改为 `win` 而非 `win32`，只暂存宿主架构的单一 Node 运行时并[裁剪闭包](2026-08-14-prune-desktop-runtime-bundle.md)，并在 Windows 上用 shell 启动 `pnpm` 使 `pnpm.cmd` 得以运行。
+`prepare-runtime` 统一用 `tar -xf` 解压每个归档（bsdtar 既能读 tarball 也能读 zip，无需 `unzip`），把 Windows 下载名改为 `win` 而非 `win32`，只暂存宿主架构的单一 Node 运行时并[裁剪闭包](2026-08-14-prune-desktop-runtime-bundle.zh.md)，并在 Windows 上用 shell 启动 `pnpm` 使 `pnpm.cmd` 得以运行。
 
 macOS 安装包已签名并公证；Windows 安装包在加入 Authenticode 证书之前仍为未签名，自动更新源亦被延后。
 

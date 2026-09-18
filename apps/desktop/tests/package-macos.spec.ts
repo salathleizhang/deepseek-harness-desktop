@@ -11,6 +11,7 @@ import {
   type MacOSArtifactOperations,
 } from '../scripts/package-macos.ts'
 import { desktopElectronBuilderArguments, resolveDesktopPackageTarget } from '../scripts/package-target.ts'
+import { desktopArtifactBaseName } from '../scripts/desktop-auto-update-environment.mjs'
 
 const environment = {
   DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
@@ -31,7 +32,7 @@ async function fixture(arch: 'arm64' | 'x64' = 'arm64') {
   await mkdir(appPath, { recursive: true })
   await writeFile(join(appPath, 'payload'), 'signed content')
   const version = '1.2.3-alpha.1'
-  const base = `deepseek-harness-${version}-mac-${arch}`
+  const base = desktopArtifactBaseName(arch)
   const request = { arch, artifactsRoot, version, environment }
   const apple: MacOSArtifactOperations = {
     copyApp: async (source, destination) => {

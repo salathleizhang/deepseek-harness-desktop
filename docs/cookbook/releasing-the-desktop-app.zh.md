@@ -15,7 +15,7 @@ Desktop 应用属于 `dsh` 发布家族：它使用工作区根目录的版本�
 
 频道取语义化版本的第一个预发布标识符（`rc`、`alpha`、`beta`）；macOS 追加 `-mac`，Windows 不追加。[`desktopUpdateMetadataFilename`](../../apps/desktop/scripts/desktop-auto-update-environment.mjs) 计算该名称，`apps/desktop/tests/desktop-auto-update-environment.spec.ts` 将其固定。
 
-元数据必须与它引用的载荷放在一起，并使用 electron-builder 生成的文件名：macOS 更新载荷为 `deepseek-harness-<version>-mac-<arch>.zip` 及其 `.blockmap`，Windows 为 `deepseek-harness-<version>-win-x64.exe`（NSIS 的 blockmap 内嵌其中）。元数据携带每个载荷的大小与 SHA-512，上传计划在读取凭据之前就会拒绝不一致的输入。
+元数据必须与它引用的载荷放在一起，并使用 electron-builder 生成的文件名：手动安装包为 `DeepSeek.Harness-arm64.dmg`，macOS 更新载荷为 `DeepSeek.Harness-arm64.zip` 及其 `.blockmap`，Windows 为 `DeepSeek.Harness-x64.exe`（NSIS 的 blockmap 内嵌其中）。这些名字都不带版本，因此各 README 中的 `releases/latest/download/<name>` 链接在每次发布后依然可用；真正把载荷绑定到某次发布的是元数据自身的 `version` 字段与其中的 `files[].url`。[`desktopArtifactBaseName`](../../apps/desktop/scripts/desktop-auto-update-environment.mjs) 负责该名称主干，electron-builder 的 `artifactName` 展开为同一个名字。元数据携带每个载荷的大小与 SHA-512，上传计划在读取凭据之前就会拒绝不一致的输入。
 
 元数据文件被改名、改变大小写或放错位置都会静默失败：客户端的检查收到 404，自动检查不报告任何内容，只有应用菜单里的“检查更新”会显示错误。GitHub Releases 是手动下载镜像，不是更新源，因此上传到那里的资产不会让更新可见。未签名的 Windows 构建把 `publish` 设为 `null`，因此没有更新源，也没有元数据文件。
 

@@ -61,6 +61,16 @@ export function desktopUpdateMetadataFilename(
   platform: NodeJS.Platform,
 ): string
 
+/** Version-free artifact name pattern electron-builder expands for one target. */
+export const DESKTOP_ARTIFACT_NAME_PATTERN: 'DeepSeek.Harness-${arch}.${ext}'
+
+/**
+ * Return the version-free artifact base name for one release architecture.
+ * @param arch - Target Node.js architecture.
+ * @returns Artifact base name without an extension.
+ */
+export function desktopArtifactBaseName(arch: string): string
+
 /**
  * Resolve the public updater URL for one release target.
  * @param env - Packaging or upload environment.

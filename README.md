@@ -52,6 +52,10 @@ This shell wraps [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/d
 
 It is a community project built on DeepSeek Harness, not an official DeepSeek product.
 
+## Contributors
+
+The desktop shell is built and maintained by Junwei Zhang ([@salathleizhang](https://github.com/salathleizhang)) and Chen Moushun ([@cms19859230182-lang](https://github.com/cms19859230182-lang)), with additional desktop features from [nk34player](https://github.com/nk34player) and an automated agent. The [contributors page](docs/contributors.md) records what each contributor built and why GitHub shows no contributor graph for this fork.
+
 ## Features
 
 - Opens directly into the harness Web GUI, showing a connecting page until the child reports ready.

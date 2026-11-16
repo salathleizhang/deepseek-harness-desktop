@@ -52,6 +52,10 @@ DeepSeek Harness 已经提供完整的 agent 运行时与 Web GUI。这个壳不
 
 这是基于 DeepSeek Harness 构建的社区项目，并非 DeepSeek 官方产品。
 
+## 贡献者
+
+桌面壳由 Junwei Zhang（[@salathleizhang](https://github.com/salathleizhang)）与 Chen Moushun（[@cms19859230182-lang](https://github.com/cms19859230182-lang)）开发维护，另有 [nk34player](https://github.com/nk34player) 与一台自动化 Agent 贡献了部分桌面功能。[贡献者页面](docs/contributors.zh.md) 记录了每位贡献者负责的内容，以及 GitHub 为何不对本 fork 显示贡献者图表。
+
 ## 特性
 
 - 直接打开 harness 的 Web GUI，在子进程报告就绪前显示连接中页面。
